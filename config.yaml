@@ -1,0 +1,27 @@
+model:
+  base_url: https://chatgpt.com/backend-api/codex
+  default: gpt-5.6-luna
+  provider: openai-codex
+  api_mode: chat_completions
+fallback_providers: []
+agent:
+  reasoning_effort: medium
+  reasoning_overrides:
+    gpt-5.6-sol: high
+terminal:
+  backend: local
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: false
+sessions:
+  auto_prune: false
+skills:
+  inline_shell: false
+plugins:
+  enabled:
+    - glitch-control
+  disabled: []
+  entries:
+    glitch-control:
+      allow_tool_override: false

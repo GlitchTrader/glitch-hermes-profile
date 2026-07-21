@@ -1,0 +1,4 @@
+interface:
+  display_name: "Glitch Self Heal"
+  short_description: "Reconcile evidence and resume safely"
+  default_prompt: "Use $glitch-self-heal to reconcile Hermes state to authoritative Glitch evidence and resume safely."

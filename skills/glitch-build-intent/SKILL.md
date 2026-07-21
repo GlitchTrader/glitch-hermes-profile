@@ -1,0 +1,20 @@
+---
+name: glitch-build-intent
+description: Convert Glitch decisions into one strict group-scoped intent batch with absolute native bracket prices.
+---
+
+# Build Intent
+
+Return exactly one JSON object and no Markdown or prose.
+
+- Outer object: `schema_version: "glitch.intent.batch.v1"`, supplied `cycle_id`, and ordered `decisions`, one per supplied book.
+- Each decision targets exactly the book's `master_account`, uses its `route_id` as `operator_profile`, MNQ, and the supplied snapshot hash.
+- Required core fields: `schema_version`, UUID `intent_id`, `created_utc`, `instrument`, `account`, `operator_profile`, `action`, `confidence`, `snapshot_hash`, `model_version`, `prompt_version`, `reason`, and the required compact `decision_audit`. `final_choice` appears exactly once inside `decision_audit`, never at the decision root, and equals `action`. Preserve the supplied output template's shape and scoped identity values.
+- For `ENTER_LONG` or `ENTER_SHORT`, choose `quantity` only from the book's `valid_entry_quantities`, set `order_type: "MARKET"`, and include absolute tick-rounded `stop_loss` and `take_profit_1` prices. These are structural price levels, never distances.
+- Optional leg 2: `take_profit_2`, `quantity_tp1`, and optional `stop_loss_2`. Optional leg 3: `take_profit_3`, `quantity_tp2`, and optional `stop_loss_3`. The remaining quantity runs to the last target. Targets progress farther in the profit direction; optional later stops remain on the loss side and may only be tighter.
+- For `MOVE_STOP`, include only `stop_loss` beyond the core fields. It must tighten all active Glitch-owned master stops.
+- For `MOVE_TP`, include `take_profit_1` and optionally `stop_loss` beyond the core fields. The target replaces every remaining Glitch-owned target and must stay on the live profit side. An optional stop may only tighten every remaining stop.
+- For `HOLD`, `EXIT`, and `NOTHING`, omit every entry and management field.
+- Never target followers, exceed valid quantities, reverse through an entry, include a limit price, or emit incomplete JSON.
+
+Glitch performs final freshness, policy, compliance, geometry, capacity, replication, and execution validation.

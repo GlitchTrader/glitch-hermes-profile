@@ -1,0 +1,4 @@
+interface:
+  display_name: "Glitch Self Learning"
+  short_description: "Promote evidence-backed trading lessons"
+  default_prompt: "Use $glitch-self-learning to promote durable lessons from completed Glitch outcomes."

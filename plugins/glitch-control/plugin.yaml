@@ -1,0 +1,4 @@
+name: glitch-control
+version: 0.1.0
+description: "Deterministic Glitch control commands for the persistent Glitch Hermes profile."
+author: "ABX"

@@ -1,0 +1,93 @@
+{
+  "schema_version": "glitch.hermes.operator.v4",
+  "operator_profile": "glitch",
+  "description": "One probabilistic, self-improving Glitch operator; Glitch remains the deterministic execution and truth authority.",
+  "principles": {
+    "invariant": "Hermes proposes. Glitch validates, executes, journals, and protects.",
+    "cognitive_freedom": "Patterns, archetypes, plans, and memories are evidence rather than trading gates.",
+    "group_source": "Every live cycle derives groups, masters, followers, ratios, positions, limits, and prop rules from the Glitch packet. Hermes strategy and quantity use master limits only; user-owned follower ratios never constrain cognition.",
+    "performance_objective": "Pursue approximately 0.4%-2% of master account size per trading day over time ($100-$500 on $25k; $1,000-$5,000 on $250k) without treating the target as a quota, promise, or forced risk budget.",
+    "native_capabilities": "Glitch skills overlay Hermes native skills, memory, sessions, and upkeep; they do not replace them.",
+    "no_silent_model_downgrade": true
+  },
+  "loops": [
+    {
+      "id": "core_decision",
+      "cadence": "every 5 minutes while flat; every minute while a scoped master is positioned; one-cycle operator directives may wake it",
+      "model": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium",
+      "initial_activation": "managed_by_ai_auto",
+      "output_schema": "glitch.intent.batch.v1",
+      "execution_authority": false
+    },
+    {
+      "id": "trade_debrief",
+      "cadence": "every 15 minutes when new completed master outcomes exist",
+      "model": "gpt-5.6-sol",
+      "provider": "openai-codex",
+      "reasoning_effort": "high",
+      "initial_activation": "managed_by_ai_auto",
+      "output_schema": "glitch.hermes.trade_episode.v1",
+      "execution_authority": false
+    },
+    {
+      "id": "portfolio_supervision",
+      "cadence": "hourly",
+      "model": "gpt-5.6-sol",
+      "provider": "openai-codex",
+      "reasoning_effort": "high",
+      "initial_activation": "managed_by_ai_auto",
+      "output_schema": "glitch.hermes.hourly_review.v1",
+      "execution_authority": false
+    },
+    {
+      "id": "portfolio_planning",
+      "cadence": "every 300 minutes when new reviews exist",
+      "model": "gpt-5.6-sol",
+      "provider": "openai-codex",
+      "reasoning_effort": "high",
+      "initial_activation": "managed_by_ai_auto",
+      "output_schema": "glitch.hermes.portfolio_plan.v2",
+      "execution_authority": false
+    },
+    {
+      "id": "daily_learning",
+      "cadence": "after session",
+      "model": "gpt-5.6-sol",
+      "provider": "openai-codex",
+      "reasoning_effort": "high",
+      "initial_activation": "managed_by_ai_auto",
+      "output_schema": "glitch.hermes.daily_journal.v1",
+      "execution_authority": false
+    }
+  ],
+  "skills": {
+    "native_hermes_preserved": true,
+    "installed_overlay": [
+      "glitch-observe-market",
+      "glitch-assess-risk",
+      "glitch-form-thesis",
+      "glitch-build-intent",
+      "glitch-submit-intent",
+      "glitch-review-outcomes",
+      "glitch-self-learning",
+      "glitch-self-heal",
+      "glitch-supervisor-ledger",
+      "glitch-learning-loop",
+      "glitch-escalate-to-codex"
+    ],
+    "required_before_supervisory_activation": []
+  },
+  "activation": {
+    "current_scope": "AI Auto manages the core operator plus Hermes-owned debrief, supervision, planning, daily learning, native memory, and versioned cognitive overlays",
+    "enable_now": [
+      "trade_debrief",
+      "portfolio_supervision",
+      "portfolio_planning",
+      "daily_learning"
+    ],
+    "deferred_loops": []
+  },
+  "books_source": "dynamic_from_glitch_packet"
+}

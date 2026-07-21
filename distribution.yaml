@@ -1,0 +1,17 @@
+name: glitch
+version: 0.0.2.0
+description: "Experimental Glitch AI operator profile for NinjaTrader 8"
+hermes_requires: ">=0.18.2"
+author: "GlitchTrader"
+distribution_owned:
+  - distribution.yaml
+  - SOUL.md
+  - operator.json
+  - config.yaml
+  - skills
+  - plugins
+  - scripts
+  - setup.ps1
+  - README.md
+  - .gitignore
+  - SHA256SUMS

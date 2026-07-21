@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.EXAMPLE
+auth.json
+*.db
+*.db-shm
+*.db-wal
+*.log
+__pycache__/
+*.pyc
+cron/
+memories/
+sessions/
+state/
+workspace/
+local/
