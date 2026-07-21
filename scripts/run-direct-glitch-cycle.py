@@ -853,11 +853,33 @@ def extract_json(stdout: str) -> dict[str, Any]:
     text = stdout.strip()
     try:
         value = json.loads(text)
-    except json.JSONDecodeError:
-        value, end = json.JSONDecoder().raw_decode(text)
-        trailing = text[end:].strip()
-        if not trailing or any(character not in "]}" for character in trailing):
-            raise
+    except json.JSONDecodeError as original_error:
+        decoder = json.JSONDecoder()
+        try:
+            value, end = decoder.raw_decode(text)
+            trailing = text[end:].strip()
+            if trailing and any(character not in "]}" for character in trailing):
+                raise original_error
+        except json.JSONDecodeError:
+            candidates = []
+            for index, character in enumerate(text):
+                if character != "{":
+                    continue
+                try:
+                    candidate, _ = decoder.raw_decode(text, index)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(candidate, dict):
+                    continue
+                if (
+                    candidate.get("schema_version") == "glitch.intent.batch.v1"
+                    or isinstance(candidate.get("decisions"), list)
+                    or isinstance(candidate.get("intents"), list)
+                ):
+                    candidates.append(candidate)
+            if len(candidates) != 1:
+                raise original_error
+            value = candidates[0]
     if not isinstance(value, dict):
         raise ValueError("hermes_output_not_object")
     return value
@@ -904,6 +926,8 @@ def invoke_hermes(profile: str, prompt: str, timeout_seconds: int) -> dict[str, 
         input=prompt,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout_seconds,
         check=False,
         creationflags=creationflags,
