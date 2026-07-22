@@ -153,6 +153,89 @@ def market_path(glitch_data: Path, entry: datetime, exit_time: datetime) -> list
     return list(reversed(values[-90:]))
 
 
+def entry_decision_context(
+    glitch_data: Path,
+    outcome: dict[str, Any],
+    entry_intent: dict[str, Any] | None,
+    master_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    cycle_id = str(outcome.get("cycle_id") or "")
+    if not cycle_id or not isinstance(entry_intent, dict):
+        return {"status": "unavailable", "reason": "entry_identity_missing"}
+    packet_path = (
+        glitch_data / "hermes" / "exchange" / "glitch" / "decision-packets" / f"{cycle_id}.json"
+    )
+    if not packet_path.is_file():
+        return {"status": "unavailable", "reason": "decision_packet_missing", "cycle_id": cycle_id}
+    try:
+        packet = DIRECT.read_json(packet_path)
+        if str(packet.get("packet_id") or "") != cycle_id:
+            raise ValueError("decision_packet_identity_mismatch")
+        scenario = DIRECT.build_scenario(packet)
+        book = next(
+            value for value in scenario["books"]
+            if str(value.get("master_account") or "").lower()
+            == str(outcome.get("master_account") or "").lower()
+        )
+        current_price = float(scenario["market"]["current_price"])
+        legs = DIRECT.entry_risk_legs(entry_intent, current_price)
+    except (KeyError, StopIteration, TypeError, ValueError, OSError) as error:
+        return {"status": "unavailable", "reason": str(error)[:160], "cycle_id": cycle_id}
+
+    targets = [
+        entry_intent.get("take_profit_1"),
+        entry_intent.get("take_profit_2"),
+        entry_intent.get("take_profit_3"),
+    ]
+    for index, leg in enumerate(legs):
+        leg["target_price"] = targets[index]
+        leg["planned_risk_usd"] = round(float(leg["planned_risk_usd"]), 2)
+        leg["risk_points_per_contract"] = round(float(leg["risk_points_per_contract"]), 8)
+    planned_risk = sum(float(leg["planned_risk_usd"]) for leg in legs)
+    selected_quantity = int(entry_intent["quantity"])
+    result = master_result or {}
+
+    def per_contract(key: str) -> float | None:
+        value = result.get(key)
+        return round(float(value) / selected_quantity, 2) if isinstance(value, (int, float)) else None
+
+    realized = result.get("realized_pnl_usd", outcome.get("master_realized_pnl_usd"))
+    return {
+        "status": "complete",
+        "cycle_id": cycle_id,
+        "packet_hash": packet.get("packet_hash"),
+        "pre_entry": book.get("position_building_context"),
+        "selected_plan": {
+            "action": entry_intent.get("action"),
+            "quantity": selected_quantity,
+            "entry_role": (book.get("position_building_context") or {}).get("next_entry_role"),
+            "legs": legs,
+            "planned_risk_usd": round(planned_risk, 2),
+        },
+        "normalized_outcome": {
+            "realized_pnl_per_contract_usd": (
+                round(float(realized) / selected_quantity, 2)
+                if isinstance(realized, (int, float)) else None
+            ),
+            "observed_mfe_per_contract_usd": per_contract("observed_mfe_usd"),
+            "observed_mae_per_contract_usd": per_contract("observed_mae_usd"),
+            "realized_r_multiple": (
+                round(float(realized) / planned_risk, 4)
+                if isinstance(realized, (int, float)) and planned_risk > 0 else None
+            ),
+            "observed_mfe_r": (
+                round(float(result["observed_mfe_usd"]) / planned_risk, 4)
+                if isinstance(result.get("observed_mfe_usd"), (int, float)) and planned_risk > 0 else None
+            ),
+            "observed_mae_r": (
+                round(float(result["observed_mae_usd"]) / planned_risk, 4)
+                if isinstance(result.get("observed_mae_usd"), (int, float)) and planned_risk > 0 else None
+            ),
+            "close_kind": result.get("close_kind"),
+        },
+    }
+
+
 def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     decisions = read_jsonl(glitch_data / "intents" / "decisions.jsonl")
     executions = read_jsonl(glitch_data / "intents" / "executions.jsonl")
@@ -181,6 +264,11 @@ def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[
             row for row in outcome.get("account_outcomes", [])
             if str(row.get("account", "")).lower() == account.lower()
         ), None)
+        entry_intent = next((
+            row.get("intent") for row in decisions
+            if isinstance(row.get("intent"), dict)
+            and str(row["intent"].get("intent_id") or "") == str(outcome.get("intent_id") or "")
+        ), None)
         master_outcome = {
             key: outcome.get(key)
             for key in (
@@ -195,6 +283,9 @@ def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[
             "expected_episode_id": stable_id("episode", str(outcome.get("intent_id"))),
             "master_outcome": master_outcome,
             "master_result": master_result,
+            "entry_decision_context": entry_decision_context(
+                glitch_data, outcome, entry_intent, master_result
+            ),
             "management_decisions": related_decisions,
             "execution_events": related_executions,
             "market_path": market_path(glitch_data, entry, exit_time),
@@ -240,7 +331,8 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                     "guidance": {"summary": "REPLACE", "consider": ["REPLACE"], "avoid": ["REPLACE"]},
                     "cognitive_change_decision": {
                         "candidate_id": "COPY_ACTIVE_ID_OR_EMPTY", "action": "none",
-                        "evidence_episode_ids": [], "reason": "REPLACE_OR_EMPTY",
+                        "evidence_episode_ids": [], "contradiction_review": "REPLACE_OR_EMPTY",
+                        "reason": "REPLACE_OR_EMPTY",
                     },
                     "cognitive_change_candidate": {
                         "propose": False, "candidate_id": "GENERATE_OR_EMPTY",
@@ -260,14 +352,17 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                 })
             else:
                 record.update({
-                    "session_date_et": datetime.now(EASTERN).date().isoformat(),
+                    "session_date_et": str((extra or {}).get(
+                        "session_date_et", datetime.now(EASTERN).date().isoformat()
+                    )),
                     "master_performance": "REPLACE", "what_worked": ["REPLACE"],
                     "what_failed": ["REPLACE"], "lessons_promoted": [],
                     "lessons_revised": [], "tomorrow_questions": ["REPLACE"],
                     "memory_updates": ["REPLACE_OR_EMPTY"],
                     "cognitive_change_decision": {
                         "candidate_id": "COPY_ACTIVE_ID_OR_EMPTY", "action": "none",
-                        "evidence_episode_ids": [], "reason": "REPLACE_OR_EMPTY",
+                        "evidence_episode_ids": [], "contradiction_review": "REPLACE_OR_EMPTY",
+                        "reason": "REPLACE_OR_EMPTY",
                     },
                     "cognitive_change_candidate": {
                         "propose": False, "candidate_id": "GENERATE_OR_EMPTY",
@@ -279,7 +374,7 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
             records.append(record)
     value = {"schema_version": "glitch.hermes.learning_output.v1", "loop_id": loop_id, "records": records}
     if extra:
-        value.update(extra)
+        value.update({key: item for key, item in extra.items() if key != "session_date_et"})
     return value
 
 
@@ -289,22 +384,27 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
             "Produce exactly one honest human-trader debrief per supplied outcome. Attribute cognition and PnL to the master only; follower ratios and follower PnL are replication diagnostics. "
             "Every supplied master_outcome has master_learning_eligible=true; that field alone authorizes cognitive learning, and replication diagnostics can never suppress it. "
             "Reconstruct why Hermes entered, why the trade actually exited, geometry, quantity, every management decision, favorable excursion/rollback, and plausible alternatives. "
+            "Use entry_decision_context to judge whether quantity and position architecture were evidence-based or habitual, and whether native target legs, reserved capacity, "
+            "or a later independently protected addition deserved consideration. Do not assume a different quantity would have received identical fills; preserve that uncertainty. "
             "A repeated stop geometry mistake is evidence for self-improvement, not permission to invent a fixed stop formula. Process errors are not strategy lessons."
         ),
         "hourly": (
             "Supervise the latest episodes. Identify repeated correct reasoning, repeated mistakes, geometry/management/quantity patterns, false abstention versus overtrading, and system defects. "
-            "Issue advisory guidance, never an order. When at least two comparable episodes show the same cognitive failure, you may propose one compact versioned cognitive change now rather than waiting for the daily loop. "
-            "You may evaluate an active cognitive overlay and return a promote/continue/rollback decision only with later episode evidence."
+            "Issue advisory guidance, never an order. Attributable evidence may produce one compact versioned cognitive proposal now rather than waiting for the daily loop; proposal does not activate it. Preserve its uncertainty until later comparable evidence exists. "
+            "For a proposed overlay, return activate or rollback only with at least two later comparable episodes and explicit contradiction review. "
+            "For an active overlay, return promote, continue, or rollback only with later episode evidence."
         ),
         "planning": (
             "Create the next 300-minute Hermes plan. Hermes owns strategy and master quantity within current master limits. Set questions, hypotheses, sizing/geometry/management posture and experiments without deterministic entry gates. "
             "Do not create a fixed or provisional quantity baseline: calibrate quantity from repeated risk-adjusted outcomes, current edge, structural risk, remaining opportunity, drawdown, and the long-run objective. "
+            "Keep initial native target legs, reserved capacity, and later thesis-supported protected additions available as choices rather than mandatory recipes. "
             "Follower ratios are user configuration and must not affect the master plan."
         ),
         "daily": (
             "Write the daily trader journal, compare the master against its proportional objective, update native semantic memory from repeated completed evidence, and decide how Hermes should improve. "
             "You may propose one compact versioned cognitive change targeting core_prompt, soul, or skill:<name>. It must state exact replacement guidance, evidence IDs, expected effect, evaluation metric, and rollback condition. "
-            "This changes Hermes cognition for future configured Glitch cycles; do not edit Glitch policy, groups, ratios, prop limits, execution, or code."
+            "A proposal is staged and changes no trading cognition until a later independent review activates it with new evidence. "
+            "Do not edit Glitch policy, groups, ratios, prop limits, execution, or code."
         ),
     }[loop_id]
     memory_instruction = (
@@ -331,6 +431,8 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
 def validate_output(value: dict[str, Any], loop_id: str, expected_ids: list[str]) -> list[dict[str, Any]]:
     if value.get("schema_version") != "glitch.hermes.learning_output.v1" or value.get("loop_id") != loop_id:
         raise ValueError("learning_output_envelope_invalid")
+    if set(value) != {"schema_version", "loop_id", "records"}:
+        raise ValueError("learning_output_envelope_shape_invalid")
     records = value.get("records")
     if not isinstance(records, list) or len(records) != len(expected_ids):
         raise ValueError("learning_output_record_count_invalid")
@@ -340,6 +442,24 @@ def validate_output(value: dict[str, Any], loop_id: str, expected_ids: list[str]
         raise ValueError("learning_output_identity_mismatch")
     if any(record.get("schema_version") != LOOP_SCHEMAS[loop_id] for record in records):
         raise ValueError("learning_output_schema_invalid")
+    expected = output_template(loop_id, expected_ids)
+    expected_records = expected["records"]
+    for index, (record, expected_record) in enumerate(zip(records, expected_records)):
+        if not isinstance(record, dict) or set(record) != set(expected_record):
+            raise ValueError(f"learning_output_shape_invalid:{index}")
+        for key, sample in expected_record.items():
+            actual = record.get(key)
+            if isinstance(sample, dict):
+                if not isinstance(actual, dict) or set(actual) != set(sample):
+                    raise ValueError(f"learning_output_shape_invalid:{index}:{key}")
+            elif isinstance(sample, list):
+                if not isinstance(actual, list):
+                    raise ValueError(f"learning_output_type_invalid:{index}:{key}")
+            elif isinstance(sample, bool):
+                if not isinstance(actual, bool):
+                    raise ValueError(f"learning_output_type_invalid:{index}:{key}")
+            elif isinstance(sample, str) and not isinstance(actual, str):
+                raise ValueError(f"learning_output_type_invalid:{index}:{key}")
     return records
 
 
@@ -361,56 +481,122 @@ def continuity(supervisor: Path) -> dict[str, Any]:
         "current_guidance": DIRECT.read_current_learning_artifact(
             supervisor / "current-guidance.json", DIRECT.CURRENT_GUIDANCE_SCHEMA
         ),
+        "proposed_cognitive_overlay": DIRECT.read_optional_json(
+            supervisor / "proposed-cognitive-overlay.json"
+        ),
         "active_cognitive_overlay": DIRECT.read_optional_json(supervisor / "active-cognitive-overlay.json"),
     }
 
 
-def invoke_loop(args, loop_id: str, evidence: Any, ids: list[str], supervisor: Path) -> list[dict[str, Any]]:
-    template = output_template(loop_id, ids)
+def invoke_loop(
+    args,
+    loop_id: str,
+    evidence: Any,
+    ids: list[str],
+    supervisor: Path,
+    template_extra: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    template = output_template(loop_id, ids, template_extra)
     skills = {
         "debrief": "glitch-review-outcomes,glitch-self-learning,glitch-learning-loop",
         "hourly": "glitch-review-outcomes,glitch-self-learning,glitch-self-heal,glitch-supervisor-ledger,glitch-learning-loop",
         "planning": "glitch-self-learning,glitch-supervisor-ledger,glitch-learning-loop",
         "daily": "glitch-review-outcomes,glitch-self-learning,glitch-supervisor-ledger,glitch-learning-loop",
     }[loop_id]
-    value = invoke_hermes(args.profile, build_prompt(loop_id, evidence, template, continuity(supervisor)), skills, args.timeout_seconds)
-    return validate_output(value, loop_id, ids)
+    prompt = build_prompt(loop_id, evidence, template, continuity(supervisor))
+    try:
+        value = invoke_hermes(args.profile, prompt, skills, args.timeout_seconds)
+        return validate_output(value, loop_id, ids)
+    except (json.JSONDecodeError, ValueError) as error:
+        repair_prompt = (
+            prompt
+            + "\nThe previous response failed strict validation with: "
+            + f"{type(error).__name__}:{error}"[:300]
+            + ". Re-answer the same evidence once using exactly required_output_template. "
+            + "Return one complete JSON object only; do not explain the repair."
+        )
+        value = invoke_hermes(args.profile, repair_prompt, skills, args.timeout_seconds)
+        return validate_output(value, loop_id, ids)
 
 
 def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_ids: list[str]) -> None:
     active_path = supervisor / "active-cognitive-overlay.json"
     active = DIRECT.read_optional_json(active_path)
     decision = record.get("cognitive_change_decision")
-    if (
-        not active
-        or active.get("status") not in {"active", "promoted"}
-        or not active.get("instruction")
-        or not isinstance(decision, dict)
-        or str(decision.get("candidate_id")) != str(active.get("candidate_id"))
-    ):
-        return
-    evidence_cursor = int(active.get("evaluation_episode_count", active.get("baseline_episode_count")) or 0)
-    later_episode_ids = set(episode_ids[evidence_cursor:])
-    later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
-    if len(set(later)) < 2:
+    if not isinstance(decision, dict):
         return
     action = str(decision.get("action") or "").lower()
-    if action not in {"continue", "promote", "rollback"}:
+    contradiction_review = str(decision.get("contradiction_review") or "").strip()
+    if (
+        active
+        and active.get("status") in {"active", "promoted"}
+        and active.get("instruction")
+        and str(decision.get("candidate_id")) == str(active.get("candidate_id"))
+    ):
+        evidence_cursor = int(active.get("evaluation_episode_count", active.get("baseline_episode_count")) or 0)
+        later_episode_ids = set(episode_ids[evidence_cursor:])
+        later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
+        if (
+            len(set(later)) < 2
+            or action not in {"continue", "promote", "rollback"}
+            or not contradiction_review
+        ):
+            return
+        active["status"] = {"continue": "active", "promote": "promoted", "rollback": "rolled_back"}[action]
+        active["evaluated_utc"] = utc_now()
+        active["evaluation_episode_count"] = len(episode_ids)
+        active["evaluation"] = decision
+        if action == "rollback":
+            active.pop("instruction", None)
+        DIRECT.write_json_atomic(active_path, active)
+        event = {
+            **active,
+            "change_event_id": stable_id(
+                "cognitive-change-event",
+                str(active["candidate_id"]) + "|" + action + "|" + "|".join(sorted(set(later))),
+            ),
+            "event": "evaluated",
+        }
+        append_unique(supervisor / "cognitive-changes.jsonl", [event], "change_event_id")
         return
-    active["status"] = {"continue": "active", "promote": "promoted", "rollback": "rolled_back"}[action]
-    active["evaluated_utc"] = utc_now()
-    active["evaluation_episode_count"] = len(episode_ids)
-    active["evaluation"] = decision
+
+    proposed_path = supervisor / "proposed-cognitive-overlay.json"
+    proposed = DIRECT.read_optional_json(proposed_path)
+    if (
+        not proposed
+        or proposed.get("status") != "proposed"
+        or not proposed.get("instruction")
+        or str(decision.get("candidate_id")) != str(proposed.get("candidate_id"))
+        or action not in {"activate", "rollback"}
+    ):
+        return
+    evidence_cursor = int(proposed.get("baseline_episode_count") or 0)
+    later_episode_ids = set(episode_ids[evidence_cursor:])
+    later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
+    if len(set(later)) < 2 or not contradiction_review:
+        return
+    proposed["status"] = "activated" if action == "activate" else "rolled_back"
+    proposed["evaluated_utc"] = utc_now()
+    proposed["evaluation"] = decision
     if action == "rollback":
-        active.pop("instruction", None)
-    DIRECT.write_json_atomic(active_path, active)
+        proposed.pop("instruction", None)
+    DIRECT.write_json_atomic(proposed_path, proposed)
+    if action == "activate":
+        active = {
+            **proposed,
+            "status": "active",
+            "activated_utc": utc_now(),
+            "baseline_episode_count": len(episode_ids),
+            "evaluation_episode_count": len(episode_ids),
+        }
+        DIRECT.write_json_atomic(active_path, active)
     event = {
-        **active,
+        **proposed,
         "change_event_id": stable_id(
             "cognitive-change-event",
-            str(active["candidate_id"]) + "|" + action + "|" + "|".join(sorted(set(later))),
+            str(proposed["candidate_id"]) + "|" + action + "|" + "|".join(sorted(set(later))),
         ),
-        "event": "evaluated",
+        "event": "activated" if action == "activate" else "proposal_rolled_back",
     }
     append_unique(supervisor / "cognitive-changes.jsonl", [event], "change_event_id")
 
@@ -422,7 +608,11 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
     if candidate.get("propose") is not True:
         return
     current = DIRECT.read_optional_json(supervisor / "active-cognitive-overlay.json")
-    if current and current.get("status") == "active" and current.get("instruction"):
+    if current and current.get("status") in {"active", "promoted"} and current.get("instruction"):
+        return
+    proposed_path = supervisor / "proposed-cognitive-overlay.json"
+    proposed = DIRECT.read_optional_json(proposed_path)
+    if proposed and proposed.get("status") == "proposed" and proposed.get("instruction"):
         return
     target = str(candidate.get("target") or "")
     instruction = str(candidate.get("instruction") or "").strip()
@@ -434,7 +624,7 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
     if (
         not instruction
         or len(instruction) > 1200
-        or len(set(evidence_ids)) < 2
+        or len(set(evidence_ids)) < 1
         or any(value not in known_episode_ids for value in evidence_ids)
     ):
         return
@@ -450,13 +640,13 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
         "expected_effect": candidate.get("expected_effect"),
         "evaluation_metric": candidate.get("evaluation_metric"),
         "rollback_condition": candidate.get("rollback_condition"),
-        "status": "active",
+        "status": "proposed",
         "activation_scope": "configured_glitch_scope",
     }
     value["change_event_id"] = stable_id("cognitive-change-event", candidate_id + "|proposed")
-    value["event"] = "proposed_and_activated"
+    value["event"] = "proposed"
     append_unique(supervisor / "cognitive-changes.jsonl", [value], "change_event_id")
-    DIRECT.write_json_atomic(supervisor / "active-cognitive-overlay.json", value)
+    DIRECT.write_json_atomic(proposed_path, value)
 
 
 def persist_hourly(record: dict[str, Any], supervisor: Path, episode_ids: list[str]) -> None:
@@ -498,6 +688,43 @@ def outcome_completed_utc(row: dict[str, Any]) -> datetime:
         return parse_utc(row.get("exit_utc") or row.get("recorded_utc"))
     except (TypeError, ValueError):
         return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def apex_session_date_et(value: Any) -> str:
+    local = parse_utc(value).astimezone(EASTERN)
+    session_date = local.date() + timedelta(days=1) if local.hour >= 18 else local.date()
+    return session_date.isoformat()
+
+
+def latest_completed_apex_session_date(now: datetime) -> str:
+    local = now.astimezone(EASTERN)
+    completed = local.date() if local.hour >= 17 else local.date() - timedelta(days=1)
+    return completed.isoformat()
+
+
+def unjournaled_completed_sessions(
+    eligible_outcomes: list[dict[str, Any]],
+    episodes: list[dict[str, Any]],
+    journals: list[dict[str, Any]],
+    now: datetime,
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    completed_through = latest_completed_apex_session_date(now)
+    written = {str(row.get("session_date_et")) for row in journals if row.get("session_date_et")}
+    episodes_by_intent = {
+        str(row.get("intent_id")): row for row in episodes if row.get("intent_id")
+    }
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for outcome in eligible_outcomes:
+        intent_id = str(outcome.get("intent_id") or "")
+        if intent_id not in episodes_by_intent or not outcome.get("exit_utc"):
+            continue
+        try:
+            session_date = apex_session_date_et(outcome["exit_utc"])
+        except (TypeError, ValueError):
+            continue
+        if session_date <= completed_through and session_date not in written:
+            by_session.setdefault(session_date, []).append(episodes_by_intent[intent_id])
+    return [(session_date, by_session[session_date]) for session_date in sorted(by_session)]
 
 
 def run_once(args) -> dict[str, Any]:
@@ -566,19 +793,40 @@ def run_once(args) -> dict[str, Any]:
             state["planning_review_count"] = len(reviews)
         result["planning"] = True
 
-    eastern_now = now.astimezone(EASTERN)
-    session_date = eastern_now.date().isoformat()
-    daily_due = eastern_now.hour == 17 and state.get("last_daily_session_date_et") != session_date and bool(episodes)
-    if (daily_due or args.force_loop == "daily") and args.force_loop in {None, "daily"}:
+    existing_journals = read_jsonl(supervisor / "daily-journal.jsonl")
+    due_sessions = unjournaled_completed_sessions(eligible, episodes, existing_journals, now)
+    if args.force_loop == "daily" and not due_sessions:
+        completed_through = latest_completed_apex_session_date(now)
+        all_sessions = unjournaled_completed_sessions(eligible, episodes, [], now)
+        if all_sessions:
+            due_sessions = [next(
+                (item for item in reversed(all_sessions) if item[0] <= completed_through),
+                all_sessions[-1],
+            )]
+    if due_sessions and args.force_loop in {None, "daily"}:
+        session_date, session_episodes = due_sessions[0]
         journal_id = stable_id("daily-journal", session_date)
         if not args.dry_run:
-            evidence = {"episodes": episodes[-80:], "reviews": reviews[-12:], "plans": read_jsonl(supervisor / "plans.jsonl")[-4:]}
-            records = invoke_loop(args, "daily", evidence, [journal_id], supervisor)
+            evidence = {
+                "session_date_et": session_date,
+                "episodes": session_episodes,
+                "reviews": reviews[-12:],
+                "plans": read_jsonl(supervisor / "plans.jsonl")[-4:],
+            }
+            records = invoke_loop(
+                args,
+                "daily",
+                evidence,
+                [journal_id],
+                supervisor,
+                {"session_date_et": session_date},
+            )
             append_unique(supervisor / "daily-journal.jsonl", records, "journal_id")
             apply_cognitive_decision(records[0], supervisor, episode_ids)
             activate_cognitive_candidate(records[0], supervisor)
             state["last_daily_session_date_et"] = session_date
         result["daily"] = True
+        result["daily_session_date_et"] = session_date
 
     if not args.dry_run:
         state["updated_utc"] = utc_now()

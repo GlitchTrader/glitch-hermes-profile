@@ -50,6 +50,8 @@ DECISION_AUDIT_FIELDS = {
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 CURRENT_PLAN_SCHEMA = "glitch.hermes.portfolio_plan.v2"
 CURRENT_GUIDANCE_SCHEMA = "glitch.hermes.trading_guidance.v2"
+MNQ_POINT_VALUE_USD = 2.0
+MNQ_TICK_SIZE = 0.25
 
 
 def utc_now() -> str:
@@ -191,7 +193,150 @@ def _account_total_contracts(account: dict[str, Any]) -> int:
     )
 
 
-def add_group_exposure_context(packet: dict[str, Any], books: list[dict[str, Any]]) -> None:
+def _mnq_position(account: dict[str, Any]) -> dict[str, Any]:
+    positions = account.get("positions", [])
+    if not isinstance(positions, list):
+        return {}
+    return next((
+        position for position in positions
+        if isinstance(position, dict)
+        and str(position.get("instrument_root") or position.get("instrument") or "").upper() == "MNQ"
+    ), {})
+
+
+def _remaining_order_quantity(order: dict[str, Any]) -> int | None:
+    try:
+        remaining = float(order.get("quantity", 0) or 0) - float(order.get("filled", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    rounded = int(round(remaining))
+    return rounded if remaining > 0 and abs(remaining - rounded) < 1e-9 else None
+
+
+def owned_native_protection(account: dict[str, Any], current_price: float) -> dict[str, Any]:
+    signed_quantity = _account_mnq_quantity(account)
+    expected = abs(signed_quantity)
+    orders = account.get("working_order_details")
+    if not isinstance(orders, list):
+        return {
+            "status": "unavailable",
+            "coverage_complete": False,
+            "expected_quantity": expected,
+            "stop_coverage_quantity": 0,
+            "target_coverage_quantity": 0,
+            "existing_protected_downside_usd": None,
+            "orders": [],
+        }
+
+    stop_coverage = 0
+    target_coverage = 0
+    downside = 0.0
+    compact_orders = []
+    valid = True
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        root = str(order.get("instrument_root") or order.get("instrument") or "").upper()
+        name = str(order.get("name") or "")
+        role = "stop" if name.upper().startswith("GLT-AI-S-") else "target" if name.upper().startswith("GLT-AI-T-") else None
+        if root != "MNQ" or role is None:
+            continue
+        remaining = _remaining_order_quantity(order)
+        if remaining is None:
+            valid = False
+            continue
+        compact_orders.append({
+            "name": name,
+            "role": role,
+            "remaining_quantity": remaining,
+            "stop_price": order.get("stop_price"),
+            "limit_price": order.get("limit_price"),
+            "oco": order.get("oco"),
+        })
+        if role == "target":
+            target_coverage += remaining
+            continue
+        try:
+            stop_price = float(order.get("stop_price"))
+        except (TypeError, ValueError):
+            valid = False
+            continue
+        points = current_price - stop_price if signed_quantity > 0 else stop_price - current_price
+        if expected and points <= 0:
+            valid = False
+            continue
+        stop_coverage += remaining
+        downside += max(0.0, points) * MNQ_POINT_VALUE_USD * remaining
+
+    complete = valid and stop_coverage == expected and target_coverage == expected
+    return {
+        "status": "complete" if complete else "incomplete",
+        "coverage_complete": complete,
+        "expected_quantity": expected,
+        "stop_coverage_quantity": stop_coverage,
+        "target_coverage_quantity": target_coverage,
+        "existing_protected_downside_usd": round(downside, 2) if valid else None,
+        "orders": compact_orders,
+    }
+
+
+def entry_risk_legs(intent: dict[str, Any], current_price: float) -> list[dict[str, Any]]:
+    quantity = intent.get("quantity")
+    if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
+        raise ValueError("entry_quantity_invalid")
+    is_long = intent.get("action") == "ENTER_LONG"
+    if not is_long and intent.get("action") != "ENTER_SHORT":
+        raise ValueError("entry_action_invalid")
+    stop_1 = float(intent["stop_loss"])
+    has_second = "take_profit_2" in intent
+    has_third = "take_profit_3" in intent
+    quantity_1 = int(intent["quantity_tp1"]) if has_second else quantity
+    quantity_2 = int(intent["quantity_tp2"]) if has_third else quantity - quantity_1 if has_second else 0
+    quantity_3 = quantity - quantity_1 - quantity_2
+    leg_specs = [(quantity_1, stop_1)]
+    if has_second:
+        stop_2 = float(intent.get("stop_loss_2", stop_1))
+        leg_specs.append((quantity_2, stop_2))
+    if has_third:
+        stop_3 = float(intent.get("stop_loss_3", intent.get("stop_loss_2", stop_1)))
+        leg_specs.append((quantity_3, stop_3))
+
+    legs = []
+    for index, (leg_quantity, stop_price) in enumerate(leg_specs, start=1):
+        points = current_price - stop_price if is_long else stop_price - current_price
+        if leg_quantity < 1 or points <= 0:
+            raise ValueError("entry_risk_not_computable")
+        legs.append({
+            "leg": index,
+            "quantity": leg_quantity,
+            "stop_price": stop_price,
+            "risk_points_per_contract": points,
+            "planned_risk_usd": points * MNQ_POINT_VALUE_USD * leg_quantity,
+        })
+    return legs
+
+
+def validate_apex_survival(intent: dict[str, Any], book: dict[str, Any], current_price: float) -> None:
+    context = book.get("position_building_context")
+    if not isinstance(context, dict) or context.get("account_survival_scope_known") is not True:
+        raise ValueError("account_rule_state_missing")
+    if context.get("apex_legacy_survival_applicable") is not True:
+        return
+    protection = context.get("native_protection")
+    if not isinstance(protection, dict) or protection.get("coverage_complete") is not True:
+        raise ValueError("apex_existing_protection_incomplete")
+    buffer_margin = context.get("liquidation_buffer_usd")
+    existing = protection.get("existing_protected_downside_usd")
+    if not isinstance(buffer_margin, (int, float)) or isinstance(buffer_margin, bool) or buffer_margin <= 0:
+        raise ValueError("apex_liquidation_buffer_missing")
+    if not isinstance(existing, (int, float)) or isinstance(existing, bool) or existing < 0:
+        raise ValueError("apex_existing_protected_downside_missing")
+    proposed = sum(leg["planned_risk_usd"] for leg in entry_risk_legs(intent, current_price))
+    if existing + proposed >= float(buffer_margin):
+        raise ValueError("apex_liquidation_buffer_exceeded")
+
+
+def add_group_exposure_context(packet: dict[str, Any], books: list[dict[str, Any]], current_price: float) -> None:
     """Derive Hermes capacity from the master only.
 
     Followers remain visible replication context, but user-owned ratios and
@@ -249,6 +394,34 @@ def add_group_exposure_context(packet: dict[str, Any], books: list[dict[str, Any
         book["exposure"] = exposure
         book["valid_entry_quantities"] = valid_quantities
         book["effective_master_remaining_capacity"] = max(valid_quantities, default=0)
+        observed_master = by_name.get(book["master_account"], {})
+        position = _mnq_position(observed_master)
+        protection = owned_native_protection(observed_master, current_price)
+        book["position_building_context"] = {
+            "instrument": "MNQ",
+            "point_value_usd": MNQ_POINT_VALUE_USD,
+            "tick_size": MNQ_TICK_SIZE,
+            "account_size": observed_master.get("account_size", book["master_size"]),
+            "equity": observed_master.get("equity"),
+            "liquidation_threshold": observed_master.get("liquidation_threshold"),
+            "liquidation_buffer_usd": observed_master.get("buffer_margin"),
+            "drawdown_headroom_ratio": observed_master.get("headroom_ratio"),
+            "max_drawdown": observed_master.get("max_drawdown"),
+            "prop_firm_id": master.get("prop_firm_id"),
+            "rule_status": master.get("rule_status"),
+            "current_signed_quantity": master["current_mnq_quantity"],
+            "current_average_price": position.get("average_price"),
+            "current_total_contracts": master["current_total_contracts"],
+            "contract_ceiling": master["prop_contract_ceiling"],
+            "valid_entry_quantities": valid_quantities,
+            "next_entry_role": "initial_position" if master["current_mnq_quantity"] == 0 else "same_direction_addition",
+            "native_protection": protection,
+            "account_survival_scope_known": bool(master.get("prop_firm_id") and master.get("rule_status")),
+            "apex_legacy_survival_applicable": (
+                str(master.get("prop_firm_id") or "").lower() == "apextraderfunding"
+                and str(master.get("rule_status") or "").lower() == "eval"
+            ),
+        }
 
 
 def latest_market(packet: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -592,8 +765,9 @@ def build_scenario(packet: dict[str, Any]) -> dict[str, Any]:
     books = parse_groups(str(packet.get("account_groups_tsv", "")), policy)
     if not books:
         raise ValueError("no_route_bound_groups")
-    add_group_exposure_context(packet, books)
     market, mnq = latest_market(packet)
+    current_price = float(mnq.get("current_price"))
+    add_group_exposure_context(packet, books, current_price)
     return {
         "cycle_id": packet["packet_id"],
         "packet_hash": packet.get("packet_hash"),
@@ -697,6 +871,10 @@ def validate_batch(
                 raise ValueError(f"entry_second_leg_incomplete:{index}")
             if "take_profit_3" in intent and "take_profit_2" not in intent:
                 raise ValueError(f"entry_third_leg_requires_second:{index}")
+            try:
+                validate_apex_survival(intent, book, float(scenario["market"]["current_price"]))
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"entry_survival_invalid:{index}:{error}") from error
         elif action == "MOVE_STOP":
             if not isinstance(intent.get("stop_loss"), (int, float)) or isinstance(intent.get("stop_loss"), bool):
                 raise ValueError(f"move_stop_price_required:{index}")
@@ -1095,11 +1273,16 @@ def build_prompt(
         "$1,000-$5,000 on $250k). Use it as long-run feedback for expectancy and master-quantity calibration, never as a trade quota, "
         "loss entitlement, forced per-trade sizing rule, or reason to manufacture a trade. Do not inherit any fixed or provisional quantity "
         "baseline from advisory plans: Hermes owns quantity from current evidence, structural risk, remaining opportunity, drawdown, and supplied valid quantities. "
-        "A quantity of two or more may use TP2 plus quantity_tp1; "
+        "When an entry is justified, use aggressive_case and conservative_case to compare one protected tranche, a multi-leg entry, "
+        "reserving capacity for later evidence, a later independently protected addition, and leaving exposure unchanged. Choose freely; "
+        "do not mechanically maximize size or default to one contract. A quantity of two or more may use TP2 plus quantity_tp1; "
         "Treat execution_scope as current capacity authority: a historical infrastructure or capacity rejection is not a continuing veto when "
         "the current book has valid_entry_quantities and current native state is eligible. "
         "a quantity of three or more may also use TP3 plus quantity_tp2. Each leg may have its own tighter initial stop, and every leg receives "
-        "an independent native OCO pair. Same-direction protected tranches may add; never reverse through an entry. "
+        "an independent native OCO pair. These native legs are the current scale-out mechanism; there is no partial-reduction action after entry. "
+        "Same-direction protected tranches may add at favorable or adverse prices only when current evidence still supports the thesis, existing "
+        "protection is complete, and the new tranche has its own protection. Never add merely because price moved against the position, to recover "
+        "a loss, or through a mechanical grid or martingale rule; never reverse through an entry. "
         "Return exactly one glitch.intent.batch.v1 JSON object with one ordered glitch.intent.v2 decision per supplied book. "
         "Every decision must include exactly these core keys: "
         "schema_version, intent_id, created_utc, instrument, account, operator_profile, action, confidence, "
@@ -1122,7 +1305,8 @@ def build_prompt(
         "that a strict JSON parser can load. Return no markdown fences, commentary, or trailing text. "
         "For an open position, HOLD, MOVE_STOP, MOVE_TP, a same-direction entry, and EXIT are active management decisions; HOLD is not the default. "
         "Compare every valid action after meaningful favorable excursion, failed progress, objective rejection, pivot loss, or opportunity decay. "
-        "A prior change_condition is an accountable forecast: when current evidence satisfies it, do not silently move the threshold or repeat the "
+        "A prior change_condition is an accountable forecast: current acceptance, rejection, structure, excursion, and changed evidence outrank "
+        "a stale forecast or plan. When current evidence satisfies it, do not silently move the threshold or repeat the "
         "same HOLD thesis. Either choose the newly supported action or identify the genuinely new evidence that disproves the prior trigger. "
         "Separate current timing and management pivots from hard structural invalidation; an EXIT or amendment need not wait for the catastrophe stop. "
         "After a rejected amendment, reason immediately from the authoritative unchanged bracket. Compare excursion and rollback in initial-risk "

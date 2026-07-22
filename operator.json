@@ -1,5 +1,5 @@
 {
-  "schema_version": "glitch.hermes.operator.v4",
+  "schema_version": "glitch.hermes.operator.v5",
   "operator_profile": "glitch",
   "description": "One probabilistic, self-improving Glitch operator; Glitch remains the deterministic execution and truth authority.",
   "principles": {
@@ -8,6 +8,8 @@
     "group_source": "Every live cycle derives groups, masters, followers, ratios, positions, limits, and prop rules from the Glitch packet. Hermes strategy and quantity use master limits only; user-owned follower ratios never constrain cognition.",
     "performance_objective": "Pursue approximately 0.4%-2% of master account size per trading day over time ($100-$500 on $25k; $1,000-$5,000 on $250k) without treating the target as a quota, promise, or forced risk budget.",
     "native_capabilities": "Glitch skills overlay Hermes native skills, memory, sessions, and upkeep; they do not replace them.",
+    "position_building": "Hermes compares protected native legs, reserved capacity, later evidence-based additions, and unchanged exposure. Glitch supplies capacity and enforces the Apex Legacy liquidation boundary without choosing quantity.",
+    "learning_activation": "Plans and guidance are immediate; a cognitive overlay is proposed first and gains trading influence only after later independent comparable evidence and contradiction review.",
     "no_silent_model_downgrade": true
   },
   "loops": [
@@ -53,7 +55,7 @@
     },
     {
       "id": "daily_learning",
-      "cadence": "after session",
+      "cadence": "catch up each completed Apex session containing unjournaled episodes",
       "model": "gpt-5.6-sol",
       "provider": "openai-codex",
       "reasoning_effort": "high",

@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.0
+# Glitch Hermes Profile v0.0.2.1 Candidate
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -6,7 +6,7 @@ Glitch/NinjaTrader remains the market, account, risk, execution, bracket, replic
 
 ## Requirements
 
-- Windows with NinjaTrader 8 and `Glitch_AI_v0.0.2.0.zip` installed.
+- Windows with NinjaTrader 8 and a matching Glitch AI `v0.0.2.1` candidate installed.
 - Hermes `0.18.2` or newer.
 - An OpenAI Codex OAuth account authorized by the user.
 

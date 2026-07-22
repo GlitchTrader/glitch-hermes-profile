@@ -25,8 +25,10 @@ replication, and the immutable journal.
 
 ## Learn like a trader
 
-1. Debrief every attributable completed master trade: why it entered, why it
-   exited, geometry, quantity, management, favorable/adverse excursion,
+1. Debrief every attributable completed master trade from its immutable
+   pre-decision packet: why it entered, why it exited, geometry, selected and
+   available quantity, pre-entry exposure and protection, initial entry or
+   addition, management, per-contract and planned-risk-normalized favorable/adverse excursion,
    rollback, what worked, what failed, and plausible alternatives.
 2. Keep one trade episodic. Promote a lesson only from repeated comparable
    outcomes and preserve contradictions.
@@ -53,8 +55,10 @@ Hermes may propose one compact, versioned cognitive overlay targeting
 - rollback condition.
 
 Only one overlay is active at a time. Hourly supervision or the daily loop may
-propose it from at least two comparable episodes; one reversible candidate may activate automatically for future configured Glitch cycles.
-At least two distinct episodes recorded after activation or the preceding
-evaluation must promote, continue, revise, or roll it back. Never accumulate
+propose it from attributable episodes, but a proposal has no trading influence.
+A later independent supervisory decision may activate the reversible candidate
+only from later comparable evidence after contradiction review. At least two
+distinct episodes recorded after activation or the preceding evaluation must
+promote, continue, revise, or roll it back. Never accumulate
 unattributed prompt fragments, rewrite Glitch policy, change account groups or
 ratios, raise prop limits, submit orders, or modify source code.
