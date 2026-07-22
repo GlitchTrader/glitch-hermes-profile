@@ -114,7 +114,7 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
     )
     if completed.returncode != 0:
         raise RuntimeError(f"hermes_failed:{completed.returncode}:{completed.stderr.strip()[:400]}")
-    return DIRECT.extract_json(completed.stdout)
+    return DIRECT.extract_json(completed.stdout, "glitch.hermes.learning_output.v1")
 
 
 def stable_id(kind: str, value: str) -> str:

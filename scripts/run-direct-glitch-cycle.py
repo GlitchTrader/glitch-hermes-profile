@@ -1027,7 +1027,7 @@ def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[s
     return model_packet
 
 
-def extract_json(stdout: str) -> dict[str, Any]:
+def extract_json(stdout: str, expected_schema_version: str | None = None) -> dict[str, Any]:
     text = stdout.strip()
     try:
         value = json.loads(text)
@@ -1049,17 +1049,22 @@ def extract_json(stdout: str) -> dict[str, Any]:
                     continue
                 if not isinstance(candidate, dict):
                     continue
-                if (
-                    candidate.get("schema_version") == "glitch.intent.batch.v1"
-                    or isinstance(candidate.get("decisions"), list)
-                    or isinstance(candidate.get("intents"), list)
-                ):
+                schema_matches = (
+                    candidate.get("schema_version") == expected_schema_version
+                    if expected_schema_version
+                    else candidate.get("schema_version") == "glitch.intent.batch.v1"
+                        or isinstance(candidate.get("decisions"), list)
+                        or isinstance(candidate.get("intents"), list)
+                )
+                if schema_matches:
                     candidates.append(candidate)
             if len(candidates) != 1:
                 raise original_error
             value = candidates[0]
     if not isinstance(value, dict):
         raise ValueError("hermes_output_not_object")
+    if expected_schema_version and value.get("schema_version") != expected_schema_version:
+        raise ValueError("hermes_output_schema_mismatch")
     return value
 
 
@@ -1114,7 +1119,7 @@ def invoke_hermes(profile: str, prompt: str, timeout_seconds: int) -> dict[str, 
         raise RuntimeError(f"hermes_failed:{completed.returncode}:{completed.stderr.strip()}")
     # Fresh-session stdout is the sole response; never recover from a globally
     # latest assistant message shared with other chats.
-    return extract_json(completed.stdout)
+    return extract_json(completed.stdout, "glitch.intent.batch.v1")
 
 
 def invoke_validated_batch(
