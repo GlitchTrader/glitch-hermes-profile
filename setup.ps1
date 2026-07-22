@@ -17,6 +17,29 @@ if ($profileRoot.TrimEnd('\') -ne $expectedRoot.TrimEnd('\')) {
     throw "Run setup from the installed glitch profile: $expectedRoot"
 }
 
+function Remove-InstallerGitMetadata {
+    $installerGit = [IO.Path]::GetFullPath((Join-Path $profileRoot '.git'))
+    $expectedGit = [IO.Path]::GetFullPath((Join-Path $expectedRoot '.git'))
+    if ($installerGit -ne $expectedGit) {
+        throw "Refusing unexpected installer metadata path: $installerGit"
+    }
+    if (-not (Test-Path -LiteralPath $installerGit -PathType Container)) { return }
+
+    foreach ($item in @(Get-ChildItem -LiteralPath $installerGit -Recurse -Force)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+            $item.Attributes = $item.Attributes -bxor [IO.FileAttributes]::ReadOnly
+        }
+    }
+    $rootItem = Get-Item -LiteralPath $installerGit -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+        $rootItem.Attributes = $rootItem.Attributes -bxor [IO.FileAttributes]::ReadOnly
+    }
+    Remove-Item -LiteralPath $installerGit -Recurse -Force
+    if (Test-Path -LiteralPath $installerGit) {
+        throw 'Hermes installer Git metadata could not be removed.'
+    }
+}
+
 function Assert-DistributionIntegrity {
     $manifestPath = Join-Path $profileRoot 'SHA256SUMS'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
@@ -108,6 +131,7 @@ function Ensure-CronJob {
     return [ordered]@{ name = $Name; id = $jobId; enabled = $preserveEnabled; schedule = $Schedule }
 }
 
+Remove-InstallerGitMetadata
 Assert-DistributionIntegrity
 $hermesCommand = Get-Command hermes -ErrorAction Stop
 $python = Join-Path (Split-Path $hermesCommand.Source -Parent) 'python.exe'
@@ -180,7 +204,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.2'
+    distribution_version = '0.0.2.3'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)
