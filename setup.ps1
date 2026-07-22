@@ -177,6 +177,16 @@ foreach ($stream in @(
 & hermes -p $Profile plugins enable glitch-control --no-allow-tool-override | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not enable the deterministic Glitch control plugin.' }
 
+$configPath = Join-Path $profileRoot 'config.yaml'
+$configText = [IO.File]::ReadAllText($configPath)
+$migratedConfig = [regex]::Replace(
+    $configText,
+    '(?m)^(\s*gpt-5\.6-sol:\s*)high(\s*(?:#.*)?)$',
+    '${1}medium$2')
+if ($migratedConfig -ne $configText) {
+    [IO.File]::WriteAllText($configPath, $migratedConfig, [Text.UTF8Encoding]::new($false))
+}
+
 & hermes -p $Profile gateway install --start-now --start-on-login
 if ($LASTEXITCODE -ne 0) { throw 'Could not install the supervised Glitch Hermes gateway.' }
 
@@ -193,7 +203,7 @@ try {
         -Workdir $exchange
     $learningJob = Ensure-CronJob `
         -Name 'glitch-learning-supervisor' `
-        -Schedule '*/15 * * * *' `
+        -Schedule '*/30 * * * *' `
         -Script 'launch-hermes-learning-cycle.py' `
         -Workdir $exchange
 }
@@ -204,7 +214,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.4'
+    distribution_version = '0.0.2.5'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)

@@ -1,6 +1,6 @@
 """Hermes-owned Glitch debrief, supervision, planning, and learning loop.
 
-The native 15-minute cron launches this slow worker in an independent process,
+The native 30-minute cron launches this slow worker in an independent process,
 so learning can never occupy the minute operator's scheduler lane. It calls
 Hermes only when new authoritative evidence makes a loop due. Every call uses
 an isolated `trading` session and durable Glitch/Hermes stores provide

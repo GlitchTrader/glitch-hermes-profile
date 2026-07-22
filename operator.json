@@ -25,10 +25,10 @@
     },
     {
       "id": "trade_debrief",
-      "cadence": "every 15 minutes when new completed master outcomes exist",
+      "cadence": "every 30 minutes when new completed master outcomes exist",
       "model": "gpt-5.6-sol",
       "provider": "openai-codex",
-      "reasoning_effort": "high",
+      "reasoning_effort": "medium",
       "initial_activation": "managed_by_ai_auto",
       "output_schema": "glitch.hermes.trade_episode.v1",
       "execution_authority": false
@@ -38,7 +38,7 @@
       "cadence": "hourly",
       "model": "gpt-5.6-sol",
       "provider": "openai-codex",
-      "reasoning_effort": "high",
+      "reasoning_effort": "medium",
       "initial_activation": "managed_by_ai_auto",
       "output_schema": "glitch.hermes.hourly_review.v1",
       "execution_authority": false
@@ -48,7 +48,7 @@
       "cadence": "every 300 minutes when new reviews exist",
       "model": "gpt-5.6-sol",
       "provider": "openai-codex",
-      "reasoning_effort": "high",
+      "reasoning_effort": "medium",
       "initial_activation": "managed_by_ai_auto",
       "output_schema": "glitch.hermes.portfolio_plan.v2",
       "execution_authority": false
@@ -58,7 +58,7 @@
       "cadence": "catch up each completed Apex session containing unjournaled episodes",
       "model": "gpt-5.6-sol",
       "provider": "openai-codex",
-      "reasoning_effort": "high",
+      "reasoning_effort": "medium",
       "initial_activation": "managed_by_ai_auto",
       "output_schema": "glitch.hermes.daily_journal.v1",
       "execution_authority": false
