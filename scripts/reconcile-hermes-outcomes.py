@@ -9,6 +9,9 @@ Follower misses remain replication diagnostics and never erase master learning.
 
 import argparse
 import json
+import os
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,17 +27,37 @@ def parse_utc(value):
 def read_jsonl(path):
     if not path.exists():
         return []
+    text = path.read_text(encoding="utf-8-sig", errors="strict")
+    if text and not text.endswith(("\n", "\r")):
+        raise RuntimeError(f"jsonl_incomplete_trailing_record:{path}")
     rows = []
-    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+    for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"jsonl_malformed_completed_line:{path}:{line_number}:{error.msg}") from error
         if isinstance(row, dict):
             rows.append(row)
+        else:
+            raise RuntimeError(f"jsonl_completed_line_not_object:{path}:{line_number}")
     return rows
+
+
+def write_jsonl_atomic(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            for row in rows:
+                stream.write(json.dumps(row, separators=(",", ":")) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_trade_ledger(path):
@@ -473,10 +496,97 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None):
             "evidence": intent.get("_evidence_path"),
         }
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     ordered = sorted(existing.values(), key=lambda row: (row.get("exit_utc", ""), row.get("intent_id", "")))
-    output_path.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in ordered), encoding="utf-8")
+    write_jsonl_atomic(output_path, ordered)
     return ordered
+
+
+def process_is_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def process_start_utc(pid):
+    if not isinstance(pid, int) or pid <= 0 or os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not ctypes.windll.kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation), ctypes.byref(exit_time),
+            ctypes.byref(kernel), ctypes.byref(user),
+        ):
+            return None
+        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        return datetime.fromtimestamp(
+            (ticks - 116444736000000000) / 10_000_000,
+            tz=timezone.utc,
+        )
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def process_matches_owner(pid, started_utc):
+    if not process_is_alive(pid):
+        return False
+    actual = process_start_utc(pid)
+    if actual is None:
+        return True
+    try:
+        recorded = parse_utc(started_utc)
+    except (TypeError, ValueError):
+        return False
+    return abs((actual - recorded).total_seconds()) <= 30
+
+
+def acquire_lock(path, unreadable_grace_seconds=15):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                owner = json.loads(path.read_text(encoding="utf-8"))
+                if process_matches_owner(int(owner.get("pid", 0)), owner.get("started_utc")):
+                    return False
+                path.unlink()
+                continue
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                if path.exists() and time.time() - path.stat().st_mtime <= unreadable_grace_seconds:
+                    return False
+                path.unlink(missing_ok=True)
+                continue
+        else:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                started = process_start_utc(os.getpid())
+                json.dump({
+                    "pid": os.getpid(),
+                    "started_utc": (started or datetime.now(timezone.utc)).isoformat(),
+                }, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            return True
+    return False
 
 
 def main():
@@ -489,8 +599,15 @@ def main():
     if not args.evidence_root and not args.decision_root:
         parser.error("one of --evidence-root or --decision-root is required")
     output = args.output or args.glitch_data / "intents" / "hermes-trade-outcomes.jsonl"
-    rows = reconcile(args.glitch_data, args.evidence_root, output, args.decision_root)
-    print(json.dumps({"schema_version": "glitch.hermes.outcome_reconcile.v1", "outcomes": len(rows), "output": str(output)}))
+    lock_path = output.parent / "outcome-reconcile.lock"
+    if not acquire_lock(lock_path):
+        print(json.dumps({"schema_version": "glitch.hermes.outcome_reconcile.v1", "status": "owned_by_live_process"}))
+        return
+    try:
+        rows = reconcile(args.glitch_data, args.evidence_root, output, args.decision_root)
+        print(json.dumps({"schema_version": "glitch.hermes.outcome_reconcile.v1", "outcomes": len(rows), "output": str(output)}))
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

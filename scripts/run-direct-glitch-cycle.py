@@ -35,14 +35,13 @@ ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
     "take_profit_2", "stop_loss_2", "quantity_tp1",
     "take_profit_3", "stop_loss_3", "quantity_tp2",
 }
-MOVE_STOP_FIELDS = {"stop_loss"}
-MOVE_TP_FIELDS = {"take_profit_1", "stop_loss"}
+LEG_UPDATE_FIELDS = {"leg_id", "stop_loss", "take_profit"}
 DECISION_FIELDS = {
     "schema_version", "intent_id", "created_utc", "instrument", "account",
     "operator_profile", "action", "confidence", "snapshot_hash", "model_version",
     "prompt_version", "reason", "decision_audit",
 }
-ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS
+ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS | {"protection_updates"}
 DECISION_AUDIT_FIELDS = {
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
     "decisive_evidence", "disconfirming_evidence", "change_condition", "final_choice",
@@ -213,6 +212,21 @@ def _remaining_order_quantity(order: dict[str, Any]) -> int | None:
     return rounded if remaining > 0 and abs(remaining - rounded) < 1e-9 else None
 
 
+def _glitch_leg_id(name: str, role: str) -> str | None:
+    prefix = "GLT-AI-S-" if role == "stop" else "GLT-AI-T-"
+    if not name.upper().startswith(prefix):
+        return None
+    parts = name[len(prefix):].split("-")
+    if len(parts) < 2 or not parts[0]:
+        return None
+    try:
+        int(parts[1])
+        leg_index = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        return None
+    return f"{parts[0]}:{leg_index}"
+
+
 def owned_native_protection(account: dict[str, Any], current_price: float) -> dict[str, Any]:
     signed_quantity = _account_mnq_quantity(account)
     expected = abs(signed_quantity)
@@ -242,11 +256,13 @@ def owned_native_protection(account: dict[str, Any], current_price: float) -> di
         if root != "MNQ" or role is None:
             continue
         remaining = _remaining_order_quantity(order)
-        if remaining is None:
+        leg_id = _glitch_leg_id(name, role)
+        if remaining is None or leg_id is None:
             valid = False
             continue
         compact_orders.append({
             "name": name,
+            "leg_id": leg_id,
             "role": role,
             "remaining_quantity": remaining,
             "stop_price": order.get("stop_price"),
@@ -475,26 +491,22 @@ def _is_learning_eligible_outcome(line: str) -> bool:
 
 
 def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[str]]:
-    today = datetime.now(timezone.utc).date().isoformat()
     result: dict[str, list[str]] = {"received": [], "decisions": []}
     executions = glitch_data / "intents" / "executions.jsonl"
     execution_lines = executions.read_text(encoding="utf-8", errors="replace").splitlines() if executions.is_file() else []
-    result["executions"] = [
-        line for line in execution_lines if _is_current_utc_record(line, today)
-    ][-max_lines:]
+    result["executions"] = [line for line in execution_lines if line.strip()][-max_lines:]
 
     decisions = glitch_data / "intents" / "decisions.jsonl"
     decision_lines = decisions.read_text(encoding="utf-8", errors="replace").splitlines() if decisions.is_file() else []
-    result["decisions"] = [
-        line for line in decision_lines if _is_current_utc_record(line, today)
-    ][-max_lines:]
+    result["decisions"] = [line for line in decision_lines if line.strip()][-max_lines:]
 
     outcomes = glitch_data / "intents" / "hermes-trade-outcomes.jsonl"
     outcome_lines = outcomes.read_text(encoding="utf-8", errors="replace").splitlines() if outcomes.is_file() else []
     result["outcomes"] = [line for line in outcome_lines if _is_learning_eligible_outcome(line)][-max_lines:]
     # Journal.tsv is a long-lived human ledger. It remains on disk and in
     # Hermes memory, but is deliberately excluded from the active entry gate;
-    # current-day execution/outcome JSONL is the authoritative capacity input.
+    # Bounded recent execution/outcome JSONL preserves Apex-session continuity
+    # across UTC midnight without turning the human journal into an entry gate.
     result["journal"] = []
     return result
 
@@ -811,7 +823,7 @@ def validate_batch(
         unknown = sorted(set(intent).difference(ALLOWED_DECISION_FIELDS))
         if unknown:
             raise ValueError(f"intent_unknown_fields:{index}:{','.join(unknown)}")
-        if intent.get("schema_version") != "glitch.intent.v2":
+        if intent.get("schema_version") != "glitch.intent.v3":
             raise ValueError(f"intent_schema_version_invalid:{index}")
         for field in (
             "intent_id", "created_utc", "instrument", "account", "operator_profile",
@@ -847,6 +859,8 @@ def validate_batch(
         if audit["final_choice"] != action:
             raise ValueError(f"decision_audit_choice_mismatch:{index}")
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
+            if "protection_updates" in intent:
+                raise ValueError(f"entry_contains_protection_updates:{index}")
             if not REQUIRED_ENTRY_FIELDS.issubset(intent) or intent.get("order_type") != "MARKET":
                 raise ValueError(f"protected_market_entry_required:{index}")
             quantity = intent.get("quantity")
@@ -876,21 +890,14 @@ def validate_batch(
             except (KeyError, TypeError, ValueError) as error:
                 raise ValueError(f"entry_survival_invalid:{index}:{error}") from error
         elif action == "MOVE_STOP":
-            if not isinstance(intent.get("stop_loss"), (int, float)) or isinstance(intent.get("stop_loss"), bool):
-                raise ValueError(f"move_stop_price_required:{index}")
-            if any(field in intent for field in ENTRY_FIELDS.difference(MOVE_STOP_FIELDS)):
+            if any(field in intent for field in ENTRY_FIELDS):
                 raise ValueError(f"move_stop_contains_entry_fields:{index}")
+            validate_protection_updates(intent, book, index, require_target=False)
         elif action == "MOVE_TP":
-            if (not isinstance(intent.get("take_profit_1"), (int, float))
-                    or isinstance(intent.get("take_profit_1"), bool)):
-                raise ValueError(f"move_tp_price_required:{index}")
-            if ("stop_loss" in intent
-                    and (not isinstance(intent.get("stop_loss"), (int, float))
-                         or isinstance(intent.get("stop_loss"), bool))):
-                raise ValueError(f"move_tp_stop_price_invalid:{index}")
-            if any(field in intent for field in ENTRY_FIELDS.difference(MOVE_TP_FIELDS)):
+            if any(field in intent for field in ENTRY_FIELDS):
                 raise ValueError(f"move_tp_contains_entry_fields:{index}")
-        elif any(field in intent for field in ENTRY_FIELDS):
+            validate_protection_updates(intent, book, index, require_target=True)
+        elif any(field in intent for field in ENTRY_FIELDS | {"protection_updates"}):
             raise ValueError(f"non_entry_contains_entry_fields:{index}")
     if directive and directive.get("directive_type") == "forced_entry":
         expected = "ENTER_LONG" if directive.get("bias") == "long" else "ENTER_SHORT"
@@ -922,15 +929,13 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
             if action in ACTION_ALIASES:
                 action = ACTION_ALIASES[action]
                 intent["action"] = action
-            if action == "MOVE_STOP":
-                for field in ENTRY_FIELDS.difference(MOVE_STOP_FIELDS):
-                    intent.pop(field, None)
-            elif action == "MOVE_TP":
-                for field in ENTRY_FIELDS.difference(MOVE_TP_FIELDS):
+            if action in {"MOVE_STOP", "MOVE_TP"}:
+                for field in ENTRY_FIELDS:
                     intent.pop(field, None)
             elif action not in {"ENTER_LONG", "ENTER_SHORT"}:
                 for field in ENTRY_FIELDS:
                     intent.pop(field, None)
+                intent.pop("protection_updates", None)
     if scenario is not None:
         ordered: list[dict[str, Any]] = []
         for book in scenario["books"]:
@@ -1027,6 +1032,47 @@ def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[s
     return model_packet
 
 
+def validate_protection_updates(
+    intent: dict[str, Any],
+    book: dict[str, Any],
+    index: int,
+    *,
+    require_target: bool,
+) -> None:
+    updates = intent.get("protection_updates")
+    if not isinstance(updates, list) or not updates:
+        raise ValueError(f"protection_updates_required:{index}")
+    context = book.get("position_building_context")
+    protection = context.get("native_protection") if isinstance(context, dict) else None
+    orders = protection.get("orders") if isinstance(protection, dict) else None
+    known_legs = {
+        order.get("leg_id")
+        for order in orders or []
+        if isinstance(order, dict) and isinstance(order.get("leg_id"), str)
+    }
+    seen: set[str] = set()
+    for update_index, update in enumerate(updates):
+        if not isinstance(update, dict):
+            raise ValueError(f"protection_update_not_object:{index}:{update_index}")
+        allowed = {"leg_id", "take_profit", "stop_loss"} if require_target else {"leg_id", "stop_loss"}
+        if set(update) != allowed and not (require_target and set(update) == {"leg_id", "take_profit"}):
+            raise ValueError(f"protection_update_fields_invalid:{index}:{update_index}")
+        leg_id = update.get("leg_id")
+        if not isinstance(leg_id, str) or not leg_id or leg_id in seen:
+            raise ValueError(f"protection_update_leg_invalid:{index}:{update_index}")
+        if known_legs and leg_id not in known_legs:
+            raise ValueError(f"protection_update_leg_unknown:{index}:{update_index}")
+        seen.add(leg_id)
+        required_price = "take_profit" if require_target else "stop_loss"
+        price = update.get(required_price)
+        if (not isinstance(price, (int, float)) or isinstance(price, bool)
+                or not math.isfinite(float(price))):
+            raise ValueError(f"protection_update_price_invalid:{index}:{update_index}")
+        if "stop_loss" in update:
+            stop = update["stop_loss"]
+            if (not isinstance(stop, (int, float)) or isinstance(stop, bool)
+                    or not math.isfinite(float(stop))):
+                raise ValueError(f"protection_update_stop_invalid:{index}:{update_index}")
 def extract_json(stdout: str, expected_schema_version: str | None = None) -> dict[str, Any]:
     text = stdout.strip()
     try:
@@ -1197,13 +1243,63 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
     return receipt
 
 
-def receipt_requires_new_packet_retry(receipt: dict[str, Any]) -> bool:
+def receipt_classification(receipt: dict[str, Any]) -> str:
+    if not receipt.get("complete", False):
+        return "transport_uncertain"
     for item in receipt.get("results", []):
         result = item.get("result") if isinstance(item, dict) else None
-        body = result.get("body") if isinstance(result, dict) else None
-        if isinstance(body, dict) and body.get("executor") == "failed":
-            return True
-    return not receipt.get("complete", False)
+        if not isinstance(result, dict):
+            return "transport_uncertain"
+        status = result.get("http_status")
+        body = result.get("body")
+        if not isinstance(status, int):
+            return "transport_uncertain"
+        if status >= 400:
+            return "terminal_rejection"
+        if isinstance(body, dict):
+            executor = body.get("executor")
+            executor_code = body.get("executor_code")
+            if executor == "failed":
+                return "terminal_rejection"
+            if executor == "skipped" and executor_code != "no_op_action":
+                return "terminal_rejection"
+    return "successful"
+
+
+def receipt_requires_new_packet_retry(receipt: dict[str, Any]) -> bool:
+    return receipt_classification(receipt) == "terminal_rejection"
+
+
+def mark_attempt_from_receipt(exchange: Path, cycle_id: str, receipt: dict[str, Any]) -> None:
+    path = model_attempt_path(exchange, cycle_id)
+    if not path.is_file():
+        return
+    attempt = read_json(path)
+    classification = receipt_classification(receipt)
+    if classification == "terminal_rejection":
+        attempt["status"] = "execution_failed"
+    elif classification == "transport_uncertain":
+        attempt["status"] = "delivery_incomplete"
+    else:
+        attempt["status"] = "completed"
+    attempt["completed_utc"] = utc_now()
+    write_json_atomic(path, attempt)
+
+
+def pending_outbox(exchange: Path) -> tuple[str, Path] | None:
+    outbox_directory = exchange / "hermes" / "outbox"
+    if not outbox_directory.is_dir():
+        return None
+    for path in sorted(outbox_directory.glob("*.json")):
+        receipt_path = exchange / "hermes" / "receipts" / path.name
+        if not receipt_path.is_file():
+            return path.stem, path
+        try:
+            if receipt_classification(read_json(receipt_path)) == "transport_uncertain":
+                return path.stem, path
+        except (OSError, ValueError):
+            return path.stem, path
+    return None
 
 
 def build_prompt(
@@ -1219,7 +1315,7 @@ def build_prompt(
         action = "HOLD" if int(master.get("current_mnq_quantity", 0) or 0) != 0 else "NOTHING"
         route = str(book["route_id"])
         decisions.append({
-            "schema_version": "glitch.intent.v2",
+            "schema_version": "glitch.intent.v3",
             "intent_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"glitch:{scenario['cycle_id']}:{route}")),
             "created_utc": utc_now(),
             "instrument": "MNQ",
@@ -1229,7 +1325,7 @@ def build_prompt(
             "confidence": 0.5,
             "snapshot_hash": str(scenario["market"]["snapshot_hash"]),
             "model_version": CORE_MODEL,
-            "prompt_version": "direct-v2",
+            "prompt_version": "direct-v3",
             "reason": "Replace with the current evidence-based decision.",
             "decision_audit": {
                 "bull_case": "Replace with compact bullish evidence.",
@@ -1259,6 +1355,7 @@ def build_prompt(
     return (
         "Apply the Glitch SOUL and the five loaded trading skills to CURRENT_CYCLE. Glitch and NinjaTrader facts in the supplied "
         "packet and ledger outrank memory and interpretation. The timeframe rows are live in-progress observations: use 1m/5m "
+        "Packet is_contiguous, observed_span_minutes, and missing_minute_ids describe observation continuity. Treat gaps as explicit uncertainty evidence, not as an automatic no-trade rule. "
         "for timing and noise, 15m/60m for regime context, and never treat a higher-timeframe row as a completed-candle confirmation. "
         "Confirmation is probabilistic: infer it from the five-frame price path and available structure; a closed candle is not required. "
         "Missing order flow is neutral, not evidence against a trade. When flat, predict and trade the most likely next five minutes, not "
@@ -1283,12 +1380,12 @@ def build_prompt(
         "do not mechanically maximize size or default to one contract. A quantity of two or more may use TP2 plus quantity_tp1; "
         "Treat execution_scope as current capacity authority: a historical infrastructure or capacity rejection is not a continuing veto when "
         "the current book has valid_entry_quantities and current native state is eligible. "
-        "a quantity of three or more may also use TP3 plus quantity_tp2. Each leg may have its own tighter initial stop, and every leg receives "
+        "a quantity of three or more may also use TP3 plus quantity_tp2. Each leg may have independently chosen valid stop and target geometry, and every leg receives "
         "an independent native OCO pair. These native legs are the current scale-out mechanism; there is no partial-reduction action after entry. "
         "Same-direction protected tranches may add at favorable or adverse prices only when current evidence still supports the thesis, existing "
         "protection is complete, and the new tranche has its own protection. Never add merely because price moved against the position, to recover "
         "a loss, or through a mechanical grid or martingale rule; never reverse through an entry. "
-        "Return exactly one glitch.intent.batch.v1 JSON object with one ordered glitch.intent.v2 decision per supplied book. "
+        "Return exactly one glitch.intent.batch.v1 JSON object with one ordered glitch.intent.v3 decision per supplied book. "
         "Every decision must include exactly these core keys: "
         "schema_version, intent_id, created_utc, instrument, account, operator_profile, action, confidence, "
         "snapshot_hash, model_version, prompt_version, reason, decision_audit. Use only actions "
@@ -1300,9 +1397,10 @@ def build_prompt(
         "replace its placeholder rationale and choose the evidence-based action and matching nested final_choice. For NOTHING, HOLD, and EXIT omit quantity, order_type, stop_loss, "
         "and take_profit_1. Keep reason to at most 24 words and each decision_audit value to at most 18 words. "
         "For ENTER_LONG/ENTER_SHORT use order_type=MARKET and include stop_loss/take_profit_1. Optional scale-out fields are "
-        "take_profit_2, quantity_tp1, stop_loss_2, take_profit_3, quantity_tp2, and stop_loss_3. For MOVE_STOP include only "
-        "stop_loss and tighten the active Glitch-owned native stops; never loosen risk. For MOVE_TP include take_profit_1 and optionally "
-        "stop_loss: move every remaining Glitch-owned target to that absolute price and, when supplied, tighten every remaining stop. "
+        "take_profit_2, quantity_tp1, stop_loss_2, take_profit_3, quantity_tp2, and stop_loss_3. For MOVE_STOP omit all entry fields and include "
+        "protection_updates: a non-empty array of {leg_id,stop_loss} objects selected from active_trade_state native protection. Unspecified legs remain unchanged. "
+        "For MOVE_TP omit all entry fields and include protection_updates: a non-empty array of {leg_id,take_profit} objects, each optionally also containing stop_loss. "
+        "A stop may tighten or move farther away when current evidence supports it; Glitch independently enforces protective market side and Apex liquidation survival. "
         "A MOVE_TP target may extend or reduce remaining opportunity but must stay on the live profit side. Echo cycle_id and account/operator_profile exactly. "
         "snapshot_hash must be a JSON string copied exactly from the MNQ market snapshot, even when it contains only digits. "
         "Use the top-level key decisions, never intents. Close every intent object before closing the decisions "
@@ -1414,20 +1512,24 @@ def should_invoke_luna(
     positioned = scoped_master_is_positioned(packet, scenario)
     if not positioned and not any_flat_book_is_entry_eligible(packet, scenario):
         return False
-    return (
-        window.minute % 5 == 0
-        or directive is not None
-        or positioned
-        or prior_failed_attempt_requires_retry(exchange, packet)
-    )
+    if directive is not None or positioned:
+        return True
+    prior = latest_prior_attempt(exchange, packet)
+    if prior is None:
+        return True
+    prior_window, attempt = prior
+    if attempt.get("status") in {"started", "failed", "execution_failed", "delivery_incomplete"}:
+        return True
+    return (window - prior_window).total_seconds() >= 300
 
 
-def prior_failed_attempt_requires_retry(exchange: Path, packet: dict[str, Any]) -> bool:
-    """Retry the latest failed decision on the next available pre-boundary packet."""
+def latest_prior_attempt(
+    exchange: Path,
+    packet: dict[str, Any],
+) -> tuple[datetime, dict[str, Any]] | None:
     attempts = exchange / "hermes" / "model-attempts"
     if not attempts.is_dir():
-        return False
-    current_window = packet_window_utc(packet)
+        return None
     current_id = str(packet.get("packet_id", ""))
     for path in sorted(attempts.glob("*.json"), reverse=True):
         if path.stem >= current_id:
@@ -1437,9 +1539,8 @@ def prior_failed_attempt_requires_retry(exchange: Path, packet: dict[str, Any]) 
             attempt = read_json(path)
         except (OSError, ValueError, TypeError):
             continue
-        age = (current_window - prior_window).total_seconds()
-        return attempt.get("status") in {"failed", "execution_failed", "delivery_incomplete"} and 0 < age < 300
-    return False
+        return prior_window, attempt
+    return None
 
 
 def read_packet_after_imminent_rollover(packet_path: Path, wait_seconds: float) -> dict[str, Any]:
@@ -1464,39 +1565,6 @@ def read_packet_after_imminent_rollover(packet_path: Path, wait_seconds: float) 
     return packet
 
 
-def wait_for_newer_packet(packet_path: Path, prior_packet_id: str, wait_seconds: float) -> bool:
-    deadline = time.monotonic() + max(0.0, wait_seconds)
-    while True:
-        try:
-            candidate = read_json(packet_path)
-            candidate_id = str(candidate.get("packet_id", ""))
-            if candidate_id and candidate_id != prior_packet_id and packet_is_current(candidate):
-                return True
-        except (OSError, ValueError):
-            pass
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        time.sleep(min(0.1, remaining))
-
-
-def run_with_next_packet_fallback(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int:
-    packet_path = exchange / "glitch" / "latest-decision-packet.json"
-    try:
-        prior_packet_id = str(read_json(packet_path).get("packet_id", ""))
-    except (OSError, ValueError):
-        prior_packet_id = ""
-    try:
-        result = run_once(args, glitch_data, exchange)
-    except Exception:
-        if wait_for_newer_packet(packet_path, prior_packet_id, args.error_retry_wait_seconds):
-            return run_once(args, glitch_data, exchange)
-        raise
-    if result != 0 and wait_for_newer_packet(packet_path, prior_packet_id, args.error_retry_wait_seconds):
-        return run_once(args, glitch_data, exchange)
-    return result
-
-
 def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int:
     if not trading_runtime_enabled(glitch_data):
         return 0
@@ -1515,11 +1583,36 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         raise ValueError("packet_id_missing")
     if not packet_is_current(packet):
         return 0
+
+    pending = pending_outbox(exchange)
+    if pending is not None:
+        pending_id, pending_path = pending
+        original_packet_path = exchange / "glitch" / "decision-packets" / f"{pending_id}.json"
+        original_packet = packet if pending_id == packet_id else read_json(original_packet_path)
+        original_scenario = build_scenario(original_packet)
+        pending_batch = normalize_batch(read_json(pending_path), original_scenario)
+        validate_batch(pending_batch, original_scenario)
+        if args.dry_run:
+            print(json.dumps({
+                "cycle_id": pending_id,
+                "decision_count": len(pending_batch["decisions"]),
+                "submitted": False,
+                "reused_outbox": True,
+            }))
+            return 0
+        consume_outbox_directive(exchange, pending_id)
+        pending_receipt = submit_batch(pending_batch, glitch_data, exchange)
+        mark_attempt_from_receipt(exchange, pending_id, pending_receipt)
+        print(json.dumps(pending_receipt, separators=(",", ":")))
+        return 1 if receipt_classification(pending_receipt) != "successful" else 0
+
     receipt_path = exchange / "hermes" / "receipts" / f"{packet_id}.json"
     outbox_path = exchange / "hermes" / "outbox" / f"{packet_id}.json"
     if receipt_path.is_file():
         receipt = read_json(receipt_path)
-        if receipt.get("complete"):
+        classification = receipt_classification(receipt)
+        if classification != "transport_uncertain":
+            mark_attempt_from_receipt(exchange, packet_id, receipt)
             return 0
 
     scenario = build_scenario(packet)
@@ -1537,8 +1630,9 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
             return 0
         consume_outbox_directive(exchange, packet_id)
         receipt = submit_batch(batch, glitch_data, exchange)
+        mark_attempt_from_receipt(exchange, packet_id, receipt)
         print(json.dumps(receipt, separators=(",", ":")))
-        return 0 if receipt["complete"] else 1
+        return 0 if receipt_classification(receipt) == "successful" else 1
     if receipt_path.is_file():
         raise ValueError("receipt_without_outbox")
 
@@ -1612,14 +1706,105 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         print(json.dumps({"cycle_id": packet_id, "decision_count": len(batch["decisions"]), "submitted": False}))
         return 0
     receipt = submit_batch(batch, glitch_data, exchange)
-    retry_on_next_packet = receipt_requires_new_packet_retry(receipt)
-    if retry_on_next_packet:
-        attempt = read_json(attempt_path)
-        attempt["status"] = "execution_failed" if receipt.get("complete") else "delivery_incomplete"
-        attempt["completed_utc"] = utc_now()
-        write_json_atomic(attempt_path, attempt)
+    mark_attempt_from_receipt(exchange, packet_id, receipt)
+    classification = receipt_classification(receipt)
     print(json.dumps(receipt, separators=(",", ":")))
-    return 1 if retry_on_next_packet else 0
+    return 1 if classification != "successful" else 0
+
+
+def process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def process_start_utc(pid: int) -> datetime | None:
+    if pid <= 0 or sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not ctypes.windll.kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        return datetime.fromtimestamp(
+            (ticks - 116444736000000000) / 10_000_000,
+            tz=timezone.utc,
+        )
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def process_matches_owner(pid: int, started_utc: Any) -> bool:
+    if not process_is_alive(pid):
+        return False
+    actual = process_start_utc(pid)
+    if actual is None:
+        return True
+    try:
+        recorded = datetime.fromisoformat(str(started_utc).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return abs((actual - recorded).total_seconds()) <= 30
+
+
+def acquire_owner_lock(lock_path: Path, unreadable_grace_seconds: int = 15) -> bool:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                owner = read_json(lock_path)
+                if process_matches_owner(int(owner.get("pid", 0)), owner.get("started_utc")):
+                    return False
+                lock_path.unlink()
+                continue
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                try:
+                    if time.time() - lock_path.stat().st_mtime <= unreadable_grace_seconds:
+                        return False
+                    lock_path.unlink()
+                    continue
+                except (FileNotFoundError, OSError):
+                    continue
+        else:
+            try:
+                started = process_start_utc(os.getpid())
+                payload = json.dumps({
+                    "pid": os.getpid(),
+                    "started_utc": (started or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z"),
+                }, separators=(",", ":"))
+                os.write(descriptor, payload.encode("utf-8"))
+            finally:
+                os.close(descriptor)
+            return True
+    return False
 
 
 def main() -> int:
@@ -1628,30 +1813,17 @@ def main() -> int:
     parser.add_argument("--profile", default="glitch")
     parser.add_argument("--timeout-seconds", type=int, default=240)
     parser.add_argument("--packet-rollover-wait-seconds", type=float, default=5)
-    parser.add_argument("--error-retry-wait-seconds", type=float, default=75)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     glitch_data = args.glitch_data.resolve()
     exchange = glitch_data / "hermes" / "exchange"
     lock_path = exchange / "hermes" / "direct-cycle.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if not acquire_owner_lock(lock_path):
+        return 0
     try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        try:
-            stale_after = max(args.timeout_seconds * 2, 600)
-            if time.time() - lock_path.stat().st_mtime <= stale_after:
-                return 0
-            lock_path.unlink()
-            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except (FileNotFoundError, FileExistsError):
-            return 0
-    try:
-        os.write(descriptor, str(os.getpid()).encode("ascii"))
-        return run_with_next_packet_fallback(args, glitch_data, exchange)
+        return run_once(args, glitch_data, exchange)
     finally:
-        os.close(descriptor)
         lock_path.unlink(missing_ok=True)
 
 

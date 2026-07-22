@@ -16,4 +16,4 @@ Judge bull, bear, and flat cases from current observable evidence. Aggressive an
 7. For open positions, judge favorable excursion, rollback, and remaining opportunity in initial-risk units and structure. Native stops are catastrophe protection, not passive management.
 8. `HOLD` carries the same burden of proof as every other action. When current evidence satisfies the prior review's `change_condition`, do not move the threshold and repeat the same thesis; choose the newly supported action or identify genuinely new evidence that invalidates the old trigger.
 
-Choose `ENTER_LONG`, `ENTER_SHORT`, `HOLD`, `MOVE_STOP`, `MOVE_TP`, `EXIT`, or `NOTHING`. `MOVE_TP` may extend or reduce remaining opportunity as conditions change and may carry a tighter stop. Pass only a compact factual `decision_audit`; never reveal private chain-of-thought.
+Choose `ENTER_LONG`, `ENTER_SHORT`, `HOLD`, `MOVE_STOP`, `MOVE_TP`, `EXIT`, or `NOTHING`. Exact-leg `MOVE_TP` may extend or reduce selected remaining opportunities and may carry an exact-leg stop amendment. Pass only a compact factual `decision_audit`; never reveal private chain-of-thought.
