@@ -14,17 +14,17 @@ if ($Profile -ne 'glitch') {
 
 $profileRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'hermes\profiles\glitch'))
 $glitchRoot = [IO.Path]::GetFullPath($GlitchData)
-$snapshotPath = Join-Path $glitchRoot 'snapshots\portfolio\latest.json'
 $controlStatePath = Join-Path $glitchRoot 'hermes\control-state.json'
 $jobsPath = Join-Path $profileRoot 'cron\jobs.json'
 $setupPath = Join-Path $profileRoot 'setup.ps1'
+$distributionPath = Join-Path $profileRoot 'distribution.yaml'
 
 foreach ($requiredRoot in @($profileRoot, $glitchRoot)) {
     if (-not (Test-Path -LiteralPath $requiredRoot -PathType Container)) {
         throw "Required reset root is missing: $requiredRoot"
     }
 }
-foreach ($requiredFile in @($snapshotPath, $controlStatePath, $setupPath)) {
+foreach ($requiredFile in @($controlStatePath, $setupPath, $distributionPath)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required reset precondition file is missing: $requiredFile"
     }
@@ -77,22 +77,6 @@ if ($enabledJobs.Count -gt 0) {
     throw ('Every Hermes job must be paused before reset: ' + (($enabledJobs | ForEach-Object name) -join ', '))
 }
 
-$portfolio = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json
-$snapshotUtc = [datetime]::Parse([string]$portfolio.created_utc).ToUniversalTime()
-if (([datetime]::UtcNow - $snapshotUtc).TotalMinutes -gt 3) {
-    throw "Portfolio snapshot is stale: $($portfolio.created_utc)"
-}
-$accounts = @($portfolio.accounts)
-if ($accounts.Count -eq 0) {
-    throw 'Portfolio snapshot contains no accounts.'
-}
-$unsafeAccounts = @($accounts | Where-Object {
-    @($_.positions).Count -gt 0 -or [int]$_.working_orders -gt 0
-})
-if ($unsafeAccounts.Count -gt 0) {
-    throw ('Every observed account must be flat and order-free: ' + (($unsafeAccounts | ForEach-Object account) -join ', '))
-}
-
 $profileTargets = @(
     'audio_cache',
     'cache',
@@ -117,7 +101,7 @@ $profileBackupTargets = @(
         Where-Object { $_.Name -match '^(memories|skills)\.pre-' -or $_.Name -match '^(SOUL|\.env)\.pre-' } |
         ForEach-Object FullName
 )
-$glitchTargets = @(
+$backendTargets = @(
     'intents',
     'hermes\exchange',
     'snapshots',
@@ -125,38 +109,34 @@ $glitchTargets = @(
     'hermes-archives',
     'replay',
     'Telemetry',
-    'Journal.tsv',
-    'TradeLedger.tsv',
-    'CriticalWarnings.tsv',
-    'RiskLocks.tsv',
-    'AccountPeaks.tsv',
-    'AnalyticsBridgeCache.json',
     'hermes\control-commands.jsonl',
     'hermes\cycles.jsonl',
     'hermes\epoch.json'
 )
 
 $preview = [ordered]@{
-    schema_version = 'glitch.hermes.trading_epoch_reset.v3'
+    schema_version = 'glitch.hermes.trading_epoch_reset.v4'
     mode = if ($Apply) { 'apply' } else { 'preview' }
     profile = $Profile
-    portfolio_snapshot_utc = $portfolio.created_utc
-    observed_accounts = $accounts.Count
-    all_accounts_flat_and_order_free = $true
     all_jobs_paused = $true
+    native_accounts_inspected = $false
     profile_targets = $profileTargets.Count + $profileBackupTargets.Count
-    glitch_targets = $glitchTargets.Count
+    backend_targets = $backendTargets.Count
     preserved = @(
         'Hermes authentication and profile configuration',
         'distributed SOUL, skills, plugin, scripts, and setup',
         'Glitch AI policy, account groups, ratios, runtime policy, licensing, and UI settings',
-        'NinjaTrader native accounts and credentials'
+        'Glitch Journal, TradeLedger, CriticalWarnings, RiskLocks, AccountPeaks, and AnalyticsBridgeCache',
+        'NinjaTrader native accounts, positions, orders, and credentials'
     )
     destroyed = @(
         'all Hermes sessions and native memories',
         'all Hermes cron jobs and cron execution history',
-        'all Glitch decision, intent, execution, outcome, learning, prompt, packet, and snapshot history',
-        'Glitch Journal, TradeLedger, warnings, locks, analytics cache, and AccountPeaks'
+        'all Hermes decision, intent, execution, outcome, learning, prompt, packet, and snapshot backend history'
+    )
+    operator_handoff = @(
+        'Reset the intended NinjaTrader accounts.',
+        'Use Glitch Reset Data to clear Journal and Summary statistics.'
     )
     backup_created = $false
 }
@@ -183,7 +163,7 @@ foreach ($target in $profileBackupTargets) {
         $removed.Add($target)
     }
 }
-foreach ($relative in $glitchTargets) {
+foreach ($relative in $backendTargets) {
     $target = Join-Path $glitchRoot $relative
     if (Remove-ResetTarget -Path $target -Root $glitchRoot) {
         $removed.Add($target)
@@ -191,14 +171,22 @@ foreach ($relative in $glitchTargets) {
 }
 
 $epochId = [guid]::NewGuid().ToString()
+$distributionVersion = [regex]::Match(
+    (Get-Content -LiteralPath $distributionPath -Raw),
+    '(?m)^version:\s*[''"]?([^''"\r\n]+)'
+).Groups[1].Value.Trim()
+if ([string]::IsNullOrWhiteSpace($distributionVersion)) {
+    throw 'Could not resolve the installed profile distribution version.'
+}
 $epochPath = Join-Path $glitchRoot 'hermes\epoch.json'
 New-Item -ItemType Directory -Force -Path (Split-Path $epochPath -Parent) | Out-Null
 [ordered]@{
     schema_version = 'glitch.hermes.epoch.v1'
     epoch_id = $epochId
     reset_utc = [datetime]::UtcNow.ToString('o')
-    profile_distribution = '0.0.2.9'
+    profile_distribution = $distributionVersion
     prior_state_preserved = $false
+    reset_scope = 'hermes_backend_only'
 } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $epochPath -Encoding utf8
 
 & powershell -NoProfile -ExecutionPolicy Bypass -File $setupPath -Profile $Profile -GlitchData $glitchRoot | Out-Null
@@ -236,15 +224,15 @@ if ($memoryFiles.Count -gt 0 -or $requestDumps.Count -gt 0) {
 }
 
 [ordered]@{
-    schema_version = 'glitch.hermes.trading_epoch_reset.v3'
+    schema_version = 'glitch.hermes.trading_epoch_reset.v4'
     mode = 'applied'
     reset_utc = [datetime]::UtcNow.ToString('o')
     epoch_id = $epochId
     profile = $Profile
-    distribution_version = '0.0.2.9'
+    distribution_version = $distributionVersion
     removed_targets = $removed.Count
     backup_created = $false
-    all_accounts_were_flat_and_order_free = $true
+    native_accounts_inspected = $false
     memory_files_with_content = $memoryFiles.Count
     request_dumps = $requestDumps.Count
     cron_jobs = @($freshJobs | ForEach-Object {
@@ -255,5 +243,17 @@ if ($memoryFiles.Count -gt 0 -or $requestDumps.Count -gt 0) {
         }
     })
     ai_remains_paused = $true
-    addon_reload_required_for_account_peak_memory = $true
+    user_data_preserved = @(
+        'Journal.tsv',
+        'TradeLedger.tsv',
+        'CriticalWarnings.tsv',
+        'RiskLocks.tsv',
+        'AccountPeaks.tsv',
+        'AnalyticsBridgeCache.json',
+        'NinjaTrader accounts, positions, and orders'
+    )
+    operator_handoff = @(
+        'Reset the intended NinjaTrader accounts.',
+        'Use Glitch Reset Data to clear Journal and Summary statistics.'
+    )
 } | ConvertTo-Json -Depth 5
