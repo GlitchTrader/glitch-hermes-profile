@@ -297,6 +297,7 @@ def owned_native_protection(account: dict[str, Any], current_price: float) -> di
 
 
 def entry_risk_legs(intent: dict[str, Any], current_price: float) -> list[dict[str, Any]]:
+    """Return leg-risk evidence for learning; this does not admit or veto an intent."""
     quantity = intent.get("quantity")
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
         raise ValueError("entry_quantity_invalid")
@@ -311,11 +312,9 @@ def entry_risk_legs(intent: dict[str, Any], current_price: float) -> list[dict[s
     quantity_3 = quantity - quantity_1 - quantity_2
     leg_specs = [(quantity_1, stop_1)]
     if has_second:
-        stop_2 = float(intent.get("stop_loss_2", stop_1))
-        leg_specs.append((quantity_2, stop_2))
+        leg_specs.append((quantity_2, float(intent.get("stop_loss_2", stop_1))))
     if has_third:
-        stop_3 = float(intent.get("stop_loss_3", intent.get("stop_loss_2", stop_1)))
-        leg_specs.append((quantity_3, stop_3))
+        leg_specs.append((quantity_3, float(intent.get("stop_loss_3", intent.get("stop_loss_2", stop_1)))))
 
     legs = []
     for index, (leg_quantity, stop_price) in enumerate(leg_specs, start=1):
@@ -330,26 +329,6 @@ def entry_risk_legs(intent: dict[str, Any], current_price: float) -> list[dict[s
             "planned_risk_usd": points * MNQ_POINT_VALUE_USD * leg_quantity,
         })
     return legs
-
-
-def validate_apex_survival(intent: dict[str, Any], book: dict[str, Any], current_price: float) -> None:
-    context = book.get("position_building_context")
-    if not isinstance(context, dict) or context.get("account_survival_scope_known") is not True:
-        raise ValueError("account_rule_state_missing")
-    if context.get("apex_legacy_survival_applicable") is not True:
-        return
-    protection = context.get("native_protection")
-    if not isinstance(protection, dict) or protection.get("coverage_complete") is not True:
-        raise ValueError("apex_existing_protection_incomplete")
-    buffer_margin = context.get("liquidation_buffer_usd")
-    existing = protection.get("existing_protected_downside_usd")
-    if not isinstance(buffer_margin, (int, float)) or isinstance(buffer_margin, bool) or buffer_margin <= 0:
-        raise ValueError("apex_liquidation_buffer_missing")
-    if not isinstance(existing, (int, float)) or isinstance(existing, bool) or existing < 0:
-        raise ValueError("apex_existing_protected_downside_missing")
-    proposed = sum(leg["planned_risk_usd"] for leg in entry_risk_legs(intent, current_price))
-    if existing + proposed >= float(buffer_margin):
-        raise ValueError("apex_liquidation_buffer_exceeded")
 
 
 def add_group_exposure_context(packet: dict[str, Any], books: list[dict[str, Any]], current_price: float) -> None:
@@ -939,8 +918,12 @@ def validate_batch(
             quantity = intent.get("quantity")
             if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
                 raise ValueError(f"entry_quantity_invalid:{index}")
-            if quantity not in book.get("valid_entry_quantities", []):
-                raise ValueError(f"entry_quantity_exceeds_group_capacity:{index}")
+            context = book.get("position_building_context")
+            if (isinstance(context, dict)
+                    and int(context.get("current_signed_quantity", 0) or 0) != 0
+                    and (not isinstance(context.get("native_protection"), dict)
+                         or context["native_protection"].get("coverage_complete") is not True)):
+                raise ValueError(f"entry_existing_protection_incomplete:{index}")
             if "take_profit_2" in intent:
                 quantity_tp1 = intent.get("quantity_tp1")
                 if (quantity < 2 or not isinstance(quantity_tp1, int)
@@ -958,10 +941,6 @@ def validate_batch(
                 raise ValueError(f"entry_second_leg_incomplete:{index}")
             if "take_profit_3" in intent and "take_profit_2" not in intent:
                 raise ValueError(f"entry_third_leg_requires_second:{index}")
-            try:
-                validate_apex_survival(intent, book, float(scenario["market"]["current_price"]))
-            except (KeyError, TypeError, ValueError) as error:
-                raise ValueError(f"entry_survival_invalid:{index}:{error}") from error
         elif action == "MOVE_STOP":
             if any(field in intent for field in ENTRY_FIELDS):
                 raise ValueError(f"move_stop_contains_entry_fields:{index}")
@@ -1304,6 +1283,9 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
         status = result.get("http_status") if isinstance(result, dict) else None
         if isinstance(status, int) and (status in {408, 425, 429} or status >= 500):
             complete = False
+        body = result.get("body") if isinstance(result, dict) else None
+        if isinstance(body, dict) and body.get("executor") == "pending":
+            complete = False
         results.append({"intent_id": intent["intent_id"], "result": result})
     receipt = {
         "schema_version": "glitch.hermes.delivery_receipt.v1",
@@ -1442,17 +1424,17 @@ def build_prompt(
         "invalidation, and observable noise rather than merely offsetting it from the immediate price; "
         "never compress a stop to create attractive R:R. Use realistic targets supported by the same horizon and regime. stop_loss and "
         "take_profit fields are absolute MNQ prices, not distances, and Glitch preserves them unless the live market has already crossed them. "
-        "Choose quantity only from execution_scope.books[].valid_entry_quantities. Follower accounts and ratios are user-owned replication "
+        "Treat execution_scope capacity, buffer, session, native-state, and lock fields as current packet evidence, not a model-call or intent-validation veto. Hermes owns quantity from current evidence. Follower accounts and ratios are user-owned replication "
         "configuration: they never constrain cognition, strategy, or master quantity, and Glitch CopyEngine handles each follower independently. "
         "The long-run performance objective is approximately 0.4%-2% of master account size per trading day ($100-$500 on $25k; "
         "$1,000-$5,000 on $250k). Use it as long-run feedback for expectancy and master-quantity calibration, never as a trade quota, "
         "loss entitlement, forced per-trade sizing rule, or reason to manufacture a trade. Do not inherit any fixed or provisional quantity "
-        "baseline from advisory plans: Hermes owns quantity from current evidence, structural risk, remaining opportunity, drawdown, and supplied valid quantities. "
+        "baseline from advisory plans: Hermes owns quantity from current evidence, structural risk, remaining opportunity, and drawdown. "
         "When an entry is justified, use aggressive_case and conservative_case to compare one protected tranche, a multi-leg entry, "
         "reserving capacity for later evidence, a later independently protected addition, and leaving exposure unchanged. Choose freely; "
-        "do not mechanically maximize size or default to one contract. A quantity of two or more may use TP2 plus quantity_tp1; "
-        "Treat execution_scope as current capacity authority: a historical infrastructure or capacity rejection is not a continuing veto when "
-        "the current book has valid_entry_quantities and current native state is eligible. "
+        "do not mechanically maximize size or default to one contract. "
+        "Packet evidence may inform an explicit NOTHING, but deterministic policy does not replace Hermes's decision with an inferred veto. "
+        "A quantity of two or more may use TP2 plus quantity_tp1; "
         "a quantity of three or more may also use TP3 plus quantity_tp2. Each leg may have independently chosen valid stop and target geometry, and every leg receives "
         "an independent native OCO pair. These native legs are the current scale-out mechanism; there is no partial-reduction action after entry. "
         "Same-direction protected tranches may add at favorable or adverse prices only when current evidence still supports the thesis, existing "
@@ -1473,7 +1455,7 @@ def build_prompt(
         "take_profit_2, quantity_tp1, stop_loss_2, take_profit_3, quantity_tp2, and stop_loss_3. For MOVE_STOP omit all entry fields and include "
         "protection_updates: a non-empty array of {leg_id,stop_loss} objects selected from active_trade_state native protection. Unspecified legs remain unchanged. "
         "For MOVE_TP omit all entry fields and include protection_updates: a non-empty array of {leg_id,take_profit} objects, each optionally also containing stop_loss. "
-        "A stop may tighten or move farther away when current evidence supports it; Glitch independently enforces protective market side and Apex liquidation survival. "
+        "A stop may tighten or move farther away when current evidence supports it; Glitch independently enforces native identity and protective market side. "
         "A MOVE_TP target may extend or reduce remaining opportunity but must stay on the live profit side. Echo cycle_id and account/operator_profile exactly. "
         "snapshot_hash must be a JSON string copied exactly from the MNQ market snapshot, even when it contains only digits. "
         "Use the top-level key decisions, never intents. Close every intent object before closing the decisions "
@@ -1553,29 +1535,6 @@ def scoped_master_is_positioned(packet: dict[str, Any], scenario: dict[str, Any]
     return False
 
 
-def any_flat_book_is_entry_eligible(packet: dict[str, Any], scenario: dict[str, Any]) -> bool:
-    frames = packet.get("frames")
-    latest = frames[-1] if isinstance(frames, list) and frames and isinstance(frames[-1], dict) else {}
-    portfolio = latest.get("portfolio_snapshot")
-    if not isinstance(portfolio, dict):
-        return False
-    for book in scenario["books"]:
-        exposure = book.get("exposure")
-        if not isinstance(exposure, list) or not exposure or not book.get("valid_entry_quantities"):
-            continue
-        master = exposure[0]
-        if int(master.get("current_mnq_quantity", 0)) != 0:
-            continue
-        if (master.get("entry_window_open") is not True
-                or master.get("native_state_available") is not True
-                or master.get("is_risk_locked") is not False
-                or master.get("is_eval_target_locked") is not False
-                or int(master.get("working_orders", 0) or 0) != 0):
-            continue
-        return True
-    return False
-
-
 def should_invoke_luna(
     packet: dict[str, Any],
     scenario: dict[str, Any],
@@ -1584,8 +1543,6 @@ def should_invoke_luna(
 ) -> bool:
     window = packet_window_utc(packet)
     positioned = scoped_master_is_positioned(packet, scenario)
-    if not positioned and not any_flat_book_is_entry_eligible(packet, scenario):
-        return False
     if directive is not None or positioned:
         return True
     prior = latest_prior_attempt(exchange, packet)

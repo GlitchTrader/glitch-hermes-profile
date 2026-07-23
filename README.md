@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.8
+# Glitch Hermes Profile v0.0.2.9
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -53,7 +53,7 @@ The reset refuses to run unless AI and both jobs are paused and every observed N
 - `/pause_trading` — turn both scheduled loops off.
 - `/flatten_all` — pause both loops and ask Glitch to flatten its configured accounts.
 - `/glitch_status` — show control, policy, replication, gateway, and job state.
-- `/long`, `/short` — one-cycle operator-directed experiment; Glitch still validates geometry, capacity, and execution.
+- `/long`, `/short` — one-cycle operator-directed experiment; Glitch still validates identity, geometry, and execution.
 - `/bias_long`, `/bias_short`, `/bias_neutral` — advisory direction only.
 
 The `SHA256SUMS` file covers distribution-owned cognition, skills, plugin, workers, setup, and documentation, and is verified before setup changes are made. It excludes itself, user-preserved `config.yaml`, and the install-stamped `distribution.yaml`.

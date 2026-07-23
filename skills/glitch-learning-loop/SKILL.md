@@ -12,7 +12,7 @@ replication, and the immutable journal.
 ## Master and followers
 
 - Evaluate trading decisions and performance on the configured master.
-- Choose master quantity only from the current master quantities Glitch supplies.
+- Choose master quantity from full current packet evidence; Glitch-supplied capacity is evidence, not a cognition or intent gate.
 - Follower accounts, ratios, capacity, and PnL are replication diagnostics. They
   never constrain the thesis or master quantity and never become cognitive rules.
 - The long-run objective is approximately 0.4%-2% of master account size per

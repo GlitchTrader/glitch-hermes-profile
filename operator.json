@@ -8,7 +8,7 @@
     "group_source": "Every live cycle derives groups, masters, followers, ratios, positions, limits, and prop rules from the Glitch packet. Hermes strategy and quantity use master limits only; user-owned follower ratios never constrain cognition.",
     "performance_objective": "Pursue approximately 0.4%-2% of master account size per trading day over time ($100-$500 on $25k; $1,000-$5,000 on $250k) without treating the target as a quota, promise, or forced risk budget.",
     "native_capabilities": "Glitch skills overlay Hermes native skills, memory, sessions, and upkeep; they do not replace them.",
-    "position_building": "Hermes compares protected native legs, reserved capacity, later evidence-based additions, and unchanged exposure. Glitch supplies capacity and enforces the Apex Legacy liquidation boundary without choosing quantity.",
+    "position_building": "Hermes compares protected native legs, capacity and buffer evidence, later evidence-based additions, and unchanged exposure. Glitch reports native facts and enforces identity, geometry, and protection without choosing quantity or imposing an inferred Apex-survival boundary.",
     "learning_activation": "Decision-only reviews remain observational. Plans, guidance, and cognitive overlays gain trading influence only from repeated attributable completed master outcomes and explicit contradiction review.",
     "no_silent_model_downgrade": true
   },
