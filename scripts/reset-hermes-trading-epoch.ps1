@@ -197,7 +197,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $epochPath -Parent) | Out-
     schema_version = 'glitch.hermes.epoch.v1'
     epoch_id = $epochId
     reset_utc = [datetime]::UtcNow.ToString('o')
-    profile_distribution = '0.0.2.6'
+    profile_distribution = '0.0.2.7'
     prior_state_preserved = $false
 } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $epochPath -Encoding utf8
 
@@ -241,7 +241,7 @@ if ($memoryFiles.Count -gt 0 -or $requestDumps.Count -gt 0) {
     reset_utc = [datetime]::UtcNow.ToString('o')
     epoch_id = $epochId
     profile = $Profile
-    distribution_version = '0.0.2.6'
+    distribution_version = '0.0.2.7'
     removed_targets = $removed.Count
     backup_created = $false
     all_accounts_were_flat_and_order_free = $true

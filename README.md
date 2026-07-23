@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.6
+# Glitch Hermes Profile v0.0.2.7
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -35,7 +35,7 @@ hermes profile update glitch
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glitch\setup.ps1"
 ```
 
-Updates replace distribution-owned cognition, skills, plugin, and worker scripts. Hermes preserves authentication, `config.yaml` overrides, sessions, memories, ledgers, and cron enabled/paused state. Re-running setup reconciles job definitions without changing whether an existing job was enabled or paused.
+Updates replace distribution-owned cognition, skills, plugin, and worker scripts. Hermes preserves authentication, non-routing `config.yaml` overrides, sessions, memories, ledgers, and cron enabled/paused state. Re-running setup reconciles Luna-medium routing, clears obsolete fallback/model overrides, and reconciles job definitions without changing whether an existing supported job was enabled or paused.
 
 ## Clean epoch reset
 
