@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.7
+# Glitch Hermes Profile v0.0.2.8
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -18,7 +18,7 @@ hermes -p glitch auth add openai-codex --type oauth
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glitch\setup.ps1"
 ```
 
-`profile install` performs no model call and creates no cron job. `setup.ps1` verifies the distribution, enables the deterministic plugin, installs the supervised profile gateway, and creates the minute operator and 30-minute learning jobs. Every cognitive loop uses `gpt-5.6-luna` with medium reasoning. On a fresh installation both jobs are paused.
+`profile install` performs no model call and creates no cron job. `setup.ps1` verifies the distribution, enables the deterministic plugin, installs the supervised profile gateway, and creates the minute operator and 30-minute learning jobs. The minute job launches the separately locked direct worker and returns immediately, so model latency cannot skip the next positioned packet. Every cognitive loop uses `gpt-5.6-luna` with medium reasoning. On a fresh installation both jobs are paused.
 
 Configure the desired master/group in Glitch, turn on Replication if followers should copy the master, then activate the complete operator and learning loop with Glitch **AI Auto** or:
 

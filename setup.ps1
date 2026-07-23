@@ -167,6 +167,7 @@ finally {
 
 $requiredFiles = @(
     'scripts\run-direct-glitch-cycle.py',
+    'scripts\launch-direct-glitch-cycle.py',
     'scripts\reconcile-hermes-outcomes.py',
     'scripts\run-hermes-learning-cycle.py',
     'scripts\launch-hermes-learning-cycle.py',
@@ -217,7 +218,7 @@ try {
     $directJob = Ensure-CronJob `
         -Name 'glitch-direct-operator' `
         -Schedule '* * * * *' `
-        -Script 'run-direct-glitch-cycle.py' `
+        -Script 'launch-direct-glitch-cycle.py' `
         -Workdir $exchange
     $learningJob = Ensure-CronJob `
         -Name 'glitch-learning-supervisor' `
@@ -232,7 +233,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.7'
+    distribution_version = '0.0.2.8'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)
