@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.5 Candidate
+# Glitch Hermes Profile v0.0.2.6
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -6,7 +6,7 @@ Glitch/NinjaTrader remains the market, account, risk, execution, bracket, replic
 
 ## Requirements
 
-- Windows with NinjaTrader 8 and a matching Glitch AI `v0.0.2.1` candidate installed.
+- Windows with NinjaTrader 8 and the matching Glitch AI `v0.0.2.2` AddOn installed.
 - Hermes `0.18.2` or newer.
 - An OpenAI Codex OAuth account authorized by the user.
 
@@ -18,7 +18,7 @@ hermes -p glitch auth add openai-codex --type oauth
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glitch\setup.ps1"
 ```
 
-`profile install` performs no model call and creates no cron job. `setup.ps1` verifies the distribution, enables the deterministic plugin, installs the supervised profile gateway, and creates the minute operator and 30-minute learning jobs. On a fresh installation both jobs are paused.
+`profile install` performs no model call and creates no cron job. `setup.ps1` verifies the distribution, enables the deterministic plugin, installs the supervised profile gateway, and creates the minute operator and 30-minute learning jobs. Every cognitive loop uses `gpt-5.6-luna` with medium reasoning. On a fresh installation both jobs are paused.
 
 Configure the desired master/group in Glitch, turn on Replication if followers should copy the master, then activate the complete operator and learning loop with Glitch **AI Auto** or:
 
@@ -36,6 +36,16 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glit
 ```
 
 Updates replace distribution-owned cognition, skills, plugin, and worker scripts. Hermes preserves authentication, `config.yaml` overrides, sessions, memories, ledgers, and cron enabled/paused state. Re-running setup reconciles job definitions without changing whether an existing job was enabled or paused.
+
+## Clean epoch reset
+
+When the operator explicitly requests a fresh learning epoch, pause AI first and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glitch\scripts\reset-hermes-trading-epoch.ps1" -Apply
+```
+
+The reset refuses to run unless AI and both jobs are paused and every observed NinjaTrader account is flat and order-free. It permanently clears Glitch journals, intents, packets, snapshots, learning artifacts, overlays and trailing peak state plus Hermes memories, sessions, request dumps, cron history, logs and stale jobs. Authentication, profile configuration, Glitch policy, account groups, ratios and licensing remain intact. Setup then recreates exactly two paused jobs and a fresh Hermes state database. No archive is created.
 
 ## Controls
 

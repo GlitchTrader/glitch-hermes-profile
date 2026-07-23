@@ -131,6 +131,20 @@ function Ensure-CronJob {
     return [ordered]@{ name = $Name; id = $jobId; enabled = $preserveEnabled; schedule = $Schedule }
 }
 
+function Remove-ObsoleteCronJobs {
+    $supported = @('glitch-direct-operator', 'glitch-learning-supervisor')
+    foreach ($job in @(Get-HermesJobs | Where-Object {
+        ([string]$_.name).StartsWith('glitch-', [StringComparison]::OrdinalIgnoreCase) `
+            -and $supported -notcontains [string]$_.name
+    })) {
+        if ([bool]$job.enabled -or [string]$job.state -eq 'active') {
+            throw "Obsolete Glitch job $($job.name) is enabled; pause it before profile setup."
+        }
+        & hermes cron remove ([string]$job.id) | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not remove obsolete Glitch job $($job.name)." }
+    }
+}
+
 Remove-InstallerGitMetadata
 Assert-DistributionIntegrity
 $hermesCommand = Get-Command hermes -ErrorAction Stop
@@ -145,6 +159,7 @@ $requiredFiles = @(
     'scripts\run-hermes-learning-cycle.py',
     'scripts\launch-hermes-learning-cycle.py',
     'scripts\ensure-named-sessions.py',
+    'scripts\reset-hermes-trading-epoch.ps1',
     'plugins\glitch-control\plugin.yaml',
     'plugins\glitch-control\__init__.py'
 )
@@ -177,22 +192,13 @@ foreach ($stream in @(
 & hermes -p $Profile plugins enable glitch-control --no-allow-tool-override | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not enable the deterministic Glitch control plugin.' }
 
-$configPath = Join-Path $profileRoot 'config.yaml'
-$configText = [IO.File]::ReadAllText($configPath)
-$migratedConfig = [regex]::Replace(
-    $configText,
-    '(?m)^(\s*gpt-5\.6-sol:\s*)high(\s*(?:#.*)?)$',
-    '${1}medium$2')
-if ($migratedConfig -ne $configText) {
-    [IO.File]::WriteAllText($configPath, $migratedConfig, [Text.UTF8Encoding]::new($false))
-}
-
 & hermes -p $Profile gateway install --start-now --start-on-login
 if ($LASTEXITCODE -ne 0) { throw 'Could not install the supervised Glitch Hermes gateway.' }
 
 $previousHermesHome = $env:HERMES_HOME
 try {
     $env:HERMES_HOME = $profileRoot
+    Remove-ObsoleteCronJobs
     & $python (Join-Path $profileRoot 'scripts\ensure-named-sessions.py') | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not seed the named chat and trading sessions.' }
 
@@ -214,7 +220,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.5'
+    distribution_version = '0.0.2.6'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)

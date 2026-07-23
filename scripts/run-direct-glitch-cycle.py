@@ -479,30 +479,89 @@ def _is_current_utc_record(line: str, today: str) -> bool:
     return False
 
 
-def _is_learning_eligible_outcome(line: str) -> bool:
-    try:
-        value = json.loads(line)
-    except json.JSONDecodeError:
-        return False
-    return isinstance(value, dict) and value.get(
-        "master_learning_eligible",
-        value.get("learning_eligible", True),
-    ) is not False
+def _jsonl_tail(path: Path, max_lines: int) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    values: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            values.append(value)
+    return values[-max_lines:]
 
 
-def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = {"received": [], "decisions": []}
-    executions = glitch_data / "intents" / "executions.jsonl"
-    execution_lines = executions.read_text(encoding="utf-8", errors="replace").splitlines() if executions.is_file() else []
-    result["executions"] = [line for line in execution_lines if line.strip()][-max_lines:]
+def _compact_execution(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: row.get(key) for key in (
+            "recorded_utc", "intent_id", "status", "code", "message",
+        ) if row.get(key) is not None
+    }
 
-    decisions = glitch_data / "intents" / "decisions.jsonl"
-    decision_lines = decisions.read_text(encoding="utf-8", errors="replace").splitlines() if decisions.is_file() else []
-    result["decisions"] = [line for line in decision_lines if line.strip()][-max_lines:]
 
-    outcomes = glitch_data / "intents" / "hermes-trade-outcomes.jsonl"
-    outcome_lines = outcomes.read_text(encoding="utf-8", errors="replace").splitlines() if outcomes.is_file() else []
-    result["outcomes"] = [line for line in outcome_lines if _is_learning_eligible_outcome(line)][-max_lines:]
+def _compact_decision(row: dict[str, Any]) -> dict[str, Any]:
+    intent = row.get("intent") if isinstance(row.get("intent"), dict) else row
+    audit = intent.get("decision_audit") if isinstance(intent.get("decision_audit"), dict) else {}
+    value = {
+        key: row.get(key) for key in (
+            "recorded_utc", "status", "failed_check_code", "failed_check_message",
+        ) if row.get(key) is not None
+    }
+    value.update({
+        key: intent.get(key) for key in (
+            "intent_id", "created_utc", "action", "confidence", "reason",
+        ) if intent.get(key) is not None
+    })
+    if audit:
+        value["change_condition"] = audit.get("change_condition")
+        value["final_choice"] = audit.get("final_choice")
+    return value
+
+
+def _compact_outcome(row: dict[str, Any]) -> dict[str, Any]:
+    master = str(row.get("master_account") or "")
+    account_outcomes = row.get("account_outcomes")
+    master_result = next((
+        item for item in account_outcomes or []
+        if isinstance(item, dict)
+        and str(item.get("account") or "").lower() == master.lower()
+    ), {})
+    value = {
+        key: row.get(key) for key in (
+            "recorded_utc", "intent_id", "cycle_id", "action", "master_account",
+            "instrument", "entry_utc", "exit_utc", "planned_stop", "planned_target",
+            "master_realized_pnl_usd", "master_attribution_status",
+        ) if row.get(key) is not None
+    }
+    value["master_result"] = {
+        key: master_result.get(key) for key in (
+            "quantity", "entry_price", "exit_price", "close_kind",
+            "observed_mfe_usd", "observed_mae_usd",
+        ) if master_result.get(key) is not None
+    }
+    return value
+
+
+def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[dict[str, Any]]]:
+    intents = glitch_data / "intents"
+    result: dict[str, list[dict[str, Any]]] = {"received": []}
+    result["executions"] = [
+        _compact_execution(row)
+        for row in _jsonl_tail(intents / "executions.jsonl", max_lines)
+    ]
+    result["decisions"] = [
+        _compact_decision(row)
+        for row in _jsonl_tail(intents / "decisions.jsonl", max_lines)
+    ]
+    eligible = [
+        row for row in _jsonl_tail(intents / "hermes-trade-outcomes.jsonl", max_lines * 4)
+        if row.get("master_learning_eligible", row.get("learning_eligible", True)) is not False
+    ]
+    result["outcomes"] = [_compact_outcome(row) for row in eligible[-max_lines:]]
     # Journal.tsv is a long-lived human ledger. It remains on disk and in
     # Hermes memory, but is deliberately excluded from the active entry gate;
     # Bounded recent execution/outcome JSONL preserves Apex-session continuity
@@ -523,16 +582,26 @@ def read_current_learning_artifact(path: Path, schema_version: str) -> dict[str,
     return value if value and value.get("schema_version") == schema_version else None
 
 
+def read_trading_learning_artifact(path: Path, schema_version: str) -> dict[str, Any] | None:
+    value = read_current_learning_artifact(path, schema_version)
+    return value if value and value.get("trading_influence") == "outcome_backed" else None
+
+
 def learning_context(exchange: Path) -> dict[str, Any]:
     supervisor = exchange / "hermes" / "supervisor"
     overlay = read_optional_json(supervisor / "active-cognitive-overlay.json")
-    if not overlay or overlay.get("status") not in {"active", "promoted"} or not overlay.get("instruction"):
+    if (
+        not overlay
+        or overlay.get("status") not in {"active", "promoted"}
+        or overlay.get("activation_evidence_kind") != "completed_master_outcomes"
+        or not overlay.get("instruction")
+    ):
         overlay = None
     return {
-        "current_plan": read_current_learning_artifact(
+        "current_plan": read_trading_learning_artifact(
             supervisor / "current-plan.json", CURRENT_PLAN_SCHEMA
         ),
-        "current_guidance": read_current_learning_artifact(
+        "current_guidance": read_trading_learning_artifact(
             supervisor / "current-guidance.json", CURRENT_GUIDANCE_SCHEMA
         ),
         "active_cognitive_overlay": overlay,
@@ -667,7 +736,11 @@ def active_trade_state(
     return value
 
 
-def reconcile_completed_outcomes(glitch_data: Path, exchange: Path) -> None:
+def reconcile_completed_outcomes(
+    glitch_data: Path,
+    exchange: Path,
+    timeout_seconds: int = 30,
+) -> None:
     reconciler = Path(__file__).with_name("reconcile-hermes-outcomes.py")
     if not reconciler.is_file():
         raise FileNotFoundError("outcome_reconciler_missing")
@@ -682,7 +755,7 @@ def reconcile_completed_outcomes(glitch_data: Path, exchange: Path) -> None:
         ],
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=timeout_seconds,
         check=False,
     )
     if completed.returncode != 0:
@@ -1422,8 +1495,9 @@ def build_prompt(
         "choose structure-aware native stop/target geometry within Glitch policy; market evidence informs geometry, "
         "confidence, and rationale but cannot change the requested direction to NOTHING. For an ordinary advisory, "
         "treat it as a soft one-cycle preference: consider it, explain agreement or disagreement in the audit, and "
-        "never let it override market evidence, risk, bracket geometry, or Glitch policy. The current plan, guidance, active trade state, and "
-        "active cognitive overlay in recent_glitch_ledger are Hermes-owned advisory continuity; use them when relevant and revise them when "
+        "never let it override market evidence, risk, bracket geometry, or Glitch policy. Only outcome-backed plans, guidance, and cognitive "
+        "overlays are included in recent_glitch_ledger; decision-only reviews remain observational and cannot create entry pressure or quantity pressure. "
+        "Use outcome-backed continuity and active trade state when relevant, and revise them when "
         "current evidence disagrees. Do not emit prose outside the required JSON or call execution or control tools. Before deciding, invoke "
         "native memory retrieval exactly once for relevant Glitch trading lessons, then return the strict intent JSON without writing memory. "
         "If operator_advisory has directive_type=native_tool_canary, the required retrieval also satisfies that diagnostic and must not bias the decision. "
@@ -1642,7 +1716,16 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
         return 0
-    reconcile_completed_outcomes(glitch_data, exchange)
+    try:
+        reconcile_completed_outcomes(glitch_data, exchange, timeout_seconds=10)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "outcome_reconcile_deferred",
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+            "error": f"{type(error).__name__}:{str(error)[:300]}",
+        })
     journals = journal_tail(glitch_data)
     journals.update(learning_context(exchange))
     journals["active_trade_state"] = trade_state

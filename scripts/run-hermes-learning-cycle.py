@@ -22,7 +22,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 
-MODEL = "gpt-5.6-sol"
+MODEL = "gpt-5.6-luna"
 PROVIDER = "openai-codex"
 SOURCE = "trading"
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
@@ -572,13 +572,14 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         "hourly": (
             "Supervise the latest completed-trade and decision episodes. Classify NOTHING evidence as disciplined abstention, missed opportunity, or uncertainty; classify rejected intents as correct factual rejection, cognitive mistake, or uncertainty. "
             "Never infer counterfactual PnL when target/stop ordering is unobserved. Infrastructure and transport failures are code evidence, never strategy memory. Identify repeated correct reasoning, repeated mistakes, geometry/management/quantity patterns, false abstention versus overtrading, and system defects. "
-            "Issue advisory guidance, never an order. Attributable evidence may produce one compact versioned cognitive proposal now rather than waiting for the daily loop; proposal does not activate it. Preserve its uncertainty until later comparable evidence exists. "
-            "For a proposed overlay, return activate or rollback only with at least two later comparable episodes and explicit contradiction review. "
-            "For an active overlay, return promote, continue, or rollback only with later episode evidence."
+            "Issue advisory guidance, never an order. Decision episodes may improve questions and attention, but they may not create entry pressure, anti-abstention pressure, quantity pressure, or activate trading cognition. "
+            "Attributable evidence may produce one compact versioned cognitive proposal now rather than waiting for the daily loop; proposal does not activate it. Preserve its uncertainty until later comparable completed master outcomes exist. "
+            "For a proposed overlay, return activate or rollback only with at least two later completed master trade episodes and explicit contradiction review. "
+            "For an active overlay, return promote, continue, or rollback only with at least two later completed master trade episodes."
         ),
         "planning": (
             "Create the next 300-minute Hermes plan. Hermes owns strategy and master quantity within current master limits. Set questions, hypotheses, sizing/geometry/management posture and experiments without deterministic entry gates. "
-            "Use completed decision episodes to question habitual abstention and rejected geometry, while preserving uncertainty and excluding infrastructure faults from strategy. "
+            "Use completed decision episodes to question habitual abstention and rejected geometry, while preserving uncertainty and excluding infrastructure faults from strategy. Decision-only findings are observational and cannot pressure entries or size. "
             "Do not create a fixed or provisional quantity baseline: calibrate quantity from repeated risk-adjusted outcomes, current edge, structural risk, remaining opportunity, drawdown, and the long-run objective. "
             "Keep initial native target legs, reserved capacity, and later thesis-supported protected additions available as choices rather than mandatory recipes. "
             "Follower ratios are user configuration and must not affect the master plan."
@@ -590,10 +591,16 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
             "Do not edit Glitch policy, groups, ratios, prop limits, execution, or code."
         ),
     }[loop_id]
-    memory_instruction = (
-        "Use native memory retrieval exactly once before reasoning. "
-        + ("For this daily loop, write or revise compact durable memory only when repeated attributable master outcomes support it. " if loop_id == "daily" else "Do not write native memory in this loop. ")
+    repeated_outcomes = (
+        isinstance(evidence, dict)
+        and isinstance(evidence.get("trade_episodes"), list)
+        and len(evidence["trade_episodes"]) >= 2
     )
+    memory_instruction = "Use native memory retrieval exactly once before reasoning. "
+    if loop_id == "daily" and repeated_outcomes:
+        memory_instruction += "You may write or revise compact durable memory because at least two attributable completed master outcomes are supplied. "
+    else:
+        memory_instruction += "Do not write native memory in this loop. "
     return (
         "Apply the Glitch SOUL and loaded learning skills. NinjaTrader/Glitch facts outrank memory; Hermes owns cognition, strategy, master sizing, and self-improvement. "
         "The long-run objective is approximately 0.4%-2% of master account size per trading day ($100-$500 on $25k; $1,000-$5,000 on $250k). "
@@ -708,6 +715,14 @@ def cognitive_evidence_ids(supervisor: Path) -> list[str]:
     return [str(row.get("episode_id")) for row in rows if row.get("episode_id")]
 
 
+def trade_evidence_ids(supervisor: Path) -> list[str]:
+    return [
+        str(row.get("episode_id"))
+        for row in read_jsonl(supervisor / "trade-episodes.jsonl")
+        if row.get("episode_id")
+    ]
+
+
 def later_evidence_ids(value: dict[str, Any], episode_ids: list[str]) -> set[str]:
     baseline = value.get("baseline_evidence_ids")
     if isinstance(baseline, list):
@@ -730,7 +745,9 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
         and active.get("instruction")
         and str(decision.get("candidate_id")) == str(active.get("candidate_id"))
     ):
-        later_episode_ids = later_evidence_ids(active, episode_ids)
+        later_episode_ids = later_evidence_ids(active, episode_ids).intersection(
+            trade_evidence_ids(supervisor)
+        )
         later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
         if (
             len(set(later)) < 2
@@ -767,7 +784,9 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
         or action not in {"activate", "rollback"}
     ):
         return
-    later_episode_ids = later_evidence_ids(proposed, episode_ids)
+    later_episode_ids = later_evidence_ids(proposed, episode_ids).intersection(
+        trade_evidence_ids(supervisor)
+    )
     later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
     if len(set(later)) < 2 or not contradiction_review:
         return
@@ -782,6 +801,8 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
             **proposed,
             "status": "active",
             "activated_utc": utc_now(),
+            "activation_evidence_kind": "completed_master_outcomes",
+            "activation_trade_episode_ids": sorted(set(later)),
             "baseline_episode_count": len(episode_ids),
             "evaluation_episode_count": len(episode_ids),
             "baseline_evidence_ids": list(episode_ids),
@@ -849,11 +870,16 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
 
 def persist_hourly(record: dict[str, Any], supervisor: Path, episode_ids: list[str]) -> None:
     append_unique(supervisor / "observations.jsonl", [record], "review_id")
+    trade_count = len(trade_evidence_ids(supervisor))
+    decision_count = len(read_jsonl(supervisor / "decision-episodes.jsonl"))
     guidance = {
         "schema_version": DIRECT.CURRENT_GUIDANCE_SCHEMA,
         "guidance_id": stable_id("guidance", str(record["review_id"])),
         "recorded_utc": record.get("recorded_utc") or utc_now(),
         "source_review_id": record["review_id"],
+        "trading_influence": "outcome_backed" if trade_count >= 2 else "observational",
+        "trade_episode_count": trade_count,
+        "decision_episode_count": decision_count,
         "guidance": record.get("guidance"),
     }
     append_unique(supervisor / "trading-guidance.jsonl", [guidance], "guidance_id")
@@ -945,7 +971,7 @@ def run_once(args) -> dict[str, Any]:
     state_path = supervisor / "learning-state.json"
     state = DIRECT.read_optional_json(state_path) or {"schema_version": "glitch.hermes.learning_state.v1"}
     if not args.dry_run:
-        DIRECT.reconcile_completed_outcomes(glitch_data, exchange)
+        DIRECT.reconcile_completed_outcomes(glitch_data, exchange, timeout_seconds=120)
         decision_episodes = collect_decision_episodes(glitch_data, exchange, supervisor)
     else:
         decision_episodes = read_jsonl(supervisor / "decision-episodes.jsonl")
@@ -1008,6 +1034,10 @@ def run_once(args) -> dict[str, Any]:
                 "trade_episodes": episodes[-24:],
                 "decision_episodes": decision_episodes[-48:],
             }, [plan_id], supervisor)
+            trade_count = len(episodes)
+            records[0]["trading_influence"] = "outcome_backed" if trade_count >= 2 else "observational"
+            records[0]["trade_episode_count"] = trade_count
+            records[0]["decision_episode_count"] = len(decision_episodes)
             append_unique(supervisor / "plans.jsonl", records, "plan_id")
             DIRECT.write_json_atomic(supervisor / "current-plan.json", records[0])
             state["last_planning_utc"] = utc_now()
