@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from win_subprocess import detach_flags, resolve_python_invocation
 
 
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
@@ -22,8 +25,9 @@ def lock_is_active(path: Path, stale_seconds: int) -> bool:
 
 
 def worker_command(args) -> list[str]:
+    python_executable, _ = resolve_python_invocation()
     command = [
-        sys.executable,
+        python_executable,
         str(Path(__file__).with_name("run-hermes-learning-cycle.py")),
         "--glitch-data", str(args.glitch_data.resolve()),
         "--profile", args.profile,
@@ -43,13 +47,9 @@ def launch(args) -> dict[str, object]:
         return {"launched": False, "reason": "learning_cycle_already_running"}
 
     log_path = supervisor / "learning-worker.log"
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
+    _, env_overlay = resolve_python_invocation()
+    env = os.environ.copy()
+    env.update(env_overlay)
     with log_path.open("a", encoding="utf-8") as output:
         output.write(json.dumps({
             "event": "learning_worker_launched",
@@ -65,7 +65,8 @@ def launch(args) -> dict[str, object]:
             stdout=output,
             stderr=subprocess.STDOUT,
             close_fds=True,
-            creationflags=creationflags,
+            env=env,
+            creationflags=detach_flags(),
             start_new_session=sys.platform != "win32",
         )
     return {

@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from win_subprocess import detach_flags, resolve_python_invocation
 
 
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 
 
 def worker_command(args) -> list[str]:
+    python_executable, _ = resolve_python_invocation()
     command = [
-        sys.executable,
+        python_executable,
         str(Path(__file__).with_name("run-direct-glitch-cycle.py")),
         "--glitch-data", str(args.glitch_data.resolve()),
         "--profile", args.profile,
@@ -32,13 +36,9 @@ def launch(args) -> dict[str, object]:
     events = exchange / "hermes" / "events"
     events.mkdir(parents=True, exist_ok=True)
     log_path = events / "direct-worker.log"
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
+    _, env_overlay = resolve_python_invocation()
+    env = os.environ.copy()
+    env.update(env_overlay)
     with log_path.open("a", encoding="utf-8") as output:
         output.write(json.dumps({
             "event": "direct_worker_launched",
@@ -54,7 +54,8 @@ def launch(args) -> dict[str, object]:
             stdout=output,
             stderr=subprocess.STDOUT,
             close_fds=True,
-            creationflags=creationflags,
+            env=env,
+            creationflags=detach_flags(),
             start_new_session=sys.platform != "win32",
         )
     return {

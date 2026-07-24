@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from win_subprocess import hide_flags, resolve_python_invocation
 
 
 MODEL = "gpt-5.6-luna"
@@ -112,6 +115,9 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
     python_executable = Path(executable).with_name("python.exe")
     if not python_executable.is_file():
         raise RuntimeError("hermes_python_runtime_not_found")
+    resolved_python, env_overlay = resolve_python_invocation(str(python_executable))
+    env = os.environ.copy()
+    env.update(env_overlay)
     args = [
         "chat", "-Q", "--source", SOURCE,
         "--model", MODEL, "--provider", PROVIDER,
@@ -126,13 +132,14 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
         "sys.argv=[sys.argv[0]]+" + repr(args) + "+['-q',prompt];main()"
     )
     completed = subprocess.run(
-        [str(python_executable), "-c", wrapper],
+        [resolved_python, "-c", wrapper],
         input=prompt,
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
         check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
+        env=env,
+        creationflags=hide_flags(),
     )
     if completed.returncode != 0:
         raise RuntimeError(f"hermes_failed:{completed.returncode}:{completed.stderr.strip()[:400]}")

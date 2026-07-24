@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from win_subprocess import hide_flags, resolve_python_invocation
+
 
 ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", "NOTHING"}
 ACTION_ALIASES = {"NO_ACTION": "NOTHING"}
@@ -723,9 +725,12 @@ def reconcile_completed_outcomes(
     reconciler = Path(__file__).with_name("reconcile-hermes-outcomes.py")
     if not reconciler.is_file():
         raise FileNotFoundError("outcome_reconciler_missing")
+    python_executable, env_overlay = resolve_python_invocation()
+    env = os.environ.copy()
+    env.update(env_overlay)
     completed = subprocess.run(
         [
-            sys.executable,
+            python_executable,
             str(reconciler),
             "--glitch-data",
             str(glitch_data),
@@ -736,6 +741,8 @@ def reconcile_completed_outcomes(
         capture_output=True,
         timeout=timeout_seconds,
         check=False,
+        env=env,
+        creationflags=hide_flags(),
     )
     if completed.returncode != 0:
         raise RuntimeError("outcome_reconcile_failed:" + (completed.stderr or completed.stdout).strip())
@@ -1178,6 +1185,9 @@ def invoke_hermes(profile: str, prompt: str, timeout_seconds: int) -> dict[str, 
     python_executable = Path(executable).with_name("python.exe")
     if not python_executable.is_file():
         raise RuntimeError("hermes_python_runtime_not_found")
+    resolved_python, env_overlay = resolve_python_invocation(str(python_executable))
+    env = os.environ.copy()
+    env.update(env_overlay)
     # Each decision gets a fresh session tagged as trading. Continuity is
     # explicit in the bounded ledger/current packet and native durable memory,
     # so one oversized or failed turn cannot poison the next decision.
@@ -1201,9 +1211,8 @@ def invoke_hermes(profile: str, prompt: str, timeout_seconds: int) -> dict[str, 
         "sys.argv=[sys.argv[0]] + " + repr(cli_args) + " + ['-q',prompt];"
         "main()"
     )
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     completed = subprocess.run(
-        [str(python_executable), "-c", wrapper],
+        [resolved_python, "-c", wrapper],
         input=prompt,
         capture_output=True,
         text=True,
@@ -1211,7 +1220,8 @@ def invoke_hermes(profile: str, prompt: str, timeout_seconds: int) -> dict[str, 
         errors="replace",
         timeout=timeout_seconds,
         check=False,
-        creationflags=creationflags,
+        env=env,
+        creationflags=hide_flags(),
     )
     if completed.returncode != 0:
         raise RuntimeError(f"hermes_failed:{completed.returncode}:{completed.stderr.strip()}")
