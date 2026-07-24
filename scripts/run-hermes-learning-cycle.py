@@ -10,6 +10,7 @@ continuity; Codex is not in the runtime path.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -206,8 +207,8 @@ def entry_decision_context(
             if str(value.get("master_account") or "").lower()
             == str(outcome.get("master_account") or "").lower()
         )
-        current_price = float(scenario["market"]["current_price"])
-        legs = DIRECT.entry_risk_legs(entry_intent, current_price)
+        decision_reference_price = float(scenario["market"]["current_price"])
+        legs = DIRECT.entry_risk_legs(entry_intent, decision_reference_price)
     except (KeyError, StopIteration, TypeError, ValueError, OSError) as error:
         return {"status": "unavailable", "reason": str(error)[:160], "cycle_id": cycle_id}
 
@@ -220,45 +221,68 @@ def entry_decision_context(
         leg["target_price"] = targets[index]
         leg["planned_risk_usd"] = round(float(leg["planned_risk_usd"]), 2)
         leg["risk_points_per_contract"] = round(float(leg["risk_points_per_contract"]), 8)
-    planned_risk = sum(float(leg["planned_risk_usd"]) for leg in legs)
+    decision_reference_risk = sum(float(leg["planned_risk_usd"]) for leg in legs)
     selected_quantity = int(entry_intent["quantity"])
     result = master_result or {}
+    actual_entry_vwap = result.get("entry_price")
+    initial_native_risk = result.get("initial_native_risk_usd")
+    risk_normalization_eligible = (
+        result.get("risk_normalization_status") == "complete"
+        and isinstance(initial_native_risk, (int, float))
+        and float(initial_native_risk) > 0
+    )
 
     def per_contract(key: str) -> float | None:
         value = result.get(key)
         return round(float(value) / selected_quantity, 2) if isinstance(value, (int, float)) else None
 
-    realized = result.get("realized_pnl_usd", outcome.get("master_realized_pnl_usd"))
+    realized = result.get("realized_pnl_usd")
+    if not isinstance(realized, (int, float)):
+        realized = outcome.get("master_realized_pnl_usd")
     return {
         "status": "complete",
         "cycle_id": cycle_id,
         "packet_hash": packet.get("packet_hash"),
         "pre_entry": book.get("position_building_context"),
+        "decision_reference_price": decision_reference_price,
+        "actual_entry_vwap": actual_entry_vwap,
         "selected_plan": {
             "action": entry_intent.get("action"),
             "quantity": selected_quantity,
             "entry_role": (book.get("position_building_context") or {}).get("next_entry_role"),
             "legs": legs,
-            "planned_risk_usd": round(planned_risk, 2),
+            "decision_reference_risk_usd": round(decision_reference_risk, 2),
+        },
+        "native_entry_facts": {
+            "point_value_usd": result.get("point_value_usd"),
+            "tick_size": result.get("tick_size"),
+            "instrument_economics_source": result.get("instrument_economics_source"),
+            "initial_protection_legs": result.get("initial_protection_legs", []),
+            "initial_native_risk_usd": initial_native_risk,
+            "risk_normalization_status": result.get("risk_normalization_status", "unavailable"),
+            "risk_normalization_eligible": risk_normalization_eligible,
         },
         "normalized_outcome": {
             "realized_pnl_per_contract_usd": (
                 round(float(realized) / selected_quantity, 2)
                 if isinstance(realized, (int, float)) else None
             ),
-            "observed_mfe_per_contract_usd": per_contract("observed_mfe_usd"),
-            "observed_mae_per_contract_usd": per_contract("observed_mae_usd"),
+            "sampled_mfe_per_contract_usd": per_contract("sampled_mfe_usd"),
+            "sampled_mae_per_contract_usd": per_contract("sampled_mae_usd"),
+            "excursion_sampling_method": result.get("excursion_sampling_method"),
+            "excursion_sample_count": result.get("excursion_sample_count"),
+            "excursion_eligible": result.get("excursion_eligible") is True,
             "realized_r_multiple": (
-                round(float(realized) / planned_risk, 4)
-                if isinstance(realized, (int, float)) and planned_risk > 0 else None
+                round(float(realized) / float(initial_native_risk), 4)
+                if isinstance(realized, (int, float)) and risk_normalization_eligible else None
             ),
-            "observed_mfe_r": (
-                round(float(result["observed_mfe_usd"]) / planned_risk, 4)
-                if isinstance(result.get("observed_mfe_usd"), (int, float)) and planned_risk > 0 else None
+            "sampled_mfe_r": (
+                round(float(result["sampled_mfe_usd"]) / float(initial_native_risk), 4)
+                if isinstance(result.get("sampled_mfe_usd"), (int, float)) and risk_normalization_eligible else None
             ),
-            "observed_mae_r": (
-                round(float(result["observed_mae_usd"]) / planned_risk, 4)
-                if isinstance(result.get("observed_mae_usd"), (int, float)) and planned_risk > 0 else None
+            "sampled_mae_r": (
+                round(float(result["sampled_mae_usd"]) / float(initial_native_risk), 4)
+                if isinstance(result.get("sampled_mae_usd"), (int, float)) and risk_normalization_eligible else None
             ),
             "close_kind": result.get("close_kind"),
         },
@@ -524,7 +548,9 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                     },
                     "cognitive_change_candidate": {
                         "propose": False, "candidate_id": "GENERATE_OR_EMPTY",
-                        "target": "core_prompt", "instruction": "REPLACE_OR_EMPTY",
+                        "operation": "replace", "target": "core_prompt",
+                        "expected_old_text": "EXACT_CURRENT_TEXT_OR_EMPTY",
+                        "replacement_text": "MINIMAL_REPLACEMENT_OR_EMPTY",
                         "evidence_episode_ids": [], "expected_effect": "REPLACE_OR_EMPTY",
                         "evaluation_metric": "REPLACE_OR_EMPTY", "rollback_condition": "REPLACE_OR_EMPTY",
                     },
@@ -554,7 +580,9 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                     },
                     "cognitive_change_candidate": {
                         "propose": False, "candidate_id": "GENERATE_OR_EMPTY",
-                        "target": "core_prompt", "instruction": "REPLACE_OR_EMPTY",
+                        "operation": "replace", "target": "core_prompt",
+                        "expected_old_text": "EXACT_CURRENT_TEXT_OR_EMPTY",
+                        "replacement_text": "MINIMAL_REPLACEMENT_OR_EMPTY",
                         "evidence_episode_ids": [], "expected_effect": "REPLACE_OR_EMPTY",
                         "evaluation_metric": "REPLACE_OR_EMPTY", "rollback_condition": "REPLACE_OR_EMPTY",
                     },
@@ -582,8 +610,8 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
             "Never infer counterfactual PnL when target/stop ordering is unobserved. Infrastructure and transport failures are code evidence, never strategy memory. Identify repeated correct reasoning, repeated mistakes, geometry/management/quantity patterns, false abstention versus overtrading, and system defects. "
             "Issue advisory guidance, never an order. Decision episodes may improve questions and attention, but they may not create entry pressure, anti-abstention pressure, quantity pressure, or activate trading cognition. "
             "Attributable evidence may produce one compact versioned cognitive proposal now rather than waiting for the daily loop; proposal does not activate it. Preserve its uncertainty until later comparable completed master outcomes exist. "
-            "For a proposed overlay, return activate or rollback only with at least two later completed master trade episodes and explicit contradiction review. "
-            "For an active overlay, return promote, continue, or rollback only with at least two later completed master trade episodes."
+            "For a proposed overlay, return activate or rollback only from later comparable completed master evidence and explicit contradiction review. "
+            "For an active overlay, return promote, continue, or rollback from later comparable completed master evidence."
         ),
         "planning": (
             "Create the next 300-minute Hermes plan. Hermes owns strategy and master quantity within current master limits. Set questions, hypotheses, sizing/geometry/management posture and experiments without deterministic entry gates. "
@@ -595,7 +623,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         ),
         "daily": (
             "Write the daily trader journal from completed trades and decision episodes, compare the master against its proportional objective, update native semantic memory from repeated completed evidence, and decide how Hermes should improve. "
-            "You may propose one compact versioned cognitive change targeting core_prompt, soul, or skill:<name>. It must state exact replacement guidance, evidence IDs, expected effect, evaluation metric, and rollback condition. "
+            "You may propose one compact versioned core-prompt change. Use operation=replace, copy one exact current sentence or clause into expected_old_text, and put only its minimal rewording in replacement_text. It must state evidence IDs, expected effect, evaluation metric, and rollback condition. "
             "A proposal is staged and changes no trading cognition until a later independent review activates it with new evidence. "
             "Do not edit Glitch policy, groups, ratios, prop limits, execution, or code."
         ),
@@ -672,12 +700,27 @@ def validate_debrief_attribution(records: list[dict[str, Any]], outcomes: list[d
             raise ValueError("debrief_instrument_attribution_invalid")
 
 
+def attach_fact_envelopes(
+    records: list[dict[str, Any]], evidence: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    enriched = []
+    for record, facts in zip(records, evidence):
+        canonical = json.dumps(facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        enriched.append({
+            **record,
+            "schema_version": "glitch.hermes.trade_episode.v2",
+            "facts": facts,
+            "facts_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        })
+    return enriched
+
+
 def continuity(supervisor: Path) -> dict[str, Any]:
     return {
-        "current_plan": DIRECT.read_current_learning_artifact(
+        "current_plan": DIRECT.read_trading_learning_artifact(
             supervisor / "current-plan.json", DIRECT.CURRENT_PLAN_SCHEMA
         ),
-        "current_guidance": DIRECT.read_current_learning_artifact(
+        "current_guidance": DIRECT.read_trading_learning_artifact(
             supervisor / "current-guidance.json", DIRECT.CURRENT_GUIDANCE_SCHEMA
         ),
         "proposed_cognitive_overlay": DIRECT.read_optional_json(
@@ -751,7 +794,7 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
     if (
         active
         and active.get("status") in {"active", "promoted"}
-        and active.get("instruction")
+        and active.get("replacement_text")
         and str(decision.get("candidate_id")) == str(active.get("candidate_id"))
     ):
         later_episode_ids = later_evidence_ids(active, episode_ids).intersection(
@@ -759,7 +802,7 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
         )
         later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
         if (
-            len(set(later)) < 2
+            len(set(later)) < 1
             or action not in {"continue", "promote", "rollback"}
             or not contradiction_review
         ):
@@ -770,7 +813,7 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
         active["baseline_evidence_ids"] = list(episode_ids)
         active["evaluation"] = decision
         if action == "rollback":
-            active.pop("instruction", None)
+            active.pop("replacement_text", None)
         DIRECT.write_json_atomic(active_path, active)
         event = {
             **active,
@@ -788,7 +831,7 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
     if (
         not proposed
         or proposed.get("status") != "proposed"
-        or not proposed.get("instruction")
+        or not proposed.get("replacement_text")
         or str(decision.get("candidate_id")) != str(proposed.get("candidate_id"))
         or action not in {"activate", "rollback"}
     ):
@@ -797,13 +840,13 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
         trade_evidence_ids(supervisor)
     )
     later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
-    if len(set(later)) < 2 or not contradiction_review:
+    if len(set(later)) < 1 or not contradiction_review:
         return
     proposed["status"] = "activated" if action == "activate" else "rolled_back"
     proposed["evaluated_utc"] = utc_now()
     proposed["evaluation"] = decision
     if action == "rollback":
-        proposed.pop("instruction", None)
+        proposed.pop("replacement_text", None)
     DIRECT.write_json_atomic(proposed_path, proposed)
     if action == "activate":
         active = {
@@ -835,27 +878,34 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
     if candidate.get("propose") is not True:
         return
     current = DIRECT.read_optional_json(supervisor / "active-cognitive-overlay.json")
-    if current and current.get("status") in {"active", "promoted"} and current.get("instruction"):
+    if current and current.get("status") in {"active", "promoted"} and current.get("replacement_text"):
         return
     proposed_path = supervisor / "proposed-cognitive-overlay.json"
     proposed = DIRECT.read_optional_json(proposed_path)
-    if proposed and proposed.get("status") == "proposed" and proposed.get("instruction"):
+    if proposed and proposed.get("status") == "proposed" and proposed.get("replacement_text"):
         return
     target = str(candidate.get("target") or "")
-    instruction = str(candidate.get("instruction") or "").strip()
+    operation = str(candidate.get("operation") or "")
+    expected_old_text = str(candidate.get("expected_old_text") or "").strip()
+    replacement_text = str(candidate.get("replacement_text") or "").strip()
     evidence_ids = [str(value) for value in candidate.get("evidence_episode_ids", [])]
     episode_ids = cognitive_evidence_ids(supervisor)
     known_episode_ids = set(episode_ids)
-    if target not in {"core_prompt", "soul"} and not target.startswith("skill:"):
+    if target != "core_prompt" or operation != "replace":
         return
     if (
-        not instruction
-        or len(instruction) > 1200
+        not expected_old_text
+        or not replacement_text
+        or expected_old_text == replacement_text
+        or len(expected_old_text) > 600
+        or len(replacement_text) > 600
         or len(set(evidence_ids)) < 1
         or any(value not in known_episode_ids for value in evidence_ids)
     ):
         return
-    candidate_id = str(candidate.get("candidate_id") or stable_id("cognitive-change", target + "|" + instruction))
+    candidate_id = str(candidate.get("candidate_id") or stable_id(
+        "cognitive-change", target + "|" + expected_old_text + "|" + replacement_text
+    ))
     value = {
         "schema_version": "glitch.hermes.cognitive_overlay.v1",
         "candidate_id": candidate_id,
@@ -863,13 +913,17 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
         "baseline_episode_count": len(episode_ids),
         "baseline_evidence_ids": list(episode_ids),
         "target": target,
-        "instruction": instruction,
+        "operation": operation,
+        "expected_old_text": expected_old_text,
+        "expected_old_sha256": hashlib.sha256(expected_old_text.encode("utf-8")).hexdigest(),
+        "replacement_text": replacement_text,
         "evidence_episode_ids": evidence_ids,
         "expected_effect": candidate.get("expected_effect"),
         "evaluation_metric": candidate.get("evaluation_metric"),
         "rollback_condition": candidate.get("rollback_condition"),
         "status": "proposed",
         "activation_scope": "configured_glitch_scope",
+        "decision_prompt_version": DIRECT.DIRECT_PROMPT_VERSION,
     }
     value["change_event_id"] = stable_id("cognitive-change-event", candidate_id + "|proposed")
     value["event"] = "proposed"
@@ -886,6 +940,7 @@ def persist_hourly(record: dict[str, Any], supervisor: Path, episode_ids: list[s
         "guidance_id": stable_id("guidance", str(record["review_id"])),
         "recorded_utc": record.get("recorded_utc") or utc_now(),
         "source_review_id": record["review_id"],
+        "decision_prompt_version": DIRECT.DIRECT_PROMPT_VERSION,
         "trading_influence": "outcome_backed" if trade_count >= 2 else "observational",
         "trade_episode_count": trade_count,
         "decision_episode_count": decision_count,
@@ -1003,9 +1058,14 @@ def run_once(args) -> dict[str, Any]:
     if new_outcomes and args.force_loop in {None, "debrief"}:
         ids = [stable_id("episode", str(row["intent_id"])) for row in new_outcomes]
         if not args.dry_run:
-            records = invoke_loop(args, "debrief", debrief_evidence(glitch_data, new_outcomes), ids, supervisor)
+            factual_evidence = debrief_evidence(glitch_data, new_outcomes)
+            records = invoke_loop(args, "debrief", factual_evidence, ids, supervisor)
             validate_debrief_attribution(records, new_outcomes)
-            append_unique(supervisor / "trade-episodes.jsonl", records, "episode_id")
+            append_unique(
+                supervisor / "trade-episodes.jsonl",
+                attach_fact_envelopes(records, factual_evidence),
+                "episode_id",
+            )
             state["debriefed_intent_ids"] = sorted(processed | {str(row["intent_id"]) for row in new_outcomes})
         result["debriefed"] = len(new_outcomes)
 
@@ -1045,6 +1105,7 @@ def run_once(args) -> dict[str, Any]:
             }, [plan_id], supervisor)
             trade_count = len(episodes)
             records[0]["trading_influence"] = "outcome_backed" if trade_count >= 2 else "observational"
+            records[0]["decision_prompt_version"] = DIRECT.DIRECT_PROMPT_VERSION
             records[0]["trade_episode_count"] = trade_count
             records[0]["decision_episode_count"] = len(decision_episodes)
             append_unique(supervisor / "plans.jsonl", records, "plan_id")

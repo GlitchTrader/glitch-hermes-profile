@@ -5,9 +5,11 @@ description: Run Glitch trade debrief, hourly supervision, 300-minute planning, 
 
 # Glitch Learning Loop
 
-Hermes owns cognition, strategy, master quantity, reflection, and improvement.
-Glitch and NinjaTrader own facts, limits, validation, execution, protection,
-replication, and the immutable journal.
+Hermes owns cognition, strategy, master quantity, reflection, learning, and
+improvement. Glitch and NinjaTrader equip Hermes with factual sensing, native
+execution/protection/replication, and immutable evidence. Structural validation
+protects fact and native identity; it does not decide whether Hermes may think,
+trade, learn, or apply a reversible lesson.
 
 ## Master and followers
 
@@ -28,7 +30,7 @@ replication, and the immutable journal.
 1. Debrief every attributable completed master trade from its immutable
    pre-decision packet: why it entered, why it exited, geometry, selected and
    available quantity, pre-entry exposure and protection, initial entry or
-   addition, management, per-contract and planned-risk-normalized favorable/adverse excursion,
+   addition, management, per-contract and initial-native-risk-normalized favorable/adverse evidence,
    rollback, what worked, what failed, and plausible alternatives.
 2. Keep one trade episodic. Promote a lesson only from repeated comparable
    outcomes and preserve contradictions.
@@ -39,10 +41,13 @@ replication, and the immutable journal.
    changes, and exits. For flat `NOTHING`, preserve a structured
    counterfactual: the developing movement, the condition or price that would
    have offered favorable participation, invalidation, and the later observed
-   path. Label the actual outcome as no trade and the counterfactual as
-   informational only; never convert it into realized PnL, reward, punishment,
-   entry pressure, or durable memory. Do not impose trade quotas or fear-driven
-   cooldowns.
+   path. Classify the matured decision as justified abstention, avoided adverse
+   movement, missed directional participation, or ambiguous by comparing the
+   declared forecast and participation condition with the observed path. Label
+   the actual outcome as no trade and never invent counterfactual fills,
+   geometry, PnL, reward, or punishment. Use the classification to improve
+   timing questions and accountability, never as a deterministic entry rule,
+   quantity pressure, durable memory, trade quota, or fear-driven cooldown.
 5. Never loosen an accepted live stop. Improve initial geometry, quantity,
    management, exit, or later re-entry instead.
 6. Treat each prior `change_condition` as accountable. If later evidence meets
@@ -51,10 +56,12 @@ replication, and the immutable journal.
 
 ## Cognitive self-improvement
 
-Hermes may propose one compact, versioned cognitive overlay targeting
-`core_prompt`, `soul`, or `skill:<name>`. It must include:
+Hermes may propose one compact, versioned `core_prompt` clause replacement. It
+must include:
 
-- exact replacement instruction;
+- `operation=replace`;
+- one exact current clause in `expected_old_text`;
+- only its minimal rewording in `replacement_text`;
 - supporting episode IDs;
 - expected behavioral effect;
 - evaluation metric;
@@ -63,8 +70,10 @@ Hermes may propose one compact, versioned cognitive overlay targeting
 Only one overlay is active at a time. Hourly supervision or the daily loop may
 propose it from attributable episodes, but a proposal has no trading influence.
 A later independent supervisory decision may activate the reversible candidate
-only from later comparable evidence after contradiction review. At least two
-distinct episodes recorded after activation or the preceding evaluation must
-promote, continue, revise, or roll it back. Never accumulate
+from later comparable evidence after contradiction review. Code does not impose
+an arbitrary trade-count permission threshold: Hermes decides when evidence has
+crystallized or contradicted the lesson. Activation changes exactly one hashed
+clause; a missing or ambiguous match leaves the existing prompt and trading
+cycle intact as visible tooling evidence. Never accumulate
 unattributed prompt fragments, rewrite Glitch policy, change account groups or
 ratios, raise prop limits, submit orders, or modify source code.

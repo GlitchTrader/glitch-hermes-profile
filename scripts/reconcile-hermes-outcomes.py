@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-POINT_VALUE = {"MNQ": 2.0}
 DOTNET_EPOCH_TICKS = 621355968000000000
 
 
@@ -243,10 +242,10 @@ def terminal_group_snapshot(snapshots, when, expected_accounts):
 
 
 def excursion(snapshots, account, entry_utc, exit_utc, instrument_root, realized_pnl):
-    # Minute snapshots are lower-resolution than fills. Include flat-at-entry
-    # and the realized terminal result so observed MFE cannot be negative and
-    # observed MAE cannot be positive for trades that close between samples.
+    # These are deliberately named sampled bounds, not native MAE/MFE. Minute
+    # snapshots plus terminal PnL cannot prove the price-path extrema.
     values = [0.0, float(realized_pnl)]
+    sample_times = []
     for stamp, snapshot in snapshots:
         if stamp < entry_utc or stamp > exit_utc:
             continue
@@ -256,11 +255,19 @@ def excursion(snapshots, account, entry_utc, exit_utc, instrument_root, realized
         for position in account_row.get("positions", []):
             if str(position.get("instrument_root", "")).upper() == instrument_root:
                 values.append(float(position.get("unrealized_pnl", 0)))
+                sample_times.append(stamp)
     return {
-        "observed_mfe_usd": max(values) if values else None,
-        "observed_mae_usd": min(values) if values else None,
-        "excursion_samples": max(0, len(values) - 2),
-        "excursion_quality": "minute_unrealized_plus_terminal_bounds",
+        "sampled_mfe_usd": max(values) if values else None,
+        "sampled_mae_usd": min(values) if values else None,
+        "excursion_sample_count": len(sample_times),
+        "excursion_sampling_method": "minute_unrealized_plus_terminal_bounds",
+        "excursion_first_sample_utc": (
+            sample_times[0].isoformat().replace("+00:00", "Z") if sample_times else None
+        ),
+        "excursion_last_sample_utc": (
+            sample_times[-1].isoformat().replace("+00:00", "Z") if sample_times else None
+        ),
+        "excursion_eligible": False,
     }
 
 
@@ -288,6 +295,33 @@ def _float(fields, key, fallback=None):
 
 def _instrument_root(value):
     return str(value or "").split()[0].upper()
+
+
+def initial_native_risk(entry_price, quantity, fields, point_value):
+    if not isinstance(point_value, (int, float)) or point_value <= 0:
+        return [], None, "native_point_value_missing"
+    legs = []
+    remaining = int(quantity)
+    for index in range(1, 4):
+        stop = _float(fields, f"sl{index}")
+        leg_quantity = int(_float(fields, f"leg{index}_qty", 0) or 0)
+        if index == 1 and leg_quantity <= 0 and stop is not None:
+            leg_quantity = remaining
+        if stop is None or leg_quantity <= 0:
+            continue
+        leg_quantity = min(leg_quantity, remaining)
+        risk_points = abs(float(entry_price) - stop)
+        legs.append({
+            "leg": index,
+            "quantity": leg_quantity,
+            "initial_stop_price": stop,
+            "risk_points_per_contract": risk_points,
+            "initial_native_risk_usd": risk_points * leg_quantity * point_value,
+        })
+        remaining -= leg_quantity
+    if not legs or remaining != 0:
+        return legs, None, "native_initial_protection_incomplete"
+    return legs, sum(leg["initial_native_risk_usd"] for leg in legs), "complete"
 
 
 def _match_ledger_trades(ledger, expected_accounts, bracket_by_account, intent, correlation, journal):
@@ -425,13 +459,18 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None):
             quantity = int(abs(trade["contracts"]) or 1)
             stop_price = _float(fields, "sl", _float(intent, "stop_loss"))
             target_price = _float(fields, "tp1", _float(intent, "take_profit_1"))
-            point_value = POINT_VALUE.get(instrument_root)
-            if point_value is None:
-                incomplete_outcome = True
-                continue
+            point_value = _float(fields, "point_value_usd", _float(submit_fields, "point_value_usd"))
+            tick_size = _float(fields, "tick_size", _float(submit_fields, "tick_size"))
             # TradeLedger pnl_points is already quantity-weighted by
             # GlitchTradeInsightsService as each closing fill is accumulated.
-            pnl_usd = trade["pnl_points"] * point_value - trade["commission_total"]
+            pnl_usd = (
+                trade["pnl_points"] * point_value - trade["commission_total"]
+                if point_value is not None and point_value > 0
+                else None
+            )
+            protection_legs, initial_risk_usd, risk_status = initial_native_risk(
+                entry_price, quantity, fields, point_value
+            ) if has_account_bracket else ([], None, "native_follower_bracket_facts_missing")
             protection_evidence = "execution_receipt"
             protection_status = "submitted"
             if not has_account_bracket:
@@ -451,11 +490,25 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None):
                 "entry_price": entry_price,
                 "exit_price": exit_price,
                 "realized_pnl_usd": pnl_usd,
+                "point_value_usd": point_value,
+                "tick_size": tick_size,
+                "instrument_economics_source": (
+                    "native_execution_receipt"
+                    if point_value is not None and point_value > 0 and tick_size is not None and tick_size > 0
+                    else "unavailable"
+                ),
+                "initial_protection_legs": protection_legs,
+                "initial_native_risk_usd": initial_risk_usd,
+                "risk_normalization_status": risk_status,
+                "risk_normalization_eligible": risk_status == "complete",
                 "trade_id": trade["trade_id"],
                 "protection_evidence": protection_evidence,
                 "protection_status": protection_status,
                 "close_kind": infer_close_kind(trade),
-                **excursion(snapshots, account, trade["entry_utc"], trade["exit_utc"], instrument_root, pnl_usd),
+                **excursion(
+                    snapshots, account, trade["entry_utc"], trade["exit_utc"],
+                    instrument_root, pnl_usd if pnl_usd is not None else 0.0
+                ),
             })
         if incomplete_outcome:
             continue
@@ -488,7 +541,11 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None):
             "account_outcomes": account_outcomes,
             "replication_diagnostics": replication_diagnostics,
             "master_realized_pnl_usd": master_outcome["realized_pnl_usd"],
-            "group_realized_pnl_usd": sum(row["realized_pnl_usd"] for row in account_outcomes),
+            "group_realized_pnl_usd": (
+                sum(row["realized_pnl_usd"] for row in account_outcomes)
+                if all(row["realized_pnl_usd"] is not None for row in account_outcomes)
+                else None
+            ),
             "master_attribution_status": "complete",
             "master_learning_eligible": True,
             "attribution_status": "process_error" if process_error else "complete",
