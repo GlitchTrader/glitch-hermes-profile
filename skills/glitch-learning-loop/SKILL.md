@@ -36,7 +36,13 @@ replication, and the immutable journal.
    protection, chop/scalp behavior, and target movement as hypotheses Hermes
    must test—not fixed formulas Codex may encode.
 4. Evaluate `NOTHING`, `HOLD`, direction, quantity, initial geometry, stop/TP
-   changes, and exits. Do not impose trade quotas or fear-driven cooldowns.
+   changes, and exits. For flat `NOTHING`, preserve a structured
+   counterfactual: the developing movement, the condition or price that would
+   have offered favorable participation, invalidation, and the later observed
+   path. Label the actual outcome as no trade and the counterfactual as
+   informational only; never convert it into realized PnL, reward, punishment,
+   entry pressure, or durable memory. Do not impose trade quotas or fear-driven
+   cooldowns.
 5. Never loosen an accepted live stop. Improve initial geometry, quantity,
    management, exit, or later re-entry instead.
 6. Treat each prior `change_condition` as accountable. If later evidence meets

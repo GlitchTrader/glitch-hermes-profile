@@ -1067,7 +1067,7 @@ def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[s
         "timeframe_rows": "live_in_progress_observations",
         "utc_time": "observation_time_not_bar_close_time",
         "timeframe_roles": {
-            "1m": "entry_timing_and_noise",
+            "1m": "primary_new_exposure_timing_and_noise",
             "5m": "local_setup_and_timing",
             "15m": "regime_context",
             "60m": "regime_context",
@@ -1380,7 +1380,7 @@ def build_prompt(
             "confidence": 0.5,
             "snapshot_hash": str(scenario["market"]["snapshot_hash"]),
             "model_version": CORE_MODEL,
-            "prompt_version": "direct-v3",
+            "prompt_version": "direct-v4",
             "reason": "Replace with the current evidence-based decision.",
             "decision_audit": {
                 "bull_case": "Replace with compact bullish evidence.",
@@ -1409,19 +1409,25 @@ def build_prompt(
     }
     return (
         "Apply the Glitch SOUL and the five loaded trading skills to CURRENT_CYCLE. Glitch and NinjaTrader facts in the supplied "
-        "packet and ledger outrank memory and interpretation. The timeframe rows are live in-progress observations: use 1m/5m "
+        "packet and ledger outrank memory and interpretation. The timeframe rows are live in-progress observations. "
         "Packet is_contiguous, observed_span_minutes, and missing_minute_ids describe observation continuity. Treat gaps as explicit uncertainty evidence, not as an automatic no-trade rule. "
-        "for timing and noise, 15m/60m for regime context, and never treat a higher-timeframe row as a completed-candle confirmation. "
+        "Use the immediate and next one-minute movement as the primary timing object for new exposure, use 1m/5m for timing and noise, "
+        "use 15m/60m for regime context, and never treat a higher-timeframe row as a completed-candle confirmation. "
         "Confirmation is probabilistic: infer it from the five-frame price path and available structure; a closed candle is not required. "
-        "Missing order flow is neutral, not evidence against a trade. When flat, predict and trade the most likely next five minutes, not "
+        "Missing order flow is neutral, not evidence against a trade. Higher timeframes provide regime, location, and opposing-risk context, "
+        "not permission; they cannot rescue a locally late, extended, exhausted, or poorly located entry. When flat, predict and trade the most likely next five minutes, not "
         "the next fifteen. When positioned and reviewing each minute, predict the most likely next one-minute candle and manage the trade "
-        "from that forecast, current structure, and risk. Avoid staying idle for too long: take a calculated-risk trade when current evidence "
-        "offers positive expectancy, and do not let ordinary uncertainty become a permanent veto. Do not manufacture edge or force a trade. "
-        "Mixed timeframes are normal; bounded experimentation may sample multiple valid setups without a trade quota or deterministic cooldown. After a stop, re-enter only "
-        "when price or evidence has materially changed; a repeated thesis at nearly the same level is churn. State the most likely "
+        "from that forecast, current structure, and risk. Do not remain flat merely because evidence is imperfect when a bounded, locally timely "
+        "positive-expectancy opportunity exists. Conversely, activity, fear of inactivity, and desire for more data are never evidence. "
+        "Do not manufacture edge or force a trade. Before new exposure, classify the local move as initiating, progressing, or exhausting. "
+        "Prefer early participation or a favorable retest; when price has already traveled into opposing structure, session extremes, or exhaustion, "
+        "compare entry now against waiting or remaining flat. Confirmation arriving after most of the expected short-term move is not timely evidence. "
+        "Mixed timeframes are normal; bounded experimentation may sample multiple valid setups without a trade quota or deterministic cooldown. After a stop or failed managed exit, re-enter nearby in the same direction only "
+        "when price, structure, or immediate behavior has materially changed, and state exactly what changed; a small reclaim or repeated thesis at nearly the same level is churn. State the most likely "
         "next-five-minute path in decisive_evidence and its concrete invalidation in change_condition. "
         "For entries, define structural invalidation before reward. Anchor every stop beyond a relevant recent pivot or swing, the actual "
-        "invalidation, and observable noise rather than merely offsetting it from the immediate price; "
+        "invalidation, and observable noise rather than merely offsetting it from the immediate price. A valid stop should survive the ordinary "
+        "one-minute path expected by the thesis; "
         "never compress a stop to create attractive R:R. Use realistic targets supported by the same horizon and regime. stop_loss and "
         "take_profit fields are absolute MNQ prices, not distances, and Glitch preserves them unless the live market has already crossed them. "
         "Treat execution_scope capacity, buffer, session, native-state, and lock fields as current packet evidence, not a model-call or intent-validation veto. Hermes owns quantity from current evidence. Follower accounts and ratios are user-owned replication "
@@ -1434,6 +1440,9 @@ def build_prompt(
         "reserving capacity for later evidence, a later independently protected addition, and leaving exposure unchanged. Choose freely; "
         "do not mechanically maximize size or default to one contract. "
         "Packet evidence may inform an explicit NOTHING, but deterministic policy does not replace Hermes's decision with an inferred veto. "
+        "Treat a flat NOTHING as an active observation: use decisive_evidence, disconfirming_evidence, and change_condition to preserve the developing "
+        "path, favorable participation condition, and invalidation. Later learning may compare the observed path, but the counterfactual remains "
+        "hypothetical and never becomes realized PnL, reward, punishment, or pressure to trade. "
         "A quantity of two or more may use TP2 plus quantity_tp1; "
         "a quantity of three or more may also use TP3 plus quantity_tp2. Each leg may have independently chosen valid stop and target geometry, and every leg receives "
         "an independent native OCO pair. These native legs are the current scale-out mechanism; there is no partial-reduction action after entry. "

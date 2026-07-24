@@ -571,6 +571,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         ),
         "hourly": (
             "Supervise the latest completed-trade and decision episodes. Classify NOTHING evidence as disciplined abstention, missed opportunity, or uncertainty; classify rejected intents as correct factual rejection, cognitive mistake, or uncertainty. "
+            "For each flat NOTHING, preserve the developing movement, the observable condition or price that would have offered favorable participation, invalidation, and the later observed path. Label the actual outcome no trade and every counterfactual informational only. "
             "Never infer counterfactual PnL when target/stop ordering is unobserved. Infrastructure and transport failures are code evidence, never strategy memory. Identify repeated correct reasoning, repeated mistakes, geometry/management/quantity patterns, false abstention versus overtrading, and system defects. "
             "Issue advisory guidance, never an order. Decision episodes may improve questions and attention, but they may not create entry pressure, anti-abstention pressure, quantity pressure, or activate trading cognition. "
             "Attributable evidence may produce one compact versioned cognitive proposal now rather than waiting for the daily loop; proposal does not activate it. Preserve its uncertainty until later comparable completed master outcomes exist. "
@@ -580,6 +581,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         "planning": (
             "Create the next 300-minute Hermes plan. Hermes owns strategy and master quantity within current master limits. Set questions, hypotheses, sizing/geometry/management posture and experiments without deterministic entry gates. "
             "Use completed decision episodes to question habitual abstention and rejected geometry, while preserving uncertainty and excluding infrastructure faults from strategy. Decision-only findings are observational and cannot pressure entries or size. "
+            "Activity, fear of inactivity, and desire for more data are never evidence; flat counterfactuals remain informational and never count as realized performance. "
             "Do not create a fixed or provisional quantity baseline: calibrate quantity from repeated risk-adjusted outcomes, current edge, structural risk, remaining opportunity, drawdown, and the long-run objective. "
             "Keep initial native target legs, reserved capacity, and later thesis-supported protected additions available as choices rather than mandatory recipes. "
             "Follower ratios are user configuration and must not affect the master plan."
