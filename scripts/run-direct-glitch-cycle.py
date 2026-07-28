@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,11 +44,10 @@ LEG_UPDATE_FIELDS = {"leg_id", "stop_loss", "take_profit"}
 DECISION_FIELDS = {
     "schema_version", "intent_id", "created_utc", "instrument", "account",
     "operator_profile", "action", "confidence", "snapshot_hash", "model_version",
-    "prompt_version", "reason", "decision_audit",
+    "prompt_version", "reason", "decision_audit", "wake_triggers",
 }
-# Hermes may retain one structured review trigger alongside the intent.  It is
-# control-plane metadata, not part of the Glitch execution intent contract.
-ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS | {"protection_updates", "wake_trigger"}
+# Hermes-only control-plane metadata; it is stripped before the Glitch API call.
+ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS | {"protection_updates"}
 DECISION_AUDIT_FIELDS = {
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
     "decisive_evidence", "disconfirming_evidence", "change_condition", "final_choice",
@@ -837,31 +837,39 @@ def wake_trigger_path(exchange: Path) -> Path:
     return exchange / "hermes" / "supervisor" / "active-wake-triggers.json"
 
 
-def validate_wake_trigger(trigger: Any, index: int) -> None:
-    if trigger is None:
-        return
-    if not isinstance(trigger, dict):
-        raise ValueError(f"wake_trigger_invalid:{index}")
-    if set(trigger) != {"type", "direction", "price"}:
-        raise ValueError(f"wake_trigger_fields_invalid:{index}")
-    if trigger.get("type") != "PRICE_CROSS":
-        raise ValueError(f"wake_trigger_type_invalid:{index}")
-    if trigger.get("direction") not in {"ABOVE", "BELOW"}:
-        raise ValueError(f"wake_trigger_direction_invalid:{index}")
-    price = trigger.get("price")
-    if (not isinstance(price, (int, float)) or isinstance(price, bool)
-            or not math.isfinite(float(price))):
-        raise ValueError(f"wake_trigger_price_invalid:{index}")
+def validate_wake_triggers(triggers: Any, index: int) -> None:
+    if not isinstance(triggers, list):
+        raise ValueError(f"wake_triggers_invalid:{index}")
+    for trigger_index, trigger in enumerate(triggers):
+        if not isinstance(trigger, dict):
+            raise ValueError(f"wake_trigger_invalid:{index}:{trigger_index}")
+        if set(trigger) != {"type", "direction", "price"}:
+            raise ValueError(f"wake_trigger_fields_invalid:{index}:{trigger_index}")
+        if trigger.get("type") != "PRICE_CROSS":
+            raise ValueError(f"wake_trigger_type_invalid:{index}:{trigger_index}")
+        if trigger.get("direction") not in {"ABOVE", "BELOW"}:
+            raise ValueError(f"wake_trigger_direction_invalid:{index}:{trigger_index}")
+        price = trigger.get("price")
+        if (not isinstance(price, (int, float)) or isinstance(price, bool)
+                or not math.isfinite(float(price))):
+            raise ValueError(f"wake_trigger_price_invalid:{index}:{trigger_index}")
 
 
-def has_market_snapshot(packet: dict[str, Any]) -> bool:
-    frames = packet.get("frames")
-    if not isinstance(frames, list) or not frames:
-        return False
-    latest = frames[-1]
-    snapshot = latest.get("market_snapshot") if isinstance(latest, dict) else None
-    instruments = snapshot.get("instruments") if isinstance(snapshot, dict) else None
-    return isinstance(instruments, list) and len(instruments) > 0
+def explicit_price_crosses(condition: str) -> set[tuple[str, float]]:
+    pattern = re.compile(r"\b(above|over|below|under)\s+([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+    crosses: set[tuple[str, float]] = set()
+    for match in pattern.finditer(condition):
+        direction = "ABOVE" if match.group(1).lower() in {"above", "over"} else "BELOW"
+        crosses.add((direction, float(match.group(2))))
+    return crosses
+
+
+def require_explicit_wake_triggers(audit: dict[str, Any], triggers: list[dict[str, Any]], index: int) -> None:
+    expected = explicit_price_crosses(str(audit.get("change_condition", "")))
+    actual = {(str(trigger.get("direction")), float(trigger.get("price"))) for trigger in triggers}
+    missing = sorted(expected.difference(actual))
+    if missing:
+        raise ValueError(f"wake_triggers_missing_for_change_condition:{index}:{missing}")
 
 
 def packet_current_price(packet: dict[str, Any]) -> float | None:
@@ -921,6 +929,7 @@ def prior_packet_price(exchange: Path, packet: dict[str, Any]) -> float | None:
 
 
 def wake_trigger_fired(exchange: Path, packet: dict[str, Any], scenario: dict[str, Any]) -> bool:
+    del scenario
     path = wake_trigger_path(exchange)
     if not path.is_file():
         return False
@@ -955,9 +964,8 @@ def wake_trigger_fired(exchange: Path, packet: dict[str, Any], scenario: dict[st
 def persist_wake_triggers(exchange: Path, batch: dict[str, Any], packet_id: str) -> None:
     triggers = []
     for decision in batch.get("decisions", []):
-        trigger = decision.get("wake_trigger") if isinstance(decision, dict) else None
-        if trigger is not None:
-            triggers.append(trigger)
+        if isinstance(decision, dict) and isinstance(decision.get("wake_triggers"), list):
+            triggers.extend(decision["wake_triggers"])
     write_json_atomic(wake_trigger_path(exchange), {
         "schema_version": "glitch.hermes.wake_triggers.v1",
         "cycle_id": packet_id,
@@ -1095,7 +1103,7 @@ def validate_batch(
         unknown = sorted(set(intent).difference(ALLOWED_DECISION_FIELDS))
         if unknown:
             raise ValueError(f"intent_unknown_fields:{index}:{','.join(unknown)}")
-        validate_wake_trigger(intent.get("wake_trigger"), index)
+        validate_wake_triggers(intent.get("wake_triggers"), index)
         if intent.get("schema_version") != "glitch.intent.v3":
             raise ValueError(f"intent_schema_version_invalid:{index}")
         for field in (
@@ -1118,6 +1126,7 @@ def validate_batch(
         if any(not isinstance(audit[field], str) or not audit[field].strip()
                for field in DECISION_AUDIT_FIELDS):
             raise ValueError(f"decision_audit_value_invalid:{index}")
+        require_explicit_wake_triggers(audit, intent["wake_triggers"], index)
         route = intent.get("operator_profile")
         if route in seen_routes:
             raise ValueError("duplicate_route")
@@ -1192,6 +1201,9 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
         return batch
     for intent in decisions:
         if isinstance(intent, dict):
+            if "wake_triggers" not in intent and "wake_trigger" in intent:
+                legacy = intent.pop("wake_trigger")
+                intent["wake_triggers"] = [] if legacy is None else [legacy]
             try:
                 uuid.UUID(str(intent.get("intent_id", "")))
             except (ValueError, TypeError, AttributeError):
@@ -1502,7 +1514,7 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
         # Keep the trigger in Hermes' outbox/audit trail, but never send this
         # Hermes-only field across the strict Glitch execution API boundary.
         wire_intent = dict(intent)
-        wire_intent.pop("wake_trigger", None)
+        wire_intent.pop("wake_triggers", None)
         try:
             result = post_intent(wire_intent, token)
         except Exception as error:  # network failure is retriable with the same intent IDs
@@ -1621,7 +1633,7 @@ def build_prompt(
                 "change_condition": "Replace with the concrete reassessment trigger.",
                 "final_choice": action,
             },
-            "wake_trigger": None,
+            "wake_triggers": [],
         })
     output_template = {
         "schema_version": "glitch.intent.batch.v1",
@@ -1700,8 +1712,8 @@ def build_prompt(
         "A stop may tighten or move farther away when current evidence supports it; Glitch independently enforces native identity and protective market side. "
         "A MOVE_TP target may extend or reduce remaining opportunity but must stay on the live profit side. Echo cycle_id and account/operator_profile exactly. "
         "snapshot_hash must be a JSON string copied exactly from the MNQ market snapshot, even when it contains only digits. "
-        "Optionally include wake_trigger as {type: \"PRICE_CROSS\", direction: \"ABOVE\"|\"BELOW\", price: number} "
-        "when the change_condition is a concrete one-sided price crossing that should cause Hermes to re-invoke the next-minute worker early; omit it for prose-only conditions. "
+        "wake_triggers is mandatory and must be an array of {type: \"PRICE_CROSS\", direction: \"ABOVE\"|\"BELOW\", price: number}. "
+        "For every explicit above/over/below/under price level in change_condition, include a matching trigger; use [] only when the condition is not a concrete price crossing. "
         "Use the top-level key decisions, never intents. Close every intent object before closing the decisions "
         "array. Before returning, silently verify that the entire response is one syntactically valid JSON object "
         "that a strict JSON parser can load. Return no markdown fences, commentary, or trailing text. "
@@ -1752,6 +1764,72 @@ def packet_is_current(packet: dict[str, Any], max_age_seconds: int | None = None
     closed = datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
     age = (datetime.now(timezone.utc) - closed).total_seconds()
     return -60 <= age <= max_age_seconds
+
+
+def market_snapshot_age_seconds(packet: dict[str, Any]) -> float | None:
+    """Return age of the newest embedded market observation, not the wrapper packet."""
+    frames = packet.get("frames")
+    if not isinstance(frames, list) or not frames:
+        return None
+    latest = frames[-1] if isinstance(frames[-1], dict) else {}
+    snapshot = latest.get("market_snapshot")
+    instruments = snapshot.get("instruments") if isinstance(snapshot, dict) else None
+    if not isinstance(instruments, list) or not instruments:
+        return None
+    timestamps: list[datetime] = []
+    for instrument in instruments:
+        if not isinstance(instrument, dict):
+            continue
+        candidates = [instrument.get("timestamp_utc")]
+        candidates.extend(
+            bar.get("utc_time")
+            for bar in instrument.get("timeframe_bars", [])
+            if isinstance(bar, dict)
+        )
+        for raw in candidates:
+            if not raw:
+                continue
+            try:
+                timestamps.append(datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(timezone.utc))
+            except (TypeError, ValueError):
+                continue
+    if not timestamps:
+        return None
+    return (datetime.now(timezone.utc) - max(timestamps)).total_seconds()
+
+
+def market_snapshot_is_fresh(packet: dict[str, Any], max_age_seconds: int | None = None) -> bool:
+    if max_age_seconds is None:
+        policy = packet.get("policy")
+        configured = policy.get("snapshot_max_age_seconds", 180) if isinstance(policy, dict) else 180
+        try:
+            max_age_seconds = max(1, int(configured))
+        except (TypeError, ValueError):
+            max_age_seconds = 180
+    age = market_snapshot_age_seconds(packet)
+    return age is None or -60 <= age <= max_age_seconds
+
+
+def feed_observation_is_fresh(glitch_data: Path) -> bool:
+    """Require the current native rail feed-bus verdict; fail closed otherwise."""
+    path = glitch_data / "selfcheck" / "rail.json"
+    if not path.is_file():
+        return False
+    try:
+        rail = read_json(path)
+        created_raw = rail.get("created_utc")
+        created = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+        age_seconds = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
+        feed_bus = rail.get("feed_bus")
+        fresh_count = feed_bus.get("fresh_instrument_count") if isinstance(feed_bus, dict) else None
+        return (
+            -60 <= age_seconds <= 180
+            and isinstance(fresh_count, int)
+            and not isinstance(fresh_count, bool)
+            and fresh_count > 0
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def packet_window_utc(packet: dict[str, Any]) -> datetime:
@@ -1874,7 +1952,6 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         raise ValueError("packet_id_missing")
     if not packet_is_current(packet):
         return 0
-
     pending = pending_outbox(exchange)
     if pending is not None:
         pending_id, pending_path = pending
@@ -1908,16 +1985,6 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
             mark_attempt_from_receipt(exchange, packet_id, receipt)
             return 0
 
-    if not has_market_snapshot(packet):
-        append_event(events_path, {
-            "schema_version": "glitch.hermes.cycle_event.v1",
-            "event": "llm_skipped",
-            "reason": "empty_market_snapshot",
-            "recorded_utc": utc_now(),
-            "cycle_id": packet_id,
-        })
-        return 0
-
     scenario = build_scenario(packet)
     trade_state = active_trade_state(packet, scenario, glitch_data, exchange)
     if outbox_path.is_file():
@@ -1938,6 +2005,26 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         return 0 if receipt_classification(receipt) == "successful" else 1
     if receipt_path.is_file():
         raise ValueError("receipt_without_outbox")
+
+    if not market_snapshot_is_fresh(packet):
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": "stale_market_snapshot",
+            "market_age_seconds": market_snapshot_age_seconds(packet),
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+        })
+        return 0
+    if not feed_observation_is_fresh(glitch_data):
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": "stale_feed_observation",
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+        })
+        return 0
 
     directive = read_operator_directive(exchange)
     reason = invocation_reason(packet, scenario, exchange, directive)
@@ -1974,7 +2061,6 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         batch, output_repair_count = invoke_validated_batch(
             args.profile, prompt, scenario, directive, args.timeout_seconds
         )
-        validate_batch(batch, scenario, directive)
         if discard_stale_entry_batch(exchange, events_path, outbox_path, packet_id, batch):
             attempt = read_json(attempt_path)
             attempt["completed_utc"] = utc_now()
