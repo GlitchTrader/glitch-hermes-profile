@@ -882,6 +882,31 @@ def packet_current_price(packet: dict[str, Any]) -> float | None:
     return None
 
 
+def packet_one_minute_range(packet: dict[str, Any]) -> tuple[float, float] | None:
+    """Return the latest one-minute bar range for intrapacket crossings."""
+    frames = packet.get("frames")
+    if not isinstance(frames, list) or not frames:
+        return None
+    latest = frames[-1]
+    snapshot = latest.get("market_snapshot") if isinstance(latest, dict) else None
+    instruments = snapshot.get("instruments") if isinstance(snapshot, dict) else None
+    if not isinstance(instruments, list):
+        return None
+    for instrument in instruments:
+        if not isinstance(instrument, dict):
+            continue
+        for bar in instrument.get("timeframe_bars", []):
+            if not isinstance(bar, dict) or bar.get("minutes") != 1:
+                continue
+            low = bar.get("low")
+            high = bar.get("high")
+            if (isinstance(low, (int, float)) and not isinstance(low, bool)
+                    and isinstance(high, (int, float)) and not isinstance(high, bool)
+                    and math.isfinite(float(low)) and math.isfinite(float(high))):
+                return float(low), float(high)
+    return None
+
+
 def prior_packet_price(exchange: Path, packet: dict[str, Any]) -> float | None:
     packets = exchange / "glitch" / "decision-packets"
     current_id = str(packet.get("packet_id", ""))
@@ -908,8 +933,10 @@ def wake_trigger_fired(exchange: Path, packet: dict[str, Any], scenario: dict[st
         return False
     previous = prior_packet_price(exchange, packet)
     current = packet_current_price(packet)
+    current_range = packet_one_minute_range(packet)
     if previous is None or current is None:
         return False
+    current_low, current_high = current_range or (current, current)
     for trigger in triggers:
         if not isinstance(trigger, dict):
             continue
@@ -918,9 +945,9 @@ def wake_trigger_fired(exchange: Path, packet: dict[str, Any], scenario: dict[st
         except (KeyError, TypeError, ValueError):
             continue
         direction = trigger.get("direction")
-        if direction == "ABOVE" and previous <= level < current:
+        if direction == "ABOVE" and previous <= level < max(current, current_high):
             return True
-        if direction == "BELOW" and previous >= level > current:
+        if direction == "BELOW" and previous >= level > min(current, current_low):
             return True
     return False
 
