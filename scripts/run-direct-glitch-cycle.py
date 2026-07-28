@@ -45,6 +45,8 @@ DECISION_FIELDS = {
     "operator_profile", "action", "confidence", "snapshot_hash", "model_version",
     "prompt_version", "reason", "decision_audit",
 }
+# Hermes may retain one structured review trigger alongside the intent.  It is
+# control-plane metadata, not part of the Glitch execution intent contract.
 ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS | {"protection_updates", "wake_trigger"}
 DECISION_AUDIT_FIELDS = {
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
@@ -58,7 +60,9 @@ MNQ_TICK_SIZE = 0.25
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Match GlitchSnapshotJson.FormatUtc's round-trip ISO shape.  The seventh
+    # fractional digit matters to the strict NinjaTrader intent parser.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f0Z")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -935,6 +939,48 @@ def persist_wake_triggers(exchange: Path, batch: dict[str, Any], packet_id: str)
     })
 
 
+def batch_contains_entry(batch: dict[str, Any]) -> bool:
+    return any(
+        isinstance(decision, dict)
+        and decision.get("action") in {"ENTER_LONG", "ENTER_SHORT"}
+        for decision in batch.get("decisions", [])
+    )
+
+
+def packet_has_advanced(exchange: Path, packet_id: str) -> bool:
+    path = exchange / "glitch" / "latest-decision-packet.json"
+    if not path.is_file():
+        return False
+    try:
+        latest_id = str(read_json(path).get("packet_id", ""))
+    except (OSError, ValueError, TypeError):
+        return False
+    return bool(latest_id and latest_id > packet_id)
+
+
+def discard_stale_entry_batch(
+    exchange: Path,
+    events_path: Path,
+    outbox_path: Path,
+    packet_id: str,
+    batch: dict[str, Any],
+) -> bool:
+    if not batch_contains_entry(batch) or not packet_has_advanced(exchange, packet_id):
+        return False
+    try:
+        outbox_path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    append_event(events_path, {
+        "schema_version": "glitch.hermes.cycle_event.v1",
+        "event": "intent_discarded_stale_packet",
+        "reason": "newer_packet_published_before_entry_delivery",
+        "recorded_utc": utc_now(),
+        "cycle_id": packet_id,
+    })
+    return True
+
+
 def persist_outbox(
     exchange: Path,
     outbox_path: Path,
@@ -1022,6 +1068,7 @@ def validate_batch(
         unknown = sorted(set(intent).difference(ALLOWED_DECISION_FIELDS))
         if unknown:
             raise ValueError(f"intent_unknown_fields:{index}:{','.join(unknown)}")
+        validate_wake_trigger(intent.get("wake_trigger"), index)
         if intent.get("schema_version") != "glitch.intent.v3":
             raise ValueError(f"intent_schema_version_invalid:{index}")
         for field in (
@@ -1038,7 +1085,6 @@ def validate_batch(
         if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
                 or not math.isfinite(float(confidence)) or not 0 <= confidence <= 1):
             raise ValueError(f"intent_confidence_invalid:{index}")
-        validate_wake_trigger(intent.get("wake_trigger"), index)
         audit = intent.get("decision_audit")
         if not isinstance(audit, dict) or set(audit) != DECISION_AUDIT_FIELDS:
             raise ValueError(f"decision_audit_contract_invalid:{index}")
@@ -1426,8 +1472,12 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
     results: list[dict[str, Any]] = []
     complete = True
     for intent in batch["decisions"]:
+        # Keep the trigger in Hermes' outbox/audit trail, but never send this
+        # Hermes-only field across the strict Glitch execution API boundary.
+        wire_intent = dict(intent)
+        wire_intent.pop("wake_trigger", None)
         try:
-            result = post_intent(intent, token)
+            result = post_intent(wire_intent, token)
         except Exception as error:  # network failure is retriable with the same intent IDs
             complete = False
             result = {"transport_error": str(error)}
@@ -1544,6 +1594,7 @@ def build_prompt(
                 "change_condition": "Replace with the concrete reassessment trigger.",
                 "final_choice": action,
             },
+            "wake_trigger": None,
         })
     output_template = {
         "schema_version": "glitch.intent.batch.v1",
@@ -1611,9 +1662,6 @@ def build_prompt(
         "ENTER_LONG, ENTER_SHORT, HOLD, MOVE_STOP, MOVE_TP, EXIT, or NOTHING; NO_ACTION is accepted as NOTHING. "
         "decision_audit must be an object with bull_case, bear_case, flat_case, aggressive_case, "
         "conservative_case, decisive_evidence, disconfirming_evidence, change_condition, and final_choice; "
-        "optionally include wake_trigger as null or exactly {type: PRICE_CROSS, direction: ABOVE|BELOW, price: number} "
-        "when a one-shot price crossing should cause an early reassessment on the next packet. "
-        "Use null when no such trigger is supported. "
         "final_choice must appear exactly once, inside decision_audit only, and must equal action. final_choice is forbidden as a direct "
         "field of a decision. Start from required_output_template: preserve its object/array shape and exact scoped identity values, then "
         "replace its placeholder rationale and choose the evidence-based action and matching nested final_choice. For NOTHING, HOLD, and EXIT omit quantity, order_type, stop_loss, "
@@ -1625,6 +1673,8 @@ def build_prompt(
         "A stop may tighten or move farther away when current evidence supports it; Glitch independently enforces native identity and protective market side. "
         "A MOVE_TP target may extend or reduce remaining opportunity but must stay on the live profit side. Echo cycle_id and account/operator_profile exactly. "
         "snapshot_hash must be a JSON string copied exactly from the MNQ market snapshot, even when it contains only digits. "
+        "Optionally include wake_trigger as {type: \"PRICE_CROSS\", direction: \"ABOVE\"|\"BELOW\", price: number} "
+        "when the change_condition is a concrete one-sided price crossing that should cause Hermes to re-invoke the next-minute worker early; omit it for prose-only conditions. "
         "Use the top-level key decisions, never intents. Close every intent object before closing the decisions "
         "array. Before returning, silently verify that the entire response is one syntactically valid JSON object "
         "that a strict JSON parser can load. Return no markdown fences, commentary, or trailing text. "
@@ -1709,17 +1759,32 @@ def should_invoke_luna(
     exchange: Path,
     directive: dict[str, Any] | None,
 ) -> bool:
+    return invocation_reason(packet, scenario, exchange, directive) is not None
+
+
+def invocation_reason(
+    packet: dict[str, Any],
+    scenario: dict[str, Any],
+    exchange: Path,
+    directive: dict[str, Any] | None,
+) -> str | None:
     window = packet_window_utc(packet)
     positioned = scoped_master_is_positioned(packet, scenario)
-    if directive is not None or positioned or wake_trigger_fired(exchange, packet, scenario):
-        return True
+    if directive is not None:
+        return "operator_directive"
+    if positioned:
+        return "positioned"
+    if wake_trigger_fired(exchange, packet, scenario):
+        return "condition_change"
     prior = latest_prior_attempt(exchange, packet)
     if prior is None:
-        return True
+        return "first_packet"
     prior_window, attempt = prior
     if attempt.get("status") in {"started", "failed", "execution_failed", "delivery_incomplete"}:
-        return True
-    return (window - prior_window).total_seconds() >= 300
+        return "retry_after_failure"
+    if (window - prior_window).total_seconds() >= 300:
+        return "scheduled"
+    return None
 
 
 def latest_prior_attempt(
@@ -1791,6 +1856,8 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         original_scenario = build_scenario(original_packet)
         pending_batch = normalize_batch(read_json(pending_path), original_scenario)
         validate_batch(pending_batch, original_scenario)
+        if discard_stale_entry_batch(exchange, events_path, pending_path, pending_id, pending_batch):
+            return 0
         if args.dry_run:
             print(json.dumps({
                 "cycle_id": pending_id,
@@ -1846,7 +1913,8 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         raise ValueError("receipt_without_outbox")
 
     directive = read_operator_directive(exchange)
-    if not should_invoke_luna(packet, scenario, exchange, directive):
+    reason = invocation_reason(packet, scenario, exchange, directive)
+    if reason is None:
         return 0
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
@@ -1880,6 +1948,13 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
             args.profile, prompt, scenario, directive, args.timeout_seconds
         )
         validate_batch(batch, scenario, directive)
+        if discard_stale_entry_batch(exchange, events_path, outbox_path, packet_id, batch):
+            attempt = read_json(attempt_path)
+            attempt["completed_utc"] = utc_now()
+            attempt["status"] = "stale_packet_discarded"
+            attempt["invocation_reason"] = reason
+            write_json_atomic(attempt_path, attempt)
+            return 0
         persist_wake_triggers(exchange, batch, packet_id)
         persist_outbox(exchange, outbox_path, packet_id, batch, directive)
         write_json_atomic(attempt_path, {
@@ -1893,6 +1968,7 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
             "hermes_session_source": TRADING_SOURCE,
             "hermes_session_mode": "isolated",
             "output_repair_count": output_repair_count,
+            "invocation_reason": reason,
         })
     except Exception as error:
         attempt = read_json(attempt_path)
@@ -1921,6 +1997,7 @@ def run_once(args: argparse.Namespace, glitch_data: Path, exchange: Path) -> int
         "cycle_id": packet_id,
         "decision_count": len(batch["decisions"]),
         "submitted": not args.dry_run,
+        "invocation_reason": reason,
     })
     if args.dry_run:
         print(json.dumps({"cycle_id": packet_id, "decision_count": len(batch["decisions"]), "submitted": False}))
