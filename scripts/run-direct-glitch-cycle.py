@@ -976,48 +976,6 @@ def persist_wake_triggers(exchange: Path, batch: dict[str, Any], packet_id: str)
     })
 
 
-def batch_contains_entry(batch: dict[str, Any]) -> bool:
-    return any(
-        isinstance(decision, dict)
-        and decision.get("action") in {"ENTER_LONG", "ENTER_SHORT"}
-        for decision in batch.get("decisions", [])
-    )
-
-
-def packet_has_advanced(exchange: Path, packet_id: str) -> bool:
-    path = exchange / "glitch" / "latest-decision-packet.json"
-    if not path.is_file():
-        return False
-    try:
-        latest_id = str(read_json(path).get("packet_id", ""))
-    except (OSError, ValueError, TypeError):
-        return False
-    return bool(latest_id and latest_id > packet_id)
-
-
-def discard_stale_entry_batch(
-    exchange: Path,
-    events_path: Path,
-    outbox_path: Path,
-    packet_id: str,
-    batch: dict[str, Any],
-) -> bool:
-    if not batch_contains_entry(batch) or not packet_has_advanced(exchange, packet_id):
-        return False
-    try:
-        outbox_path.unlink(missing_ok=True)
-    except OSError:
-        return False
-    append_event(events_path, {
-        "schema_version": "glitch.hermes.cycle_event.v1",
-        "event": "intent_discarded_stale_packet",
-        "reason": "newer_packet_published_before_entry_delivery",
-        "recorded_utc": utc_now(),
-        "cycle_id": packet_id,
-    })
-    return True
-
-
 def persist_outbox(
     exchange: Path,
     outbox_path: Path,
@@ -1949,7 +1907,6 @@ def run_once(
     args: argparse.Namespace,
     glitch_data: Path,
     exchange: Path,
-    allow_stale_retry: bool = True,
 ) -> int:
     if not trading_runtime_enabled(glitch_data):
         return 0
@@ -1976,8 +1933,6 @@ def run_once(
         original_scenario = build_scenario(original_packet)
         pending_batch = normalize_batch(read_json(pending_path), original_scenario)
         validate_batch(pending_batch, original_scenario)
-        if discard_stale_entry_batch(exchange, events_path, pending_path, pending_id, pending_batch):
-            return run_once(args, glitch_data, exchange, allow_stale_retry=False) if allow_stale_retry else 0
         if args.dry_run:
             print(json.dumps({
                 "cycle_id": pending_id,
@@ -2077,13 +2032,6 @@ def run_once(
         batch, output_repair_count = invoke_validated_batch(
             args.profile, prompt, scenario, directive, args.timeout_seconds
         )
-        if discard_stale_entry_batch(exchange, events_path, outbox_path, packet_id, batch):
-            attempt = read_json(attempt_path)
-            attempt["completed_utc"] = utc_now()
-            attempt["status"] = "stale_packet_discarded"
-            attempt["invocation_reason"] = reason
-            write_json_atomic(attempt_path, attempt)
-            return run_once(args, glitch_data, exchange, allow_stale_retry=False) if allow_stale_retry else 0
         persist_wake_triggers(exchange, batch, packet_id)
         persist_outbox(exchange, outbox_path, packet_id, batch, directive)
         write_json_atomic(attempt_path, {

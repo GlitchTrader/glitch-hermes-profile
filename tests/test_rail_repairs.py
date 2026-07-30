@@ -23,6 +23,7 @@ LEARNING_SPEC = importlib.util.spec_from_file_location(
 LEARNING = importlib.util.module_from_spec(LEARNING_SPEC)
 assert LEARNING_SPEC.loader is not None
 LEARNING_SPEC.loader.exec_module(LEARNING)
+DIRECT_WORKER = ROOT / "scripts" / "run-direct-glitch-cycle.py"
 
 
 class RailRepairTests(unittest.TestCase):
@@ -57,6 +58,20 @@ class RailRepairTests(unittest.TestCase):
     def test_learning_process_text_handles_missing_output(self):
         self.assertEqual(LEARNING.process_text(None), "")
         self.assertEqual(LEARNING.process_text("valid utf-8 output"), "valid utf-8 output")
+
+    def test_completed_entry_intent_survives_packet_rollover(self):
+        source = DIRECT_WORKER.read_text(encoding="utf-8")
+        self.assertNotIn("discard_stale_entry_batch", source)
+        self.assertNotIn("intent_discarded_stale_packet", source)
+        self.assertNotIn("stale_packet_discarded", source)
+        self.assertIn(
+            "persist_outbox(exchange, outbox_path, packet_id, batch, directive)",
+            source,
+        )
+
+    def test_distribution_version_is_current(self):
+        distribution = (ROOT / "distribution.yaml").read_text(encoding="utf-8")
+        self.assertIn("version: 0.0.2.16", distribution)
 
 
 if __name__ == "__main__":
