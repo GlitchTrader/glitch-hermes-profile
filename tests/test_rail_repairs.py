@@ -54,6 +54,10 @@ class RailRepairTests(unittest.TestCase):
 
         self.assertEqual(records[0]["review_id"], expected_id)
 
+    def test_learning_process_text_handles_missing_output(self):
+        self.assertEqual(LEARNING.process_text(None), "")
+        self.assertEqual(LEARNING.process_text("valid utf-8 output"), "valid utf-8 output")
+
 
 if __name__ == "__main__":
     unittest.main()

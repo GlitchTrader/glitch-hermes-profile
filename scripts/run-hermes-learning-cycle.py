@@ -109,6 +109,11 @@ def append_unique(path: Path, records: list[dict[str, Any]], id_field: str) -> N
             existing.add(record_id)
 
 
+def process_text(value: Any) -> str:
+    """Return captured child output safely even when Windows decoding failed."""
+    return value if isinstance(value, str) else ""
+
+
 def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) -> dict[str, Any]:
     executable = shutil.which("hermes")
     if not executable:
@@ -138,18 +143,22 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
             input=prompt,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
             check=False,
             env=env,
             creationflags=hide_flags(),
         )
     if completed.returncode != 0:
+        stderr = process_text(completed.stderr)
+        stdout = process_text(completed.stdout)
         raise RuntimeError(
             f"hermes_failed:{completed.returncode}:"
-            f"stderr={completed.stderr.strip()[-1200:]}:"
-            f"stdout={completed.stdout.strip()[-400:]}"
+            f"stderr={stderr.strip()[-1200:]}:"
+            f"stdout={stdout.strip()[-400:]}"
         )
-    return DIRECT.extract_json(completed.stdout, "glitch.hermes.learning_output.v1")
+    return DIRECT.extract_json(process_text(completed.stdout), "glitch.hermes.learning_output.v1")
 
 
 def stable_id(kind: str, value: str) -> str:
