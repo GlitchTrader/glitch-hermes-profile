@@ -19,7 +19,7 @@
     {
       "id": "RAIL-002",
       "title": "Repair Hermes learning attribution and profile concurrency",
-      "status": "active",
+      "status": "done",
       "priority": "P1",
       "owner_role": "pm-glitch",
       "acceptance": [
@@ -31,7 +31,8 @@
       "depends_on": [],
       "evidence": [
         "docs/learning-pipeline-repair.md",
-        "tests/test_rail_repairs.py"
+        "tests/test_rail_repairs.py",
+        "4356bb0"
       ]
     }
   ]
