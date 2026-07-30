@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from win_subprocess import hide_flags, resolve_python_invocation
+from win_subprocess import hermes_profile_lock, hide_flags, resolve_python_invocation
 
 
 ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", "NOTHING"}
@@ -774,6 +774,8 @@ def reconcile_completed_outcomes(
             str(glitch_data),
             "--decision-root",
             str(exchange / "hermes" / "outbox"),
+            "--decision-log",
+            str(glitch_data / "intents" / "decisions.jsonl"),
         ],
         text=True,
         capture_output=True,
@@ -1437,20 +1439,25 @@ def invoke_hermes(profile: str, prompt: str, timeout_seconds: int) -> dict[str, 
         "sys.argv=[sys.argv[0]] + " + repr(cli_args) + " + ['-q',prompt];"
         "main()"
     )
-    completed = subprocess.run(
-        [resolved_python, "-c", wrapper],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_seconds,
-        check=False,
-        env=env,
-        creationflags=hide_flags(),
-    )
+    with hermes_profile_lock(profile, timeout_seconds=min(timeout_seconds, 60)):
+        completed = subprocess.run(
+            [resolved_python, "-c", wrapper],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+            env=env,
+            creationflags=hide_flags(),
+        )
     if completed.returncode != 0:
-        raise RuntimeError(f"hermes_failed:{completed.returncode}:{completed.stderr.strip()}")
+        raise RuntimeError(
+            f"hermes_failed:{completed.returncode}:"
+            f"stderr={completed.stderr.strip()[-1200:]}:"
+            f"stdout={completed.stdout.strip()[-400:]}"
+        )
     # Fresh-session stdout is the sole response; never recover from a globally
     # latest assistant message shared with other chats.
     return extract_json(completed.stdout, "glitch.intent.batch.v1")
@@ -2046,7 +2053,7 @@ def run_once(
             "event": "outcome_reconcile_deferred",
             "recorded_utc": utc_now(),
             "cycle_id": packet_id,
-            "error": f"{type(error).__name__}:{str(error)[:300]}",
+            "error": f"{type(error).__name__}:{str(error)[:800]}",
         })
     journals = journal_tail(glitch_data)
     journals.update(learning_context(exchange))
@@ -2092,7 +2099,7 @@ def run_once(
         attempt = read_json(attempt_path)
         attempt["completed_utc"] = utc_now()
         attempt["status"] = "failed"
-        attempt["error"] = f"{type(error).__name__}:{str(error)[:400]}"
+        attempt["error"] = f"{type(error).__name__}:{str(error)[:1200]}"
         write_json_atomic(attempt_path, attempt)
         append_event(events_path, {
             "schema_version": "glitch.hermes.cycle_event.v1",

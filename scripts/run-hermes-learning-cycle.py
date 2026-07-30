@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from win_subprocess import hide_flags, resolve_python_invocation
+from win_subprocess import hermes_profile_lock, hide_flags, resolve_python_invocation
 
 
 MODEL = "gpt-5.6-luna"
@@ -132,18 +132,23 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
         + ");from hermes_cli.main import main;prompt=sys.stdin.read();"
         "sys.argv=[sys.argv[0]]+" + repr(args) + "+['-q',prompt];main()"
     )
-    completed = subprocess.run(
-        [resolved_python, "-c", wrapper],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-        env=env,
-        creationflags=hide_flags(),
-    )
+    with hermes_profile_lock(profile, timeout_seconds=min(timeout_seconds, 60)):
+        completed = subprocess.run(
+            [resolved_python, "-c", wrapper],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+            env=env,
+            creationflags=hide_flags(),
+        )
     if completed.returncode != 0:
-        raise RuntimeError(f"hermes_failed:{completed.returncode}:{completed.stderr.strip()[:400]}")
+        raise RuntimeError(
+            f"hermes_failed:{completed.returncode}:"
+            f"stderr={completed.stderr.strip()[-1200:]}:"
+            f"stdout={completed.stdout.strip()[-400:]}"
+        )
     return DIRECT.extract_json(completed.stdout, "glitch.hermes.learning_output.v1")
 
 
@@ -1183,7 +1188,7 @@ def main() -> int:
                 "schema_version": "glitch.hermes.learning_worker_status.v1",
                 "recorded_utc": utc_now(),
                 "status": "failed",
-                "error": f"{type(error).__name__}:{error}"[:500],
+                "error": f"{type(error).__name__}:{error}"[:1800],
             }
             DIRECT.write_json_atomic(status_path, failure)
             print(json.dumps(failure, separators=(",", ":")), file=sys.stderr)

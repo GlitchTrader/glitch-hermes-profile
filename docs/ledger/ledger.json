@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "project": "glitch-hermes-profile",
+  "updated": "2026-07-29",
+  "roadmap_ref": "README.md",
+  "items": [
+    {
+      "id": "RAIL-001",
+      "title": "Bind work to Glitch-Platform GL-AI-* items",
+      "status": "deferred",
+      "priority": "P3",
+      "owner_role": "pm-glitch",
+      "acceptance": [
+        "Resume when operator promotes this repo to active development."
+      ],
+      "depends_on": [],
+      "evidence": []
+    },
+    {
+      "id": "RAIL-002",
+      "title": "Repair Hermes learning attribution and profile concurrency",
+      "status": "active",
+      "priority": "P1",
+      "owner_role": "pm-glitch",
+      "acceptance": [
+        "Outcome reconciliation reads the append-only decision log rather than relying on consumable outbox packets.",
+        "Direct and learning Hermes invocations serialize access to shared profile state.",
+        "Worker failures preserve actionable child-process diagnostics.",
+        "Regression coverage proves durable decision discovery after outbox consumption."
+      ],
+      "depends_on": [],
+      "evidence": [
+        "docs/learning-pipeline-repair.md",
+        "tests/test_rail_repairs.py"
+      ]
+    }
+  ]
+}

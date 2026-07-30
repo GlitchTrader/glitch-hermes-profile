@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -23,6 +25,47 @@ def hide_flags() -> int:
     if sys.platform != "win32":
         return 0
     return _CREATE_NO_WINDOW
+
+
+@contextmanager
+def hermes_profile_lock(profile: str, timeout_seconds: int = 60):
+    """Serialize Hermes CLI access to one profile's mutable runtime state."""
+    lock_dir = Path.home() / "AppData" / "Local" / "hermes" / "profiles" / profile / "runtime"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "hermes-cli.lock"
+    started = time.monotonic()
+    stale_after = max(timeout_seconds * 3, 900)
+    descriptor = None
+    owner = False
+    try:
+        while descriptor is None:
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
+                owner = True
+            except FileExistsError:
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if age > stale_after:
+                    try:
+                        lock_path.unlink()
+                    except FileNotFoundError:
+                        continue
+                elif time.monotonic() - started >= timeout_seconds:
+                    raise TimeoutError(f"hermes_profile_lock_timeout:{profile}")
+                else:
+                    time.sleep(0.25)
+        yield
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if owner:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:

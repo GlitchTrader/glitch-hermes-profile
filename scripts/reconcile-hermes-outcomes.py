@@ -148,7 +148,7 @@ def _remember_intent(intents, row, evidence, cycle_id=None):
     intents[intent_id] = value
 
 
-def find_intents(evidence_root=None, decision_root=None):
+def find_intents(evidence_root=None, decision_root=None, decision_log=None):
     intents = {}
     if evidence_root and evidence_root.exists():
         for path in evidence_root.glob("portfolio-*/intent-*.json"):
@@ -173,6 +173,13 @@ def find_intents(evidence_root=None, decision_root=None):
             cycle_id = batch.get("cycle_id")
             for row in batch.get("decisions", []):
                 _remember_intent(intents, row, path, cycle_id)
+    if decision_log and decision_log.exists():
+        for row in read_jsonl(decision_log):
+            # Glitch's durable decision log wraps the Hermes intent inside an
+            # approval/audit envelope. Attribution needs the intent contract,
+            # while the envelope remains recoverable through the evidence path.
+            intent = row.get("intent") if isinstance(row.get("intent"), dict) else row
+            _remember_intent(intents, intent, decision_log, row.get("cycle_id"))
     return intents
 
 
@@ -381,9 +388,9 @@ def _match_ledger_trades(ledger, expected_accounts, bracket_by_account, intent, 
     return matched, follower_protection
 
 
-def reconcile(glitch_data, evidence_root, output_path, decision_root=None):
+def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decision_log=None):
     executions = read_jsonl(glitch_data / "intents" / "executions.jsonl")
-    intents = find_intents(evidence_root, decision_root)
+    intents = find_intents(evidence_root, decision_root, decision_log)
     snapshots = portfolio_snapshots(glitch_data)
     trade_ledger = read_trade_ledger(glitch_data / "TradeLedger.tsv")
     journal = read_journal(glitch_data / "Journal.tsv")
@@ -651,17 +658,24 @@ def main():
     parser.add_argument("--glitch-data", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path)
     parser.add_argument("--decision-root", type=Path)
+    parser.add_argument("--decision-log", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if not args.evidence_root and not args.decision_root:
-        parser.error("one of --evidence-root or --decision-root is required")
+    if not args.evidence_root and not args.decision_root and not args.decision_log:
+        parser.error("one of --evidence-root, --decision-root, or --decision-log is required")
     output = args.output or args.glitch_data / "intents" / "hermes-trade-outcomes.jsonl"
     lock_path = output.parent / "outcome-reconcile.lock"
     if not acquire_lock(lock_path):
         print(json.dumps({"schema_version": "glitch.hermes.outcome_reconcile.v1", "status": "owned_by_live_process"}))
         return
     try:
-        rows = reconcile(args.glitch_data, args.evidence_root, output, args.decision_root)
+        rows = reconcile(
+            args.glitch_data,
+            args.evidence_root,
+            output,
+            args.decision_root,
+            args.decision_log,
+        )
         print(json.dumps({"schema_version": "glitch.hermes.outcome_reconcile.v1", "outcomes": len(rows), "output": str(output)}))
     finally:
         lock_path.unlink(missing_ok=True)
