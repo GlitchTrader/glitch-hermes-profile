@@ -1,11 +1,13 @@
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 SPEC = importlib.util.spec_from_file_location(
     "reconcile_hermes_outcomes",
     ROOT / "scripts" / "reconcile-hermes-outcomes.py",
@@ -13,6 +15,14 @@ SPEC = importlib.util.spec_from_file_location(
 RECONCILER = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(RECONCILER)
+
+LEARNING_SPEC = importlib.util.spec_from_file_location(
+    "run_hermes_learning_cycle",
+    ROOT / "scripts" / "run-hermes-learning-cycle.py",
+)
+LEARNING = importlib.util.module_from_spec(LEARNING_SPEC)
+assert LEARNING_SPEC.loader is not None
+LEARNING_SPEC.loader.exec_module(LEARNING)
 
 
 class RailRepairTests(unittest.TestCase):
@@ -34,6 +44,15 @@ class RailRepairTests(unittest.TestCase):
             intents = RECONCILER.find_intents(decision_log=decision_log)
             self.assertEqual(intents["durable-intent"]["action"], "ENTER_LONG")
             self.assertEqual(intents["durable-intent"]["_cycle_id"], "cycle-1")
+
+    def test_learning_output_uses_system_owned_hourly_identity(self):
+        expected_id = "hourly-review-system-id"
+        value = LEARNING.output_template("hourly", ["model-echoed-id"])
+        value["records"][0]["review_id"] = "model-echoed-id"
+
+        records = LEARNING.validate_output(value, "hourly", [expected_id])
+
+        self.assertEqual(records[0]["review_id"], expected_id)
 
 
 if __name__ == "__main__":

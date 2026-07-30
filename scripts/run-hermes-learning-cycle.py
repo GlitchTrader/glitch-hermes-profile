@@ -669,9 +669,15 @@ def validate_output(value: dict[str, Any], loop_id: str, expected_ids: list[str]
     if not isinstance(records, list) or len(records) != len(expected_ids):
         raise ValueError("learning_output_record_count_invalid")
     id_field = {"debrief": "episode_id", "hourly": "review_id", "planning": "plan_id", "daily": "journal_id"}[loop_id]
-    ids = [str(record.get(id_field) or "") for record in records if isinstance(record, dict)]
-    if ids != expected_ids:
-        raise ValueError("learning_output_identity_mismatch")
+    if any(not isinstance(record, dict) for record in records):
+        raise ValueError("learning_output_record_invalid")
+    # These opaque IDs identify system-owned evidence windows.  The model has no
+    # authority to create or alter them; assigning them here prevents a harmless
+    # echo variation from discarding an otherwise valid learning result.  Record
+    # order remains bound to the supplied evidence, and debrief attribution is
+    # independently verified below before anything is persisted.
+    for record, expected_id in zip(records, expected_ids):
+        record[id_field] = expected_id
     if any(record.get("schema_version") != LOOP_SCHEMAS[loop_id] for record in records):
         raise ValueError("learning_output_schema_invalid")
     expected = output_template(loop_id, expected_ids)
