@@ -1439,7 +1439,11 @@ def invoke_hermes(profile: str, prompt: str, timeout_seconds: int) -> dict[str, 
         "sys.argv=[sys.argv[0]] + " + repr(cli_args) + " + ['-q',prompt];"
         "main()"
     )
-    with hermes_profile_lock(profile, timeout_seconds=min(timeout_seconds, 60)):
+    with hermes_profile_lock(
+        profile,
+        timeout_seconds=min(timeout_seconds, 60),
+        priority="operator",
+    ):
         completed = subprocess.run(
             [resolved_python, "-c", wrapper],
             input=prompt,
