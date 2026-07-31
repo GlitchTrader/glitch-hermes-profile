@@ -1268,6 +1268,10 @@ def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[s
         "decision_horizon": "regime_and_thesis_adaptive; 5m_flat_review; 1m_positioned_review",
         "confirmation": "probabilistic_from_the_five_frame_path; closed_candle_not_required",
         "missing_order_flow": "neutral_not_bearish_or_bullish",
+        "market_structure_observations": (
+            "deterministic_session_measurements; labels_provisional; evidence_not_permission; "
+            "absent_or_warming_up_is_neutral"
+        ),
         "warning": "Do not treat 5m, 15m, or 60m rows as completed-candle confirmation.",
     }
     policy["profile_account_bindings"] = [
@@ -1894,6 +1898,16 @@ def run_once(
             return 0
 
     scenario = build_scenario(packet)
+    # Artificial session continuity: deterministic measurements from the
+    # accumulated 1m ledger replace trust in Hermes session compaction. The
+    # observation layer must never block a trading cycle.
+    try:
+        from market_structure import build_market_structure_observations
+        scenario["market_structure_observations"] = build_market_structure_observations(
+            packet, exchange, glitch_data)
+    except Exception as error:  # noqa: BLE001 - cycle safety over completeness
+        scenario["market_structure_observations"] = {
+            "available": False, "reason": "observation_layer_error:" + type(error).__name__}
     trade_state = active_trade_state(packet, scenario, glitch_data, exchange)
     if outbox_path.is_file():
         batch = normalize_batch(read_json(outbox_path), scenario)
