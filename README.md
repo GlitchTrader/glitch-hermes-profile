@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.18
+# Glitch Hermes Profile v0.0.2.19
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 

@@ -33,7 +33,7 @@ ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", 
 ACTION_ALIASES = {"NO_ACTION": "NOTHING"}
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_VERSION = "direct-v7-regime"
+DIRECT_PROMPT_VERSION = "direct-v8-anticipatory"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -1265,7 +1265,7 @@ def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[s
             "15m": "regime_context",
             "60m": "regime_context",
         },
-        "decision_horizon": "regime_and_thesis_adaptive; 5m_flat_review; 1m_positioned_review",
+        "decision_horizon": "next_5m_when_flat; next_1m_when_positioned",
         "confirmation": "probabilistic_from_the_five_frame_path; closed_candle_not_required",
         "missing_order_flow": "neutral_not_bearish_or_bullish",
         "market_structure_observations": (
@@ -1626,15 +1626,20 @@ def build_prompt(
         "Current NinjaTrader/Glitch packet, ledger, positions, orders, fills, balances, PnL, brackets, receipts, and outcomes are authoritative; "
         "memory and learning artifacts are interpretations. Analyze the five-frame path, multi-timeframe regime, structure, liquidity, volatility, "
         "order flow, Mag7, and news as supplied. Timeframe rows are live observations unless explicitly marked closed. Packet continuity gaps and missing "
-        "inputs are uncertainty evidence, never automatic direction or veto. The five-minute flat cadence and one-minute positioned cadence are review intervals, "
-        "not trade horizons. Do not reduce a directional or rotational thesis to the next candle. "
+        "inputs are uncertainty evidence, never automatic direction or veto. When flat, forecast the most likely next five-minute path; when positioned, "
+        "forecast and manage the next one-minute path. These are decision horizons, not confirmation windows or holding-period requirements. "
         "Treat execution_scope capacity, buffer, session, native-state, and lock fields as evidence; Glitch performs deterministic validation. Followers "
         "and ratios never constrain master cognition or quantity. Apply the operator capacity mandate from the skill to total open plus proposed master "
         "exposure. Geometry fields are absolute model-reference prices; Glitch preserves their tick-rounded offsets at the actual fill, so account for "
         "snapshot-to-fill drift without using drift as an entry veto. "
-        "For each book compare long, short, and flat; when positioned compare HOLD, exact-leg amendments, same-direction protected addition, and EXIT. "
+        "For each flat book compare long, short, and flat symmetrically. Anticipate before confirmation when local evidence, meaningful location, available "
+        "room, and structural invalidation support a bounded next-move forecast. A first poke, early displacement, developing sweep, or mixed timeframe "
+        "state may support entry; closed candles, consecutive closes, a completed retest, and full multi-timeframe agreement are not prerequisites. "
+        "For each positioned book compare HOLD, exact-leg amendments, same-direction protected addition, and EXIT. "
         "A prior change_condition is accountable: act when it is satisfied or identify genuinely new contrary evidence. Do not manufacture edge, force "
         "activity, micromanage expected noise, mechanically maximize quantity, grid, martingale, or repeat nearby churn. "
+        "Treat mid-range overlap with low trend strength, no room to the next objective, and a stop inside ordinary MNQ noise as reasons to remain flat. "
+        "Do not confuse imperfect evidence with no edge, and do not use full confirmation as the entry requirement. "
         "Return exactly one glitch.intent.batch.v1 JSON object with the supplied cycle_id and one ordered glitch.intent.v3 decision per supplied book. "
         "Start from required_output_template and preserve its object/array shape and exact scoped identity values. Every decision includes exactly these "
         "core keys: schema_version, intent_id, created_utc, instrument, account, operator_profile, action, confidence, snapshot_hash, model_version, "
