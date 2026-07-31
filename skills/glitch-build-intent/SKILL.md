@@ -1,22 +1,29 @@
 ---
 name: glitch-build-intent
-description: Convert Glitch decisions into one strict group-scoped intent batch with absolute native bracket prices.
+description: Encode a chosen Glitch decision into the strict protected intent contract without adding strategy.
 ---
 
 # Build Intent
 
-Return exactly one JSON object and no Markdown or prose.
+Return one JSON object and no Markdown or prose.
 
-- Outer object: `schema_version: "glitch.intent.batch.v1"`, supplied `cycle_id`, and ordered `decisions`, one per supplied book.
-- Each decision targets exactly the book's `master_account`, uses its `route_id` as `operator_profile`, MNQ, and the supplied snapshot hash.
-- Each decision uses `schema_version: "glitch.intent.v3"` plus UUID `intent_id`, `created_utc`, `instrument`, `account`, `operator_profile`, `action`, `confidence`, `snapshot_hash`, `model_version`, `prompt_version`, `reason`, and the required compact `decision_audit`. `final_choice` appears exactly once inside `decision_audit`, never at the decision root, and equals `action`. Preserve the supplied output template's shape and scoped identity values.
-- For `ENTER_LONG` or `ENTER_SHORT`, choose a positive integer `quantity` from current packet evidence, set `order_type: "MARKET"`, and include absolute tick-rounded `stop_loss` and `take_profit_1` prices. Capacity, buffer, session, native-state, and lock fields inform judgment; they are not deterministic intent gates. These are structural price levels, never distances.
-- Optional leg 2: `take_profit_2`, `quantity_tp1`, and optional `stop_loss_2`. Optional leg 3: `take_profit_3`, `quantity_tp2`, and optional `stop_loss_3`. The remaining quantity runs to the last target. Each leg has independent valid profit-side target and protective-side stop geometry; ordering one leg relative to another is not required. These native entry legs are the current scale-out mechanism; the action contract has no discretionary partial-reduction action after entry.
-- Before increasing exposure, compare one protected tranche, multiple native target legs, reserving capacity for later evidence, a later independently protected same-direction addition, and leaving exposure unchanged. A favorable or adverse price is context, not an automatic trigger; never encode a grid, martingale, recovery, or fixed-quantity rule.
-- For `MOVE_STOP`, include only `protection_updates` beyond the core fields. Each update is `{leg_id,stop_loss}` using an exposed active Glitch leg ID; unspecified legs remain unchanged.
-- For `MOVE_TP`, include only `protection_updates` beyond the core fields. Each update is `{leg_id,take_profit}` with optional `stop_loss`; unspecified legs remain unchanged and every target stays on the live profit side.
-- A stop amendment may tighten or move farther away. Hermes owns that management choice; Glitch validates native identity, current protective side, and complete native coverage before any mutation.
-- For `HOLD`, `EXIT`, and `NOTHING`, omit every entry and management field.
-- Never target followers, reverse through an entry, include a limit price, or emit incomplete JSON.
+- Preserve the supplied `glitch.intent.batch.v1` template, `cycle_id`, ordered
+  books, route/account identities, MNQ snapshot hash, and exact audit shape.
+- Each `glitch.intent.v3` decision uses only the supplied action contract.
+  `final_choice` appears once inside `decision_audit` and equals `action`.
+- `ENTER_LONG` and `ENTER_SHORT` use `MARKET`, a positive integer master
+  quantity, and absolute tick-rounded `stop_loss` and `take_profit_1` prices.
+- Optional leg 2 uses `take_profit_2`, `quantity_tp1`, and optional
+  `stop_loss_2`. Optional leg 3 uses `take_profit_3`, `quantity_tp2`, and
+  optional `stop_loss_3`. Remaining quantity runs to the last target. Every
+  leg receives independent native OCO protection.
+- `MOVE_STOP` contains only core fields plus non-empty
+  `protection_updates` entries shaped `{leg_id,stop_loss}`.
+- `MOVE_TP` contains only core fields plus non-empty `protection_updates`
+  entries shaped `{leg_id,take_profit}` with optional `stop_loss`.
+- `HOLD`, `EXIT`, and `NOTHING` omit entry and management fields.
+- Never target followers, reverse through entry, emit limit prices, invent leg
+  IDs, or return incomplete JSON.
 
-Glitch performs final identity, policy, compliance, geometry, protection, replication, and execution validation.
+Glitch performs final identity, policy, compliance, geometry, protection,
+replication, and execution validation.

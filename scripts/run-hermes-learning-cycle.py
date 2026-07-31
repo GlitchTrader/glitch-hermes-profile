@@ -649,7 +649,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         "debrief": (
             "Produce exactly one honest human-trader debrief per supplied outcome. Attribute cognition and PnL to the master only; follower ratios and follower PnL are replication diagnostics. "
             "Every supplied master_outcome has master_learning_eligible=true; that field alone authorizes cognitive learning, and replication diagnostics can never suppress it. "
-            "Reconstruct why Hermes entered, why the trade actually exited, geometry, quantity, every management decision, favorable excursion/rollback, and plausible alternatives. "
+            "Reconstruct the pre-decision regime, why Hermes entered, why the trade actually exited, geometry versus pivots/volatility/liquidity/drift, quantity, every management decision, duration, favorable excursion/rollback, and plausible alternatives. "
             "Use entry_decision_context to judge whether quantity and position architecture were evidence-based or habitual, and whether native target legs, reserved capacity, "
             "or a later independently protected addition deserved consideration. Do not assume a different quantity would have received identical fills; preserve that uncertainty. "
             "A repeated stop geometry mistake is evidence for self-improvement, not permission to invent a fixed stop formula. Process errors are not strategy lessons."
@@ -657,17 +657,17 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         "hourly": (
             "Supervise the latest completed-trade and decision episodes. Classify NOTHING evidence as disciplined abstention, missed opportunity, or uncertainty; classify rejected intents as correct factual rejection, cognitive mistake, or uncertainty. "
             "For each flat NOTHING, preserve the developing movement, the observable condition or price that would have offered favorable participation, invalidation, and the later observed path. Label the actual outcome no trade and every counterfactual informational only. "
-            "Never infer counterfactual PnL when target/stop ordering is unobserved. Infrastructure and transport failures are code evidence, never strategy memory. Identify repeated correct reasoning, repeated mistakes, geometry/management/quantity patterns, false abstention versus overtrading, and system defects. "
+            "Never infer counterfactual PnL when target/stop ordering is unobserved. Infrastructure and transport failures are code evidence, never strategy memory. Identify repeated regime-conditioned reasoning, geometry relative to structure/ATR/drift, duration, churn, management, quantity, false abstention versus overtrading, and system defects. "
             "Issue advisory guidance, never an order. Decision episodes may improve questions and attention, but they may not create entry pressure, anti-abstention pressure, quantity pressure, or activate trading cognition. "
             "Attributable evidence may produce one compact versioned cognitive proposal now rather than waiting for the daily loop; proposal does not activate it. Preserve its uncertainty until later comparable completed master outcomes exist. "
             "For a proposed overlay, return activate or rollback only from later comparable completed master evidence and explicit contradiction review. "
             "For an active overlay, return promote, continue, or rollback from later comparable completed master evidence."
         ),
         "planning": (
-            "Create the next six-hour Hermes plan. Hermes owns strategy and master quantity within current master limits. Set questions, hypotheses, sizing/geometry/management posture and experiments without deterministic entry gates. "
+            "Create the next six-hour Hermes plan. Hermes owns strategy and master quantity under the operator capacity mandate. Set regime questions, hypotheses, sizing/geometry/management posture and experiments without deterministic entry gates. "
             "Use completed decision episodes to question habitual abstention and rejected geometry, while preserving uncertainty and excluding infrastructure faults from strategy. Decision-only findings are observational and cannot pressure entries or size. "
             "Activity, fear of inactivity, and desire for more data are never evidence; flat counterfactuals remain informational and never count as realized performance. "
-            "Do not create a fixed or provisional quantity baseline: calibrate quantity from repeated risk-adjusted outcomes, current edge, structural risk, remaining opportunity, drawdown, and the long-run objective. "
+            "Do not create a fixed or provisional quantity baseline: calibrate quantity from repeated risk-adjusted outcomes, current edge, structural risk, remaining opportunity, drawdown, and the long-run objective. Preserve 25k at no more than one total contract and 250k at no more than ten total contracts. "
             "Keep initial native target legs, reserved capacity, and later thesis-supported protected additions available as choices rather than mandatory recipes. "
             "Follower ratios are user configuration and must not affect the master plan."
         ),
@@ -693,10 +693,9 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
     else:
         memory_instruction += "Do not write native memory in this loop. "
     return (
-        "Apply the Glitch SOUL and loaded learning skills. NinjaTrader/Glitch facts outrank memory; Hermes owns cognition, strategy, master sizing, and self-improvement. "
-        "The long-run objective is approximately 0.4%-2% of master account size per trading day ($100-$500 on $25k; $1,000-$5,000 on $250k). "
-        "Use it to evaluate expectancy and master-quantity calibration across repeated outcomes, never as a quota, promise, forced per-trade risk, or entry gate. "
-        "Do not turn caution or insufficient evidence for larger size into a fixed one-contract baseline; Hermes must keep quantity adaptive within current master limits. "
+        "Apply the Glitch SOUL and glitch-learn. NinjaTrader/Glitch facts outrank memory. "
+        "Evaluate regime-conditioned expectancy, structure-aware geometry, decision-to-fill drift, duration, churn, management, and adaptive master exposure across repeated outcomes. "
+        "Use the 0.4%-2% daily objective only as a sample-level diagnostic, never as a quota, promise, forced risk, or entry gate. "
         + memory_instruction + loop_instruction + " "
         "Return exactly the required_output_template shape as one strict JSON object. Preserve every supplied record ID and schema_version exactly. Replace placeholders, emit no markdown or prose, and never call execution/control tools. "
         "CURRENT_LEARNING_CYCLE="
@@ -894,13 +893,7 @@ def invoke_loop(
     template_extra: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     template = output_template(loop_id, ids, template_extra)
-    skills = {
-        "debrief": "glitch-review-outcomes,glitch-self-learning,glitch-learning-loop",
-        "hourly": "glitch-review-outcomes,glitch-self-learning,glitch-self-heal,glitch-supervisor-ledger,glitch-learning-loop",
-        "planning": "glitch-self-learning,glitch-supervisor-ledger,glitch-learning-loop",
-        "daily": "glitch-review-outcomes,glitch-self-learning,glitch-supervisor-ledger,glitch-learning-loop",
-        "weekly": "glitch-self-learning,glitch-supervisor-ledger,glitch-learning-loop",
-    }[loop_id]
+    skills = "glitch-learn"
     prompt = build_prompt(loop_id, evidence, template, continuity(supervisor))
     if len(prompt) > MAX_PROMPT_CHARS:
         raise ValueError(f"learning_prompt_too_large:{loop_id}:{len(prompt)}")

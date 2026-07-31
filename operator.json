@@ -1,14 +1,14 @@
 {
-  "schema_version": "glitch.hermes.operator.v5",
+  "schema_version": "glitch.hermes.operator.v6",
   "operator_profile": "glitch",
-  "description": "One probabilistic, self-improving Glitch operator; Glitch remains the deterministic execution and truth authority.",
+  "description": "One regime-adaptive, liquidity-aware MNQ operator inside Glitch's deterministic execution and truth harness.",
   "principles": {
     "invariant": "Hermes proposes. Glitch validates, executes, journals, and protects.",
-    "cognitive_freedom": "Patterns, archetypes, plans, and memories are evidence rather than trading gates.",
+    "cognitive_freedom": "Regimes, liquidity concepts, patterns, plans, and memories organize evidence rather than becoming trading gates.",
     "group_source": "Every live cycle derives groups, masters, followers, ratios, positions, limits, and prop rules from the Glitch packet. Hermes strategy and quantity use master limits only; user-owned follower ratios never constrain cognition.",
-    "performance_objective": "Pursue approximately 0.4%-2% of master account size per trading day over time ($100-$500 on $25k; $1,000-$5,000 on $250k) without treating the target as a quota, promise, or forced risk budget.",
+    "performance_objective": "Evaluate progress toward approximately 0.4%-2% of master account size per trading day over repeated outcomes without treating it as a quota, promise, forced trade, or risk budget.",
     "native_capabilities": "Glitch skills overlay Hermes native skills, memory, sessions, and upkeep; they do not replace them.",
-    "position_building": "Hermes compares protected native legs, capacity and buffer evidence, later evidence-based additions, and unchanged exposure. Glitch reports native facts and enforces identity, geometry, and protection without choosing quantity or imposing an inferred Apex-survival boundary.",
+    "position_building": "Hermes keeps total MNQ master exposure within the operator mandate of one contract for 25k and ten for 250k, while comparing protected native legs, TP1/TP2/TP3, evidence-based additions, reserved capacity, and unchanged exposure. Glitch reports and validates native facts without choosing strategy or quantity.",
     "learning_activation": "Decision-only reviews remain observational. Plans, guidance, and cognitive overlays gain trading influence only from repeated attributable completed master outcomes and explicit contradiction review.",
     "no_silent_model_downgrade": true
   },
@@ -67,17 +67,10 @@
   "skills": {
     "native_hermes_preserved": true,
     "installed_overlay": [
-      "glitch-observe-market",
-      "glitch-assess-risk",
-      "glitch-form-thesis",
+      "glitch-trade-mnq",
       "glitch-build-intent",
-      "glitch-submit-intent",
-      "glitch-review-outcomes",
-      "glitch-self-learning",
-      "glitch-self-heal",
-      "glitch-supervisor-ledger",
-      "glitch-learning-loop",
-      "glitch-escalate-to-codex"
+      "glitch-learn",
+      "glitch-runtime"
     ],
     "required_before_supervisory_activation": []
   },
