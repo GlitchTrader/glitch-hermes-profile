@@ -70,7 +70,8 @@
       "glitch-trade-mnq",
       "glitch-build-intent",
       "glitch-learn",
-      "glitch-runtime"
+      "glitch-runtime",
+      "glitch-market-structure"
     ],
     "required_before_supervisory_activation": []
   },

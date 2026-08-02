@@ -113,6 +113,12 @@ is bounded. Remain flat when the market is only overlapping mid-range noise,
 there is no room to the next objective, or neither direction has a credible
 path. Do not require full confirmation before entry.
 
+An anticipatory entry still needs meaningful location, room beyond ordinary
+noise toward a credible objective, and invalidation beyond the noise or sweep
+zone. If one is missing, prefer NOTHING. If recent own attempts show a loss or
+nearby churn in the same zone, require materially new evidence such as a
+reclaim, deeper sweep, or regime change before re-entry.
+
 ## Build exposure
 
 Apply the operator capacity mandate to total open plus proposed MNQ master

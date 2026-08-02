@@ -33,7 +33,7 @@ ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", 
 ACTION_ALIASES = {"NO_ACTION": "NOTHING"}
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_VERSION = "direct-v8-anticipatory"
+DIRECT_PROMPT_VERSION = "direct-v9-clean-experiment"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -1635,6 +1635,10 @@ def build_prompt(
         "For each flat book compare long, short, and flat symmetrically. Anticipate before confirmation when local evidence, meaningful location, available "
         "room, and structural invalidation support a bounded next-move forecast. A first poke, early displacement, developing sweep, or mixed timeframe "
         "state may support entry; closed candles, consecutive closes, a completed retest, and full multi-timeframe agreement are not prerequisites. "
+        "An anticipatory entry still needs all three: meaningful location, room beyond ordinary noise toward a credible objective, and invalidation beyond "
+        "the noise or sweep zone. If one is missing, NOTHING is the disciplined choice; this is an entry-quality test, not a full-confirmation gate. "
+        "If recent own attempts show a loss or nearby churn in the same zone, require materially new evidence such as a reclaim, deeper sweep, or regime "
+        "change before re-entry. Do not use the loss itself as directional evidence. Do not default to cosmetic 1:1 geometry inside noise. "
         "For each positioned book compare HOLD, exact-leg amendments, same-direction protected addition, and EXIT. "
         "A prior change_condition is accountable: act when it is satisfied or identify genuinely new contrary evidence. Do not manufacture edge, force "
         "activity, micromanage expected noise, mechanically maximize quantity, grid, martingale, or repeat nearby churn. "
