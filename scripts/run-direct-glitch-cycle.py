@@ -154,7 +154,12 @@ def parse_groups(tsv: str, policy: dict[str, Any]) -> list[dict[str, Any]]:
             route, account = binding.split("=", 1)
             route_by_account[account.strip()] = route.strip()
 
-    books: list[dict[str, Any]] = []
+    # A master is one AI book, even when the operator has configured several
+    # follower groups for that master. Treating each AccountGroups row as an
+    # AI book manufactured routes such as glitch-2 for the same master and
+    # subsequently fails the unique-route contract.
+    grouped_by_master: dict[str, dict[str, Any]] = {}
+    master_order: list[str] = []
     for group_id in order:
         group = groups[group_id]
         master = group["master_account"]
@@ -162,13 +167,32 @@ def parse_groups(tsv: str, policy: dict[str, Any]) -> list[dict[str, Any]]:
         if not route:
             # Groups without an explicit AI route remain visible but are not AI-controlled.
             continue
-        books.append({
-            "book_id": group_id,
-            "route_id": route,
-            "master_account": master,
-            "master_size": group["master_size"],
-            "followers": group["followers"],
-        })
+        key = master.casefold()
+        book = grouped_by_master.get(key)
+        if book is None:
+            book = {
+                "book_id": "master:" + master,
+                "group_ids": [],
+                "route_id": route,
+                "master_account": master,
+                "master_size": group["master_size"],
+                "followers": [],
+            }
+            grouped_by_master[key] = book
+            master_order.append(key)
+        elif book["route_id"] != route:
+            raise ValueError("master_route_binding_conflict:" + master)
+        book["group_ids"].append(group_id)
+        existing_followers = {
+            str(follower.get("account", "")).casefold()
+            for follower in book["followers"]
+        }
+        for follower in group["followers"]:
+            follower_key = str(follower.get("account", "")).casefold()
+            if follower_key and follower_key not in existing_followers:
+                book["followers"].append(follower)
+                existing_followers.add(follower_key)
+    books = [grouped_by_master[key] for key in master_order]
     return books
 
 
@@ -1270,9 +1294,10 @@ def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[s
         "missing_order_flow": "neutral_not_bearish_or_bullish",
         "warning": "Do not treat 5m, 15m, or 60m rows as completed-candle confirmation.",
     }
-    policy["profile_account_bindings"] = [
-        f'{book["route_id"]}={book["master_account"]}' for book in scenario["books"]
-    ]
+    policy["profile_account_bindings"] = list(dict.fromkeys(
+        f'{book["route_id"]}={book["master_account"]}'
+        for book in scenario["books"]
+    ))
     policy["account_allowlist"] = list(dict.fromkeys(scoped_accounts))
     return model_packet
 
@@ -1641,6 +1666,7 @@ def build_prompt(
         "Treat mid-range overlap with low trend strength, no room to the next objective, and a stop inside ordinary MNQ noise as reasons to remain flat. "
         "Do not confuse imperfect evidence with no edge, and do not use full confirmation as the entry requirement. "
         "Return exactly one glitch.intent.batch.v1 JSON object with the supplied cycle_id and one ordered glitch.intent.v3 decision per supplied book. "
+        "Use only the exact account and operator_profile values from execution_scope.books; never invent, suffix, or rename a route (for example, never create glitch-2). "
         "Start from required_output_template and preserve its object/array shape and exact scoped identity values. Every decision includes exactly these "
         "core keys: schema_version, intent_id, created_utc, instrument, account, operator_profile, action, confidence, snapshot_hash, model_version, "
         "prompt_version, reason, decision_audit. Allowed actions are ENTER_LONG, ENTER_SHORT, HOLD, MOVE_STOP, MOVE_TP, EXIT, and NOTHING. "
