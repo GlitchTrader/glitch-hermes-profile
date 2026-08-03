@@ -2,11 +2,13 @@
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
-Glitch/NinjaTrader remains the market, account, risk, execution, bracket, replication, and journal authority. Hermes proposes decisions for the master accounts in the groups configured by the user in Glitch. The profile does not distinguish paper from live accounts and makes no profitability, unattended-operation, or live-readiness claim.
+Glitch/NinjaTrader remains the market, account, configured-policy, execution, bracket, replication, and journal authority. Hermes proposes structured intent for the master accounts selected by the user in Glitch. The profile does not distinguish paper from live accounts and makes no profitability, unattended-operation, or live-readiness claim.
+
+The profile is intelligence-first. It supplies evidence vocabulary, time-sequence context, strict output construction, and attributable learning. It does not encode a fixed trading strategy, daily profit target, account-size recipe, preferred setup, geometric template, or hidden action gate. Capacity and supported actions come from the current Glitch packet and user configuration.
 
 ## Requirements
 
-- Windows with NinjaTrader 8 and the matching Glitch AI `v0.0.2.6` AddOn installed.
+- Windows with NinjaTrader 8 and the matching Glitch AI `v0.0.2.7` AddOn installed.
 - Hermes `0.18.2` or newer.
 - An OpenAI Codex OAuth account authorized by the user.
 
@@ -18,7 +20,7 @@ hermes -p glitch auth add openai-codex --type oauth
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glitch\setup.ps1"
 ```
 
-`profile install` performs no model call and creates no cron job. `setup.ps1` verifies the distribution, enables the deterministic plugin, installs the supervised profile gateway, and creates the minute operator and 30-minute learning jobs. The minute job launches the separately locked direct worker and returns immediately, so model latency cannot skip the next positioned packet. Every cognitive loop uses `gpt-5.6-luna` with medium reasoning. On a fresh installation both jobs are paused.
+`profile install` performs no model call and creates no cron job. `setup.ps1` verifies the distribution, enables the deterministic plugin, installs the supervised profile gateway, and creates the minute operator and 30-minute learning jobs. The minute job launches the separately locked direct worker and returns immediately, so model latency cannot skip the next positioned packet. Every cognitive loop uses the configured Hermes model route. On a fresh installation both jobs are paused.
 
 Configure the desired master/group in Glitch, turn on Replication if followers should copy the master, then activate the complete operator and learning loop with Glitch **AI Auto** or:
 
@@ -35,7 +37,7 @@ hermes profile update glitch
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glitch\setup.ps1"
 ```
 
-Updates replace distribution-owned cognition, skills, plugin, and worker scripts. Hermes preserves authentication, non-routing `config.yaml` overrides, sessions, memories, ledgers, and cron enabled/paused state. Re-running setup reconciles Luna-medium routing, clears obsolete fallback/model overrides, and reconciles job definitions without changing whether an existing supported job was enabled or paused.
+Updates replace distribution-owned cognition, skills, plugin, and worker scripts. Hermes preserves authentication, non-routing `config.yaml` overrides, sessions, memories, ledgers, and cron enabled/paused state. Re-running setup reconciles the supported model route, clears obsolete fallback/model overrides, and reconciles job definitions without changing whether an existing supported job was enabled or paused.
 
 ## Clean epoch reset
 

@@ -25,5 +25,6 @@ Return one JSON object and no Markdown or prose.
 - Never target followers, reverse through entry, emit limit prices, invent leg
   IDs, or return incomplete JSON.
 
-Glitch performs final identity, policy, compliance, geometry, protection,
-replication, and execution validation.
+Glitch applies final fixed-identity, user-configured constraint, protection,
+replication, reconciliation, and native execution checks. It must not replace
+the selected direction, quantity, or geometry with an unrelated strategy.

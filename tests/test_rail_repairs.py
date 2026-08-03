@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -69,9 +70,19 @@ class RailRepairTests(unittest.TestCase):
             source,
         )
 
-    def test_distribution_version_is_current(self):
+    def test_distribution_version_is_consistent(self):
         distribution = (ROOT / "distribution.yaml").read_text(encoding="utf-8")
-        self.assertIn("version: 0.0.2.20", distribution)
+        match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", distribution)
+        self.assertIsNotNone(match)
+        version = match.group(1)
+        self.assertRegex(version, r"^\d+\.\d+\.\d+\.\d+$")
+
+        readme = (ROOT / "README.md").read_text(encoding="utf-8-sig")
+        self.assertIn(f"v{version}", readme.splitlines()[0])
+
+        ledger = json.loads((ROOT / "docs" / "ledger" / "ledger.json").read_text(encoding="utf-8"))
+        rail = next(item for item in ledger["items"] if item["id"] == "GHP-003")
+        self.assertIn(version, "\n".join(rail.get("evidence") or []))
 
 
 if __name__ == "__main__":
