@@ -81,7 +81,7 @@
     {
       "id": "GHP-003",
       "title": "Restore intelligence-first cognition and remove encoded trading strategy from the hot path",
-      "status": "in_progress",
+      "status": "done",
       "priority": "P0",
       "owner_role": "architect",
       "issue": 1,
@@ -93,6 +93,13 @@
         "All contract-supported actions remain available and deliberate inaction remains legitimate judgment.",
         "Source contracts fail if removed strategy phrases or recipes return.",
         "Full profile suite and distribution integrity pass."
+      ],
+      "evidence": [
+        "SOUL.md and glitch-trade-mnq define evidence-neutral probabilistic judgment with packet/user-configured authority.",
+        "glitch-market-structure retains vocabulary while removing playbooks, fixed recipes, and unverified base rates.",
+        "glitch-build-intent preserves strict intent shape and forbids replacing the chosen intent with an unrelated strategy.",
+        "tests/test_intelligence_first_contract.py locks the removed strategy phrases and required authority language.",
+        "Profile distribution 0.0.2.20 has regenerated SHA256SUMS."
       ],
       "sources": [
         "SOUL.md",
