@@ -71,7 +71,7 @@ class RailRepairTests(unittest.TestCase):
 
     def test_distribution_version_is_current(self):
         distribution = (ROOT / "distribution.yaml").read_text(encoding="utf-8")
-        self.assertIn("version: 0.0.2.19", distribution)
+        self.assertIn("version: 0.0.2.20", distribution)
 
 
 if __name__ == "__main__":

@@ -136,7 +136,7 @@ def message_fields(message):
     return fields
 
 
-def _remember_intent(intents, row, evidence, cycle_id=None):
+def _remember_intent(intents, row, evidence, cycle_id=None, source_kind="unknown"):
     if not isinstance(row, dict):
         return
     intent_id = str(row.get("intent_id") or "")
@@ -144,8 +144,36 @@ def _remember_intent(intents, row, evidence, cycle_id=None):
         return
     value = dict(row)
     value["_evidence_path"] = str(evidence)
-    value["_cycle_id"] = str(cycle_id or row.get("cycle_id") or "")
-    intents[intent_id] = value
+    incoming_cycle = str(cycle_id or row.get("cycle_id") or "")
+    existing = intents.get(intent_id)
+    if not isinstance(existing, dict):
+        value["_cycle_id"] = incoming_cycle
+        value["_lineage_source"] = source_kind
+        intents[intent_id] = value
+        return
+
+    # The outbox is the authoritative batch-to-intent join.  The AddOn's
+    # durable decision log contains the wire intent but not the Hermes batch
+    # cycle, so a later blank log value must never erase an outbox cycle.
+    existing_cycle = str(existing.get("_cycle_id") or "")
+    existing_source = str(existing.get("_lineage_source") or "")
+    if existing_cycle and incoming_cycle and existing_cycle != incoming_cycle:
+        # Keep the conflict visible even when the authoritative outbox value
+        # is about to replace a weaker source's value.
+        existing["_lineage_conflict"] = {
+            "existing_cycle_id": existing_cycle,
+            "incoming_cycle_id": incoming_cycle,
+            "existing_source": existing_source,
+            "incoming_source": source_kind,
+        }
+    if source_kind == "outbox" and incoming_cycle:
+        existing["_cycle_id"] = incoming_cycle
+        existing["_lineage_source"] = source_kind
+    elif not existing_cycle and incoming_cycle:
+        existing["_cycle_id"] = incoming_cycle
+        existing["_lineage_source"] = source_kind
+    if not existing.get("_evidence_path"):
+        existing["_evidence_path"] = str(evidence)
 
 
 def find_intents(evidence_root=None, decision_root=None, decision_log=None):
@@ -161,6 +189,7 @@ def find_intents(evidence_root=None, decision_root=None, decision_log=None):
                 row,
                 path.parent,
                 path.parent.name.replace("portfolio-", "glitch-portfolio-"),
+                "evidence",
             )
     if decision_root and decision_root.exists():
         for path in sorted(decision_root.glob("*.json")):
@@ -172,14 +201,14 @@ def find_intents(evidence_root=None, decision_root=None, decision_log=None):
                 continue
             cycle_id = batch.get("cycle_id")
             for row in batch.get("decisions", []):
-                _remember_intent(intents, row, path, cycle_id)
+                _remember_intent(intents, row, path, cycle_id, "outbox")
     if decision_log and decision_log.exists():
         for row in read_jsonl(decision_log):
             # Glitch's durable decision log wraps the Hermes intent inside an
             # approval/audit envelope. Attribution needs the intent contract,
             # while the envelope remains recoverable through the evidence path.
             intent = row.get("intent") if isinstance(row.get("intent"), dict) else row
-            _remember_intent(intents, intent, decision_log, row.get("cycle_id"))
+            _remember_intent(intents, intent, decision_log, row.get("cycle_id"), "decision_log")
     return intents
 
 

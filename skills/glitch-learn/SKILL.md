@@ -18,8 +18,7 @@ management preserved or destroyed the original edge.
 
 Supervision looks for repeated, attributable, regime-conditioned patterns:
 directional versus rotational expectancy; geometry relative to ATR, pivots,
-liquidity and drift; premature exits; winners surrendered back to stops or
-breakeven; churn and nearby re-entry; staged versus
+liquidity and drift; premature exits; churn and nearby re-entry; staged versus
 immediate exposure; quantity; and decision-to-fill degradation. Flat decisions
 may reveal disciplined abstention or missed participation, but never realized
 counterfactual PnL. Infrastructure failures are code evidence, not strategy

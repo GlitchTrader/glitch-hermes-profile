@@ -283,8 +283,15 @@ def entry_decision_context(
         realized = outcome.get("master_realized_pnl_usd")
     return {
         "status": "complete",
+        "intent_id": str(entry_intent.get("intent_id") or outcome.get("intent_id") or ""),
+        "master_account": str(outcome.get("master_account") or ""),
         "cycle_id": cycle_id,
         "packet_hash": packet.get("packet_hash"),
+        "snapshot_hash": entry_intent.get("snapshot_hash") or scenario["market"].get("snapshot_hash"),
+        "rationale": {
+            "reason": entry_intent.get("reason"),
+            "decision_audit": entry_intent.get("decision_audit"),
+        },
         "pre_entry": book.get("position_building_context"),
         "decision_reference_price": decision_reference_price,
         "actual_entry_vwap": actual_entry_vwap,
@@ -833,6 +840,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
                 key: entry_context.get(key)
                 for key in (
                     "status", "reason", "cycle_id", "packet_hash", "pre_entry",
+                    "intent_id", "master_account", "snapshot_hash", "rationale",
                     "decision_reference_price", "actual_entry_vwap", "selected_plan",
                     "native_entry_facts", "normalized_outcome",
                 )
