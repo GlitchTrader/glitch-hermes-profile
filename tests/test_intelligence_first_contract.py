@@ -23,16 +23,18 @@ class IntelligenceFirstContractTests(unittest.TestCase):
             "3+3+3",
             "ruthless profit",
             "half or more of the way",
-            "daily monetary objective",
+            "pursue approximately",
         )
         for phrase in forbidden:
             self.assertNotIn(phrase, text)
         self.assertIn("current packet", text)
         self.assertIn("no setup class is preferred", text)
         self.assertIn("there is no fixed distance", text)
+        self.assertIn("daily monetary objective", text)
 
     def test_reference_vocabulary_contains_no_playbook_or_unverified_base_rates(self) -> None:
         text = REFERENCE_PATH.read_text(encoding="utf-8").lower()
+        normalized = " ".join(text.split())
         forbidden = (
             "inside-bar continuation",
             "ascending triangle",
@@ -45,8 +47,9 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         )
         for phrase in forbidden:
             self.assertNotIn(phrase, text)
-        self.assertIn("competing hypotheses", text)
-        self.assertIn("no unverified numeric base rate", text)
+        self.assertIn("competing hypotheses", normalized)
+        self.assertIn("unverified numeric base rate", normalized)
+        self.assertIn("do not impose a fixed atr threshold", normalized)
 
     def test_intent_builder_preserves_user_configured_authority(self) -> None:
         text = (ROOT / "skills" / "glitch-build-intent" / "SKILL.md").read_text(
