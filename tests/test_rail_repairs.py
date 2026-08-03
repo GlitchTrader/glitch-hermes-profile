@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import re
 import sys
@@ -28,6 +29,18 @@ DIRECT_WORKER = ROOT / "scripts" / "run-direct-glitch-cycle.py"
 
 
 class RailRepairTests(unittest.TestCase):
+    def test_distribution_checksum_manifest_matches_every_owned_file(self):
+        manifest = (ROOT / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+        self.assertTrue(manifest)
+        for line in manifest:
+            if not line.strip():
+                continue
+            expected, relative = re.split(r"\s{2,}", line, maxsplit=1)
+            path = ROOT / relative
+            with self.subTest(path=relative):
+                self.assertTrue(path.is_file())
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest().upper(), expected)
+
     def test_durable_decision_log_survives_outbox_consumption(self):
         with tempfile.TemporaryDirectory() as directory:
             decision_log = Path(directory) / "decisions.jsonl"
