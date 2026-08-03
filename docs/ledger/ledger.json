@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-07-31",
+  "updated": "2026-08-02",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -12,11 +12,12 @@
       "owner_role": "pm-glitch",
       "acceptance": [
         "Resume when operator promotes this repo to active development.",
-        "Superseded: repo is active; work now binds through GHP-* items."
+        "Superseded: repo is active; work now binds through GHP-* and PROFILE-BETA-* items."
       ],
       "depends_on": [],
       "evidence": [
-        "2026-07-31: repo promoted to active development for the cognition-equipment campaign (GHP-001/GHP-002)."
+        "2026-07-31: repo promoted to active development for the cognition-equipment campaign.",
+        "2026-08-02: profile-side beta acceptance is represented by PROFILE-BETA-01."
       ]
     },
     {
@@ -40,51 +41,97 @@
     },
     {
       "id": "GHP-001",
-      "title": "Give the trading agent artificial session memory via a deterministic observation layer.",
-      "status": "in_progress",
-      "priority": "P0",
-      "owner_role": "coder",
-      "reviewer_role": "code-reviewer",
-      "claim": {
-        "assignee": "aibert-claude-opus",
-        "claimed_at": "2026-07-31T06:20:00Z"
-      },
+      "title": "Give the reasoning agent artificial session memory via a deterministic observation layer",
+      "status": "code_complete_external_acceptance",
+      "priority": "P1",
+      "owner_role": "operator_tests",
+      "issue": 2,
       "acceptance": [
-        "The direct worker accumulates a rolling 1m bar ledger across cycles in exchange/hermes/supervisor/market-structure-state.json and derives regime (with hysteresis), range box, position/edge/breakout state, labeled swings, structure bias, unfilled FVG zones, key levels with touch counts, and the agent&apos;s own recent trade outcomes.",
-        "The observation block is injected into execution_scope as measured, provisional evidence (~400 tokens), is neutral when absent or warming up, and can never block a trading cycle on failure.",
-        "Session continuity does not depend on Hermes self-compaction: the model can be stateless per cycle and still see the session story (429/timeout resilience).",
-        "Deterministic unit tests cover swings, range/breakout, hysteresis, FVG detect/fill, ledger dedupe/prune, state round-trip, budget, and outcome-schema parsing; a replay over real decision packets produces a sane block.",
-        "Live validation: across at least one full session, decision audits cite location/structure when the block is present, and churn (repeat losses within the same zone within 45 minutes) measurably drops versus the v7 baseline."
+        "The direct worker accumulates a bounded session observation ledger and derives provisional structure, range, regime, volatility, level, and attributable-outcome measurements.",
+        "The observation block is injected as measured evidence, is neutral when absent or warming, and can never block a cycle or select an action.",
+        "Session continuity does not depend on Hermes self-compaction.",
+        "Deterministic unit tests and replay prove schema, persistence, dedupe, pruning, and bounded prompt shape.",
+        "One named live Sim session proves the block remains evidence-only and does not create directional, sizing, geometry, or veto behavior."
       ],
       "evidence": [
-        "2026-07-31 v0.0.2.18: scripts/market_structure.py + worker wiring + observation_contract line; tests/test_market_structure.py 17 tests; full profile suite 22 passed.",
-        "Replay over 161 real packets from the 2026-07-31 session: 165-bar ledger, directional_up stable 21 cycles (ADX 36.9), price 0.98 of range testing_high, 3 unfilled bullish FVGs, own_recent_attempts shows the session&apos;s three losing trades; 1777 chars (~440 tokens).",
-        "Live-session validation pending: item stays open until the operator observes at least one session with the block active."
+        "2026-07-31 v0.0.2.18: scripts/market_structure.py, worker wiring, observation contract, and deterministic tests landed.",
+        "Replay over 161 real packets produced a bounded session block without requiring model memory.",
+        "Issue #2 owns the remaining external Sim acceptance."
       ],
-      "stop_line": "Observations are measurements only: no action selection, sizing, stop, target, or veto may ever be computed here."
+      "stop_line": "Observations are measurements only: no action selection, sizing, geometry, entry, amendment, exit, or veto may be computed here."
     },
     {
       "id": "GHP-002",
-      "title": "Equip cognition with a consultable market-structure playbook and anti-churn judgment principles.",
-      "status": "in_progress",
+      "title": "Equip cognition with consultable market-structure vocabulary",
+      "status": "superseded",
       "priority": "P1",
-      "owner_role": "coder",
-      "reviewer_role": "code-reviewer",
-      "claim": {
-        "assignee": "aibert-claude-opus",
-        "claimed_at": "2026-07-31T06:20:00Z"
-      },
+      "owner_role": "architect",
+      "depends_on": [
+        "GHP-003"
+      ],
       "acceptance": [
-        "One consultable skill (glitch-market-structure) carries range/breakout participation, acceptance-vs-sweep, swing/BOS/CHoCH vocabulary, FVG and fib framing, ATR geometry comparison, pattern base rates labeled as unverified weak priors, and re-entry discipline; it is not loaded on the trading hot path.",
-        "glitch-trade-mnq gains a compact session-story section: location-first, acceptance-vs-sweep, respect own recent attempts, structure counts, noise-floor comparison — written as judgment principles, never gates.",
-        "SOUL grows by at most three bullets; the V7 non-overlapping instruction stack is preserved (no skill-count regression toward the pre-V7 eleven-skill sprawl).",
-        "The empowerment test holds: the agent can still return NOTHING with a good audit citing location."
+        "Retain useful structure vocabulary without encoded setup preferences, numeric recipes, quotas, or unverified base rates."
       ],
       "evidence": [
-        "2026-07-31 v0.0.2.18: skills/glitch-market-structure/SKILL.md added (consultable); glitch-trade-mnq +1 section; SOUL +2 bullets; default cycle skill list unchanged (glitch-trade-mnq,glitch-build-intent).",
-        "2026-07-31 v0.0.2.18: added ruthless profit-taking doctrine (SOUL bullet + manage section), volatility noise calibration (10pts nothing / 20pts noise at ATR_1m~10, 40pt stop defended once to ~50 as example), and avg-in/avg-out staged tranche + scale-out ladder language in build exposure; glitch-learn now flags winners surrendered to stops/breakeven."
+        "The original implementation mixed useful vocabulary with strategy-shaped point, ATR, scaling, profit-target, location, and pattern priors.",
+        "GHP-003 keeps the vocabulary and removes the encoded strategy."
       ],
-      "stop_line": "No deterministic strategy, quota, archetype whitelist, or auto-geometry may enter any skill."
+      "stop_line": "No deterministic strategy, quota, archetype whitelist, numeric recipe, or auto-geometry may enter any skill."
+    },
+    {
+      "id": "GHP-003",
+      "title": "Restore intelligence-first cognition and remove encoded trading strategy from the hot path",
+      "status": "done",
+      "priority": "P0",
+      "owner_role": "architect",
+      "issue": 1,
+      "depends_on": [],
+      "acceptance": [
+        "Hot-path profile contains no daily PnL target, account-size-specific contract ceiling, fixed point/ATR recipe, scale ladder, averaging recipe, or mandatory setup preference.",
+        "Market-structure skill contains vocabulary and competing hypotheses, not strategy instructions or unverified numeric base rates.",
+        "Capacity and supported actions are packet/user configured and authoritative from Glitch.",
+        "All contract-supported actions remain available and deliberate inaction remains legitimate judgment.",
+        "Source contracts fail if removed strategy phrases or recipes return.",
+        "Full profile suite and distribution integrity pass."
+      ],
+      "evidence": [
+        "SOUL.md and glitch-trade-mnq define evidence-neutral probabilistic judgment with packet/user-configured authority.",
+        "glitch-market-structure retains vocabulary while removing playbooks, fixed recipes, and unverified base rates.",
+        "glitch-build-intent preserves strict intent shape and forbids replacing the chosen intent with an unrelated strategy.",
+        "tests/test_intelligence_first_contract.py locks the removed strategy phrases and required authority language.",
+        "Profile distribution 0.0.2.20 has regenerated SHA256SUMS."
+      ],
+      "sources": [
+        "SOUL.md",
+        "skills/glitch-trade-mnq/SKILL.md",
+        "skills/glitch-market-structure/SKILL.md",
+        "skills/glitch-build-intent/SKILL.md",
+        "tests/test_intelligence_first_contract.py"
+      ],
+      "stop_line": "Do not replace the removed recipes with a different strategy, score, quota, or hidden gate."
+    },
+    {
+      "id": "PROFILE-BETA-01",
+      "title": "Prove the immutable NinjaTrader Hermes profile against the paired Glitch AI artifact",
+      "status": "external_acceptance_required",
+      "priority": "P0",
+      "owner_role": "operator_tests",
+      "issue": 3,
+      "depends_on": [
+        "GHP-001",
+        "GHP-003",
+        "glitch:GL-AI-07",
+        "glitch:GL-REP-01",
+        "glitch:GL-REL-01"
+      ],
+      "acceptance": [
+        "One immutable profile manifest is paired with one immutable Glitch AI AddOn artifact.",
+        "Install/update, paused-first jobs, status, cognition, delivery, learning, reset, restart continuity, controls, and native receipts pass on the target Windows/NinjaTrader machine.",
+        "No hard-coded strategy, hidden observation gate, follower-directed intent, or unauthorized native mutation occurs.",
+        "The operator explicitly promotes the named artifact pair."
+      ],
+      "blocked_reason": "Requires the target Windows/NinjaTrader/Hermes installation, paired Glitch AI artifact, approved Sim fixtures, and operator promotion.",
+      "stop_line": "No beta-ready, profitability, unattended evaluation, or live-capital claim before paired native acceptance."
     }
   ]
 }

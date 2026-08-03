@@ -1,167 +1,70 @@
 ---
 name: glitch-trade-mnq
-description: Reason about MNQ regime, liquidity, structure, geometry, exposure, and active management from the current Glitch packet.
+description: Compare MNQ hypotheses and produce case-specific judgment from the current Glitch evidence without encoding a strategy.
 ---
 
-# Trade MNQ
+# Reason About MNQ
 
-## Read the sequence
+## Read evidence as a sequence
 
-Use the latest five one-minute frames as a path, not five isolated snapshots.
-Read 1m in detail for timing, drift, microstructure, and noise; 5m for the local
-auction and pivots; 15m/60m for regime, location, and remaining opportunity.
-Higher-timeframe rows are live observations unless explicitly marked closed.
-Missing evidence is uncertainty, not bullish or bearish evidence.
+Treat recent one-minute frames as a path rather than isolated snapshots. Use
+higher-timeframe observations for context, while respecting whether each value
+is live, closed, stale, missing, or provisional. Missing evidence is uncertainty,
+not positive or negative evidence.
 
-Combine price/volume, ATR and expansion, trend strength, VWAP and deviation,
-cumulative delta and delta change, session and prior-session levels, Mag7
-weighted movement, news sentiment, and event context. No single score chooses
-direction. External equity/news context corroborates or contradicts MNQ; it
-does not replace MNQ price and order-flow truth.
+Synthesize price and volume, volatility, trend and rotation measurements, VWAP
+context, order flow, session and prior-session references, external equity
+context, news, event context, account state, current exposure, and native data
+quality. No single feature, composite score, pattern name, or historical label
+chooses the result.
 
-## Use the session story
+`market_structure_observations` is deterministic session memory. Its counts and
+labels organize evidence across otherwise stateless cycles; they do not select
+an action. When the block is absent, warming, stale, or contradicted by current
+facts, represent that uncertainty explicitly.
 
-`market_structure_observations` in execution_scope is your artificial session
-memory: deterministic measurements accumulated across the whole session, because
-you remember nothing between cycles. When present, trust its counts and read it
-before the five frames; when absent or warming up, it is neutral evidence.
+## Compare competing hypotheses
 
-- **Location first.** `position_in_range`, `at_range_edge`, `breakout_state`,
-  and `key_levels` with touch counts tell you where the auction is. Mid-range
-  rotation with low ADX is usually poor entry location; edges, compression,
-  liquidity events, early displacement, and swept-or-reclaimed levels are where
-  asymmetric next-move forecasts can form.
-- **Anticipation versus noise.** `accepted_above/below` and `failed_break_*`
-  are useful evidence, not entry gates. A first poke, early displacement, or
-  developing sweep can be traded when the likely next 5–15 minute path has room
-  beyond normal noise and a structural invalidation is clear. Do not wait for
-  consecutive closes, a completed retest, or full multi-timeframe agreement.
-- **Respect your own history.** `own_recent_attempts` lists your last completed
-  trades and losses near the current price. Re-entering an idea that just
-  stopped, at nearly the same level, requires materially changed evidence —
-  a reclaimed level, a fresh sweep, a regime flip — not hope.
-- **Structure counts.** `swings_1m` and `structure_bias` carry the HH/HL/LH/LL
-  story: an LH after an HH sequence is an exhaustion hypothesis; an LL after
-  HLs is a micro break of structure. One label is never a trend change by
-  itself; `mixed` means honest ambiguity, and forcing a count is worse.
-- **Noise floor.** Compare stop distance to `atr_1m` and the range width. A
-  stop inside one ATR of ordinary noise is a donation, not protection. Compare
-  room to your invalidation against room to the next key level before reward.
+Evaluate continuation, reversal, rotation, transition, and deliberate inaction
+as competing explanations. For each material direction, identify:
 
-Labels can be wrong. They organize attention; they never select the action.
-Consult `glitch-market-structure` for the fuller playbook vocabulary.
+- the most likely near-term path;
+- evidence supporting and contradicting it;
+- the state or observation that would invalidate it;
+- remaining opportunity and execution uncertainty;
+- why another supported action is currently weaker or equally plausible.
 
-## Classify before choosing geometry
+Anticipation and confirmation are both valid forms of judgment. Location,
+acceptance, rejection, sweeps, structure labels, imbalance, volatility, recent
+attempts, and external context are evidence whose relevance changes by case.
+None is a mandatory setup, preferred playbook, re-entry veto, or confirmation
+checklist.
 
-Choose the best-supported current regime:
+## Use only supplied authority
 
-- **Directional impulse:** displacement, acceptance, aligned structure/order
-  flow, and meaningful room toward the next liquidity objective.
-- **Rotation/chop:** repeated rejection, overlapping ranges, weak follow
-  through, and identifiable auction boundaries.
-- **Transition/uncertainty:** breakout attempts, regime disagreement, event
-  disturbance, or insufficiently stable boundaries. Transition does not require
-  abstention: reduce initial exposure and trade only when the forecasted path,
-  available room, and structural invalidation are bounded.
+Read scope, account identity, supported actions, capacity, protection fields,
+and configured constraints from the current packet. Do not infer rules or limits
+from account size, firm name, examples, memory, or generic prop-firm lore.
 
-These labels organize judgment; they are not entry gates. Evaluate long, short,
-and flat symmetrically. State the likely path, contrary case, invalidation, and
-what would materially change the decision.
+Choose any supported structured intent only when it expresses the selected
+hypothesis faithfully. Quantity and geometry must remain within supplied
+capacity and contract fields, but no fixed point distance, ATR multiple,
+reward/risk ratio, target count, tranche split, scaling ladder, or averaging
+formula is preferred.
 
-## Liquidity and structure
+## Manage current exposure from current evidence
 
-Treat swing highs/lows, equal highs/lows, session extremes, prior pivots,
-unfilled displacement, rejection/acceptance, and stop runs as likely liquidity
-locations—not magic levels. A sweep through an obvious level followed by
-rejection can improve a reversal thesis; acceptance and continued displacement
-can support continuation. Use order flow and subsequent price behavior to
-distinguish them. Nasdaq commonly retraces and probes liquidity during a valid
-move, so a one-bar wiggle or ordinary sweep is not structural invalidation.
+When exposure exists, reassess the original thesis against current native facts,
+new evidence, remaining opportunity, protection state, execution uncertainty,
+and alternatives. Continuing unchanged, amending, adding supported protected
+exposure, reducing, exiting, or doing nothing are all case-specific choices.
+Unrealized profit, rollback, normal noise, prior attempts, elapsed time, and a
+recent loss can inform judgment but never issue an automatic command.
 
-## Select robust geometry
+## Be explicit and falsifiable
 
-Define thesis invalidation first, then place the stop beyond the relevant
-structure and expected sweep/noise zone. Account for observed 1m volatility,
-the packet's age, ordinary one-minute snapshot-to-fill drift, and slippage.
-Glitch preserves the chosen stop/target offsets from the model reference at
-the actual fill, so choose distances that remain meaningful after execution.
-Do not place protection inside ordinary noise or compress it to make the
-reward/risk display attractive.
-
-For a directional impulse, seek meaningful expansion rather than repeated
-10-20-point oscillations. A roughly 40-point structural stop with objectives
-around +60, +120, and +160 points is a useful MNQ calibration example when the
-regime and pivots support it. It is not a minimum, maximum, ratio, or template.
-
-For a clear rotational auction, a nearer objective and wider structural
-invalidation can be rational because ordinary noise is more likely to visit the
-target before escaping the range. Roughly 20 points of target with 40 points of
-stop room is a calibration example, not a formula. A cosmetic 1:1 scalp inside
-noise has no edge merely because both numbers are equal.
-
-Calibrate every distance to current volatility before liking it: with 1m ATR
-near 10 points, a 10-point move is nothing and 20 points is ordinary noise on
-today's Nasdaq — protection or targets inside that band are donations. A
-roughly 40-point structural stop, defended once to about 50 only when the
-original invalidation proves to sit inside the sweep zone and the thesis is
-intact, is a current calibration example — never serial widening to avoid
-taking a loss.
-
-In transition, reduce initial exposure, define the invalidation beyond the
-current noise floor, and anticipate the most likely next move when the geometry
-is bounded. Remain flat when the market is only overlapping mid-range noise,
-there is no room to the next objective, or neither direction has a credible
-path. Do not require full confirmation before entry.
-
-An anticipatory entry still needs meaningful location, room beyond ordinary
-noise toward a credible objective, and invalidation beyond the noise or sweep
-zone. If one is missing, prefer NOTHING. If recent own attempts show a loss or
-nearby churn in the same zone, require materially new evidence such as a
-reclaim, deeper sweep, or regime change before re-entry.
-
-## Build exposure
-
-Apply the operator capacity mandate to total open plus proposed MNQ master
-exposure:
-
-- 25k master: at most 1 contract.
-- 250k master: at most 10 contracts.
-
-Quantity remains adaptive within that ceiling. Compare one protected tranche,
-TP1/TP2/TP3 scale-out, reserved capacity, a later independently protected
-same-direction addition, and unchanged exposure. Examples include 3+3+3 or
-2+2+2 distributions, with total exposure never above the mandate. Add only
-when current evidence still supports the thesis and every new tranche receives
-native protection. Never grid, martingale, average mechanically, or add merely
-to recover a loss.
-
-Averaging in and out within one thesis is available on capacity-rich masters.
-Staging a planned second tranche at a better price is rational when the thesis
-and the original invalidation are unchanged: for example, long 3 contracts,
-add 3 more roughly 20 points lower, one structural stop beyond the sweep zone
-covering both. Scale out into favorable movement instead of exiting
-all-or-nothing: shed contracts progressively — some at +20, more at +40, the
-remainder ladders through +60/+80/+100 and beyond as the move matures. Both
-directions are calibration examples conditioned on a still-valid thesis, never
-a mechanical program, and every tranche keeps independent native protection.
-
-## Manage the thesis, not every tick
-
-The positioned worker reviews every minute, but a review need not cause an
-amendment. Hold through noise already allowed by the thesis. Compare current
-acceptance/rejection, pivots, order flow, excursion, rollback, remaining
-opportunity, and the prior `change_condition`. Use exact-leg `MOVE_STOP` or
-`MOVE_TP`, same-direction protected additions, or full `EXIT` when evidence
-changes. Do not trail into ordinary noise or repeatedly re-enter the same idea
-at nearly the same level without a material change.
-
-Be a ruthless profit-taker. If the thesis is weakening, exit — do not
-negotiate with it. When price has traveled half or more of the way to a
-target and momentum stalls, taking profit aggressively beats hoping: a mature
-winner that round-trips into its stop, or gets babysat to a breakeven exit
-after hours in the trade, is a worse error than a slightly early exit. Bank
-the money; leave nothing on the table waiting for a perfect exit.
-
-The 0.4%-2% daily objective evaluates the system across repeated outcomes. It
-never justifies forcing a trade, oversized exposure, or treating a daily target
-as guaranteed.
+A high-quality decision is not necessarily active. It is internally consistent,
+uses the current packet, names uncertainty and counterevidence, respects the
+supplied contract, and states what would materially change the conclusion.
+Do not optimize for action frequency, a daily monetary objective, a preferred
+style, or a particular geometric template.
