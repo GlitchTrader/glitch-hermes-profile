@@ -1,0 +1,453 @@
+import importlib.util
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+SPEC = importlib.util.spec_from_file_location(
+    "reconcile_hermes_outcomes_for_attribution_tests",
+    ROOT / "scripts" / "reconcile-hermes-outcomes.py",
+)
+RECONCILER = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(RECONCILER)
+
+LEARNING_SPEC = importlib.util.spec_from_file_location(
+    "run_hermes_learning_cycle_for_attribution_tests",
+    ROOT / "scripts" / "run-hermes-learning-cycle.py",
+)
+LEARNING = importlib.util.module_from_spec(LEARNING_SPEC)
+assert LEARNING_SPEC.loader is not None
+LEARNING_SPEC.loader.exec_module(LEARNING)
+
+
+def dotnet_ticks(value: datetime) -> int:
+    return RECONCILER.DOTNET_EPOCH_TICKS + int(value.timestamp() * 10_000_000)
+
+
+def write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def trade_ledger_line(
+    account: str,
+    source: str,
+    quantity: int,
+    entry_signal: str,
+    entry_utc: datetime,
+    exit_utc: datetime,
+) -> str:
+    columns = [
+        f"trade-{account}",
+        str(dotnet_ticks(entry_utc)),
+        str(dotnet_ticks(exit_utc)),
+        account,
+        "MNQ",
+        "Long",
+        str(quantity),
+        "100",
+        "102",
+        str(2 * quantity),
+        entry_signal,
+        "Manual / Other",
+        "Asia",
+        "Asia",
+        source,
+        "Strategy" if source == "Strategy" else "SYNC",
+        "SYNC",
+        entry_signal,
+        f"exit-{account}",
+        "0",
+    ]
+    return "\t".join(columns) + "\n"
+
+
+def native_log_line(
+    recorded_local: datetime,
+    account: str,
+    role: str,
+    correlation: str,
+    oco: str,
+    quantity: int,
+    state: str = "Accepted",
+) -> str:
+    timestamp = recorded_local.strftime("%Y-%m-%d %H:%M:%S:%f")[:-3]
+    return (
+        f"{timestamp}|1|32|Order='order-{role}/{account}' "
+        f"Name='GLT-COPY-{role}-routehash-{correlation}-01' New state='{state}' "
+        f"Instrument='MNQ 09-26' Action='Sell' Limit price=0 Stop price=99 "
+        f"Quantity={quantity} Type='Stop Market' Time in force=GTC Oco='{oco}' "
+        "Filled=0 Fill price=0 Error='No error' Native error=''\n"
+    )
+
+
+def build_reconciliation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    glitch_data = tmp_path / "GlitchData"
+    decision_root = tmp_path / "exchange" / "hermes" / "outbox"
+    output_path = glitch_data / "intents" / "hermes-trade-outcomes.jsonl"
+    entry_utc = datetime(2026, 8, 3, 12, 50, 49, 100000, tzinfo=timezone.utc)
+    exit_utc = entry_utc + timedelta(minutes=1)
+    intent_id = "intent-1"
+    correlation = "corr1234"
+
+    write_jsonl(glitch_data / "intents" / "executions.jsonl", [
+        {
+            "recorded_utc": entry_utc.isoformat().replace("+00:00", "Z"),
+            "intent_id": intent_id,
+            "code": "group_entries_submitted",
+            "message": (
+                "expected_accounts=Master,FollowerA,FollowerB|correlation=corr1234|"
+                "contract=MNQ 09-26|point_value_usd=2|tick_size=0.25"
+            ),
+        },
+        {
+            "recorded_utc": entry_utc.isoformat().replace("+00:00", "Z"),
+            "intent_id": intent_id,
+            "code": "group_structural_brackets_submitted",
+            "message": (
+                "account=Master|fill=100|sl1=99|leg1_qty=1|tp1=102|"
+                "point_value_usd=2|tick_size=0.25"
+            ),
+        },
+    ])
+    decision_root.mkdir(parents=True)
+    (decision_root / "cycle-1.json").write_text(json.dumps({
+        "cycle_id": "cycle-1",
+        "decisions": [{
+            "intent_id": intent_id,
+            "action": "ENTER_LONG",
+            "account": "Master",
+            "operator_profile": "group-a",
+            "instrument": "MNQ",
+            "confidence": 0.7,
+            "stop_loss": 99,
+            "take_profit_1": 102,
+            "reason": "fixture",
+            "decision_audit": {},
+        }],
+    }), encoding="utf-8")
+    (glitch_data / "TradeLedger.tsv").write_text(
+        trade_ledger_line(
+            "Master", "Strategy", 1, f"GLT-AI-E-{correlation}-0", entry_utc, exit_utc
+        )
+        + trade_ledger_line(
+            "FollowerA", "Replication", 2,
+            f"GLT-COPY-E-accounta-{correlation}-R1-O1", entry_utc, exit_utc,
+        )
+        + trade_ledger_line(
+            "FollowerB", "Replication", 3,
+            f"GLT-COPY-E-accountb-{correlation}-R1-O1", entry_utc, exit_utc,
+        ),
+        encoding="utf-8",
+    )
+    snapshot_path = glitch_data / "snapshots" / "historical" / "portfolio" / "terminal.json"
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text(json.dumps({
+        "created_utc": (exit_utc + timedelta(seconds=1)).isoformat().replace("+00:00", "Z"),
+        "accounts": [
+            {"account": account, "positions": [], "working_orders": 0}
+            for account in ("Master", "FollowerA", "FollowerB")
+        ],
+    }), encoding="utf-8")
+
+    entry_local = entry_utc.astimezone().replace(tzinfo=None)
+    log_directory = tmp_path / "log"
+    log_directory.mkdir()
+    (log_directory / f"log.{entry_local:%Y%m%d}.00000.txt").write_text(
+        native_log_line(
+            entry_local + timedelta(milliseconds=100),
+            "FollowerA", "S", correlation, "pair-a", 2,
+        )
+        + native_log_line(
+            entry_local + timedelta(milliseconds=120),
+            "FollowerA", "T", correlation, "pair-a", 2,
+        ),
+        encoding="utf-8",
+    )
+    return glitch_data, decision_root, output_path
+
+
+def test_native_log_requires_matching_account_correlation_and_oco_pair(tmp_path: Path) -> None:
+    entry_utc = datetime(2026, 8, 3, 12, 50, 49, tzinfo=timezone.utc)
+    entry_local = entry_utc.astimezone().replace(tzinfo=None)
+    log_directory = tmp_path / "log"
+    log_directory.mkdir()
+    (log_directory / f"log.{entry_local:%Y%m%d}.00000.txt").write_text(
+        native_log_line(entry_local, "FollowerA", "S", "corr1234", "pair-a", 2)
+        + native_log_line(entry_local, "FollowerA", "T", "corr1234", "pair-a", 2)
+        + native_log_line(entry_local, "FollowerA", "S", "solo1234", "pair-b", 2),
+        encoding="utf-8",
+    )
+    trade = {
+        "account": "FollowerA",
+        "instrument": "MNQ",
+        "contracts": 2,
+        "entry_utc": entry_utc,
+        "entry_signal": "GLT-COPY-E-accounta-corr1234-R1-O1",
+    }
+
+    assert RECONCILER.native_follower_protection_submitted(
+        log_directory, trade, "FollowerA", {}
+    ) is True
+    assert RECONCILER.native_follower_protection_submitted(
+        log_directory, trade, "FollowerB", {}
+    ) is False
+    assert RECONCILER.native_follower_protection_submitted(
+        log_directory, {**trade, "entry_signal": "GLT-COPY-E-accounta-other-R1-O1"},
+        "FollowerA", {},
+    ) is False
+    assert RECONCILER.native_follower_protection_submitted(
+        log_directory, {**trade, "entry_signal": "GLT-COPY-E-accounta-solo1234-R1-O1"},
+        "FollowerA", {},
+    ) is False
+
+
+def test_reconcile_uses_native_fallback_and_keeps_missing_follower_unknown(
+    tmp_path: Path,
+) -> None:
+    glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
+
+    outcomes = RECONCILER.reconcile(
+        glitch_data, None, output_path, decision_root=decision_root
+    )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome["origin"] == "ai"
+    assert outcome["master_learning_eligible"] is True
+    assert outcome["learning_eligible"] is True
+    assert outcome["attribution_status"] == "complete"
+    account_outcomes = {row["account"]: row for row in outcome["account_outcomes"]}
+    assert set(account_outcomes) == {"Master", "FollowerA", "FollowerB"}
+    assert account_outcomes["FollowerA"]["protection_evidence"] == "ninjatrader_daily_log"
+    assert account_outcomes["FollowerA"]["protection_status"] == "submitted"
+    assert account_outcomes["FollowerB"]["protection_evidence"] == "unavailable"
+    assert account_outcomes["FollowerB"]["protection_status"] == "unknown"
+    assert outcome["replication_diagnostics"] == [{
+        "account": "FollowerB",
+        "status": "follower_protection_evidence_unknown",
+        "learning_role": "replication_only",
+    }]
+
+
+def test_manual_master_trade_preserves_snapshot_and_ai_comparison(tmp_path: Path) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    frame_root = glitch_data / "hermes" / "exchange" / "glitch" / "minute-frames"
+    frame_root.mkdir(parents=True)
+    (frame_root / "20260803T1250Z.json").write_text(json.dumps({
+        "minute_id": "20260803T1250Z",
+        "market_snapshot": {"snapshot_hash": "market-at-entry"},
+    }), encoding="utf-8")
+    entry_utc = datetime(2026, 8, 3, 12, 50, 30, tzinfo=timezone.utc)
+    exit_utc = entry_utc + timedelta(minutes=4)
+    snapshots = [(entry_utc - timedelta(seconds=30), {
+        "snapshot_id": "portfolio-at-entry",
+        "created_utc": "2026-08-03T12:50:00Z",
+        "accounts": [{"account": "Master", "positions": [], "working_orders": 0}],
+    })]
+    intents = {"ai-nearby": {
+        "intent_id": "ai-nearby",
+        "_cycle_id": "ai-cycle",
+        "account": "Master",
+        "instrument": "MNQ",
+        "created_utc": "2026-08-03T12:50:20Z",
+        "action": "ENTER_SHORT",
+        "confidence": 0.41,
+        "snapshot_hash": "market-at-entry",
+        "reason": "AI considered the opposite side",
+    }}
+    trade = {
+        "trade_id": "manual-native-trade-1",
+        "account": "Master",
+        "instrument": "MNQ",
+        "side": "Long",
+        "contracts": 2,
+        "entry_price": 20000,
+        "exit_price": 20008,
+        "pnl_points": 16,
+        "commission_total": 2,
+        "entry_utc": entry_utc,
+        "exit_utc": exit_utc,
+        "trade_source": "Manual",
+        "entry_type": "Manual",
+        "entry_signal": "ChartTrader",
+        "exit_signal": "Close",
+        "open_reason": "Manual Entry",
+        "close_reason": "Manual / Other",
+    }
+
+    outcome = RECONCILER.manual_trade_outcome(glitch_data, snapshots, intents, trade)
+
+    assert outcome is not None
+    assert outcome["origin"] == "manual"
+    assert outcome["intent_id"].startswith("manual-")
+    assert outcome["snapshot_reference"]["portfolio"]["snapshot_id"] == "portfolio-at-entry"
+    assert outcome["snapshot_reference"]["market"]["snapshot_hash"] == "market-at-entry"
+    assert outcome["ai_comparison"]["intent_id"] == "ai-nearby"
+    assert outcome["master_learning_eligible"] is True
+
+    context = LEARNING.entry_decision_context(glitch_data, outcome, None, outcome["account_outcomes"][0])
+    assert context["origin"] == "manual"
+    assert context["human_trade"]["entry_signal"] == "ChartTrader"
+    assert context["contemporaneous_ai_decision"]["intent_id"] == "ai-nearby"
+
+
+def test_manual_learning_rejects_replication_identity() -> None:
+    now = datetime(2026, 8, 3, 12, 50, tzinfo=timezone.utc)
+    replicated = {
+        "trade_id": "follower-trade",
+        "account": "Follower",
+        "instrument": "MNQ",
+        "side": "Long",
+        "contracts": 1,
+        "entry_price": 20000,
+        "exit_price": 20001,
+        "pnl_points": 1,
+        "commission_total": 0,
+        "entry_utc": now,
+        "exit_utc": now + timedelta(minutes=1),
+        "trade_source": "Replication",
+        "entry_type": "Manual",
+        "entry_signal": "GLT-COPY-E-route-correlation-R1-O1",
+    }
+
+    assert RECONCILER.manual_trade_outcome(Path("unused"), [], {}, replicated) is None
+
+
+def manual_identity_trade(entry_utc: datetime) -> dict:
+    return {
+        "trade_id": "mutable-trade-id",
+        "account": "Master",
+        "instrument": "MNQ 09-26",
+        "side": "Long",
+        "contracts": 1,
+        "entry_price": 20000,
+        "exit_price": 20004,
+        "pnl_points": 4,
+        "commission_total": 1,
+        "entry_utc": entry_utc,
+        "exit_utc": entry_utc + timedelta(minutes=2),
+        "trade_source": "Manual",
+        "entry_type": "Manual",
+        "entry_signal": "ChartTrader",
+        "exit_signal": "Close",
+        "open_reason": "Manual Entry",
+        "close_reason": "Manual / Other",
+    }
+
+
+def test_ai_comparison_never_uses_post_entry_decision() -> None:
+    entry_utc = datetime(2026, 8, 3, 12, 50, 30, tzinfo=timezone.utc)
+    trade = manual_identity_trade(entry_utc)
+    intents = {
+        "before": {
+            "intent_id": "before",
+            "account": "Master",
+            "instrument": "MNQ",
+            "created_utc": (entry_utc - timedelta(seconds=90)).isoformat(),
+        },
+        "after": {
+            "intent_id": "after",
+            "account": "Master",
+            "instrument": "MNQ",
+            "created_utc": (entry_utc + timedelta(seconds=1)).isoformat(),
+        },
+        "too-old": {
+            "intent_id": "too-old",
+            "account": "Master",
+            "instrument": "MNQ",
+            "created_utc": (entry_utc - timedelta(seconds=91)).isoformat(),
+        },
+    }
+
+    comparison = RECONCILER.contemporaneous_ai_comparison(intents, trade)
+
+    assert comparison["intent_id"] == "before"
+    assert RECONCILER.contemporaneous_ai_comparison({"after": intents["after"]}, trade) is None
+    assert RECONCILER.contemporaneous_ai_comparison({"too-old": intents["too-old"]}, trade) is None
+
+
+def test_manual_identity_survives_correction_and_prefers_entry_order() -> None:
+    entry_utc = datetime(2026, 8, 3, 12, 50, 30, tzinfo=timezone.utc)
+    original = manual_identity_trade(entry_utc)
+    corrected = {
+        **original,
+        "trade_id": "corrected-mutable-trade-id",
+        "contracts": 3,
+        "entry_price": 20001.25,
+        "exit_price": 20007.75,
+        "pnl_points": 19.5,
+        "exit_utc": original["exit_utc"] + timedelta(seconds=20),
+        "exit_signal": "CorrectedClose",
+    }
+
+    assert RECONCILER.manual_episode_identity(original) == RECONCILER.manual_episode_identity(corrected)
+    first = RECONCILER.manual_trade_outcome(Path("unused"), [], {}, original)
+    second = RECONCILER.manual_trade_outcome(Path("unused"), [], {}, corrected)
+    assert first["intent_id"] == second["intent_id"]
+    assert first["cycle_id"] == second["cycle_id"]
+
+    order_original = {**original, "entry_order_identity": "native-order-1"}
+    order_corrected = {**corrected, "entry_order_identity": "native-order-1"}
+    other_order = {**corrected, "entry_order_identity": "native-order-2"}
+    assert RECONCILER.manual_episode_identity(order_original) == RECONCILER.manual_episode_identity(order_corrected)
+    assert RECONCILER.manual_episode_identity(order_original) != RECONCILER.manual_episode_identity(other_order)
+
+
+def test_corrected_manual_episode_replaces_legacy_mutable_id(tmp_path: Path) -> None:
+    entry_utc = datetime(2026, 8, 3, 12, 50, 30, tzinfo=timezone.utc)
+    trade = manual_identity_trade(entry_utc)
+    corrected = {
+        **trade,
+        "trade_id": "changed",
+        "contracts": 4,
+        "entry_price": 20002,
+        "entry_order_identity": "native-order-1",
+    }
+    current = RECONCILER.manual_trade_outcome(Path("unused"), [], {}, corrected)
+    legacy = RECONCILER.manual_trade_outcome(Path("unused"), [], {}, trade)
+    legacy["intent_id"] = "manual-legacy-mutable-trade-id"
+    fields = [
+        "changed", str(dotnet_ticks(entry_utc)), str(dotnet_ticks(corrected["exit_utc"])),
+        "Master", "MNQ", "Long", "4", "20002", "20004", "8",
+        "Manual Entry", "Manual / Other", "Asia", "Asia", "Manual", "Manual",
+        "Manual", "ChartTrader", "Close", "1", "native-order-1", "native-exit-1",
+    ]
+    glitch_data = tmp_path / "GlitchData"
+    (glitch_data / "intents").mkdir(parents=True)
+    (glitch_data / "TradeLedger.tsv").write_text(
+        "\t".join(fields) + "\n", encoding="utf-8"
+    )
+    output = glitch_data / "intents" / "hermes-trade-outcomes.jsonl"
+    output.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+    rows = RECONCILER.reconcile(glitch_data, None, output)
+
+    assert len(rows) == 1
+    assert rows[0]["intent_id"] == current["intent_id"]
+    assert rows[0]["account_outcomes"][0]["quantity"] == 4
+
+
+def test_trade_ledger_reader_accepts_optional_entry_order_identity(tmp_path: Path) -> None:
+    entry_utc = datetime(2026, 8, 3, 12, 50, 30, tzinfo=timezone.utc)
+    exit_utc = entry_utc + timedelta(minutes=2)
+    fields = [
+        "mutable-id", str(dotnet_ticks(entry_utc)), str(dotnet_ticks(exit_utc)),
+        "Master", "MNQ", "Long", "1", "20000", "20004", "4",
+        "Manual Entry", "Manual / Other", "Asia", "Asia", "Manual", "Manual",
+        "Manual", "ChartTrader", "Close", "1", "native-order-1", "native-exit-1",
+    ]
+    ledger = tmp_path / "TradeLedger.tsv"
+    ledger.write_text("\t".join(fields) + "\n", encoding="utf-8")
+
+    rows = RECONCILER.read_trade_ledger(ledger)
+
+    assert rows[0]["entry_order_identity"] == "native-order-1"
+    assert RECONCILER.manual_episode_identity(rows[0]).endswith("|native-order-1")

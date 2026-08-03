@@ -57,12 +57,39 @@ CURRENT_PLAN_SCHEMA = "glitch.hermes.portfolio_plan.v2"
 CURRENT_GUIDANCE_SCHEMA = "glitch.hermes.trading_guidance.v2"
 MNQ_POINT_VALUE_USD = 2.0
 MNQ_TICK_SIZE = 0.25
+INTENT_CREATED_UTC_PATTERN = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})T(?P<time>\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<fraction>\d{1,7}))?(?P<offset>Z|[+-]\d{2}:\d{2})$"
+)
+SUPERSEDED_NO_OP_EXECUTOR_CODES = {
+    "group_exit_human_override_flat",
+    "stale_outbox_scope_superseded",
+}
+COMPLETED_RECEIPT_CLASSIFICATIONS = {"successful", "superseded_no_op"}
 
 
 def utc_now() -> str:
     # Match GlitchSnapshotJson.FormatUtc's round-trip ISO shape.  The seventh
     # fractional digit matters to the strict NinjaTrader intent parser.
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f0Z")
+
+
+def canonical_intent_created_utc(value: Any) -> str:
+    """Return the AddOn-compatible UTC form of an offset-bearing RFC3339 value."""
+    if not isinstance(value, str):
+        raise ValueError("intent_created_utc_invalid")
+    match = INTENT_CREATED_UTC_PATTERN.fullmatch(value)
+    if match is None:
+        raise ValueError("intent_created_utc_invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.utcoffset() is None:
+            raise ValueError("intent_created_utc_offset_missing")
+        utc_value = parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError) as error:
+        raise ValueError("intent_created_utc_invalid") from error
+    fraction = (match.group("fraction") or "").ljust(7, "0")
+    return f"{utc_value:%Y-%m-%dT%H:%M:%S}.{fraction}Z"
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -1034,6 +1061,106 @@ def consume_outbox_directive(exchange: Path, packet_id: str) -> bool:
     )
 
 
+def route_account_scope_from_scenario(scenario: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(
+        (str(book.get("route_id") or ""), str(book.get("master_account") or ""))
+        for book in scenario.get("books", []) if isinstance(book, dict)
+    ))
+
+
+def route_account_scope_from_batch(batch: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(
+        (str(intent.get("operator_profile") or ""), str(intent.get("account") or ""))
+        for intent in batch.get("decisions", []) if isinstance(intent, dict)
+    ))
+
+
+def scope_audit_rows(scope: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
+    return [{"route_id": route, "account": account} for route, account in scope]
+
+
+def pending_outbox_scope_is_current(batch: dict[str, Any], scenario: dict[str, Any]) -> bool:
+    return route_account_scope_from_batch(batch) == route_account_scope_from_scenario(scenario)
+
+
+def supersede_outbox_directive(exchange: Path, packet_id: str, reason: str) -> None:
+    context_path = outbox_context_path(exchange, packet_id)
+    if not context_path.is_file():
+        return
+    context = read_json(context_path)
+    if (
+        context.get("schema_version") != "glitch.hermes.outbox_context.v1"
+        or context.get("cycle_id") != packet_id
+        or not context.get("directive_id")
+    ):
+        raise ValueError("outbox_context_invalid")
+    context["status"] = "superseded"
+    context["superseded_utc"] = utc_now()
+    context["supersede_reason"] = reason
+    write_json_atomic(context_path, context)
+
+    directive_path = exchange / "hermes" / "operator-directive.json"
+    if not directive_path.is_file():
+        return
+    directive = read_json(directive_path)
+    if (
+        directive.get("status") == "pending"
+        and directive.get("directive_id") == context.get("directive_id")
+    ):
+        directive["status"] = "superseded"
+        directive["superseded_utc"] = utc_now()
+        directive["supersede_reason"] = reason
+        write_json_atomic(directive_path, directive)
+
+
+def supersede_pending_outbox(
+    exchange: Path,
+    cycle_id: str,
+    batch: dict[str, Any],
+    current_scenario: dict[str, Any],
+) -> dict[str, Any]:
+    reason = "route_account_scope_changed"
+    pending_scope = route_account_scope_from_batch(batch)
+    current_scope = route_account_scope_from_scenario(current_scenario)
+    body = {
+        "executor": "skipped",
+        "executor_code": "stale_outbox_scope_superseded",
+        "supersede_reason": reason,
+        "pending_scope": scope_audit_rows(pending_scope),
+        "current_scope": scope_audit_rows(current_scope),
+    }
+    receipt = {
+        "schema_version": "glitch.hermes.delivery_receipt.v1",
+        "recorded_utc": utc_now(),
+        "cycle_id": cycle_id,
+        "complete": True,
+        "results": [
+            {
+                "intent_id": intent.get("intent_id"),
+                "result": {"delivery_status": "not_posted", "body": body},
+            }
+            for intent in batch.get("decisions", []) if isinstance(intent, dict)
+        ],
+    }
+    write_json_atomic(exchange / "hermes" / "receipts" / f"{cycle_id}.json", receipt)
+    attempt_path = model_attempt_path(exchange, cycle_id)
+    attempt = read_json(attempt_path) if attempt_path.is_file() else {
+        "schema_version": "glitch.hermes.model_attempt.v1",
+        "cycle_id": cycle_id,
+    }
+    attempt.update({
+        "status": "superseded",
+        "completed_utc": utc_now(),
+        "receipt_classification": "superseded_no_op",
+        "supersede_reason": reason,
+        "pending_scope": scope_audit_rows(pending_scope),
+        "current_scope": scope_audit_rows(current_scope),
+    })
+    write_json_atomic(attempt_path, attempt)
+    supersede_outbox_directive(exchange, cycle_id, reason)
+    return receipt
+
+
 def build_scenario(packet: dict[str, Any]) -> dict[str, Any]:
     policy = packet.get("policy")
     if not isinstance(policy, dict):
@@ -1056,11 +1183,47 @@ def build_scenario(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def forced_entry_scope(
+    directive: dict[str, Any],
+    scenario: dict[str, Any],
+) -> set[tuple[str, str]]:
+    current_scope = set(route_account_scope_from_scenario(scenario))
+    scope = directive.get("scope")
+    if scope == "all_route_bound_groups":
+        if len(current_scope) != 1:
+            raise ValueError("operator_forced_entry_scope_ambiguous")
+        return current_scope
+    if not isinstance(scope, dict):
+        raise ValueError("operator_forced_entry_scope_invalid")
+    kind = scope.get("kind")
+    bindings = scope.get("bindings")
+    if kind not in {"all", "route"} or not isinstance(bindings, list):
+        raise ValueError("operator_forced_entry_scope_invalid")
+    selected: set[tuple[str, str]] = set()
+    for binding in bindings:
+        if not isinstance(binding, dict) or set(binding) != {"route_id", "account"}:
+            raise ValueError("operator_forced_entry_scope_invalid")
+        pair = (str(binding.get("route_id") or ""), str(binding.get("account") or ""))
+        if not all(pair) or pair in selected:
+            raise ValueError("operator_forced_entry_scope_invalid")
+        selected.add(pair)
+    if not selected or (kind == "route" and len(selected) != 1):
+        raise ValueError("operator_forced_entry_scope_invalid")
+    if not selected.issubset(current_scope) or (kind == "all" and selected != current_scope):
+        raise ValueError("operator_forced_entry_scope_stale")
+    return selected
+
+
 def validate_batch(
     batch: dict[str, Any],
     scenario: dict[str, Any],
     directive: dict[str, Any] | None = None,
 ) -> None:
+    forced_scope = (
+        forced_entry_scope(directive, scenario)
+        if directive and directive.get("directive_type") == "forced_entry"
+        else set()
+    )
     unknown_batch_fields = set(batch).difference(
         {"schema_version", "cycle_id", "next_review_seconds", "decisions"}
     )
@@ -1097,7 +1260,7 @@ def validate_batch(
             if not isinstance(intent.get(field), str) or not intent[field].strip():
                 raise ValueError(f"intent_string_invalid:{index}:{field}")
         try:
-            datetime.fromisoformat(intent["created_utc"].replace("Z", "+00:00"))
+            intent["created_utc"] = canonical_intent_created_utc(intent["created_utc"])
         except ValueError as error:
             raise ValueError(f"intent_created_utc_invalid:{index}") from error
         confidence = intent.get("confidence")
@@ -1165,10 +1328,14 @@ def validate_batch(
             validate_protection_updates(intent, book, index, require_target=True)
         elif any(field in intent for field in ENTRY_FIELDS | {"protection_updates"}):
             raise ValueError(f"non_entry_contains_entry_fields:{index}")
-    if directive and directive.get("directive_type") == "forced_entry":
+    if forced_scope:
         expected = "ENTER_LONG" if directive.get("bias") == "long" else "ENTER_SHORT"
-        if any(intent.get("action") != expected for intent in decisions):
-            raise ValueError(f"operator_forced_entry_not_honored:{expected}")
+        for book, intent in zip(books, decisions):
+            pair = (str(book.get("route_id") or ""), str(book.get("master_account") or ""))
+            if pair in forced_scope and intent.get("action") != expected:
+                raise ValueError(
+                    f"operator_forced_entry_not_honored:{book.get('route_id')}:{expected}"
+                )
 
 
 def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1509,6 +1676,7 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
         # Hermes-only field across the strict Glitch execution API boundary.
         wire_intent = dict(intent)
         wire_intent.pop("wake_triggers", None)
+        wire_intent["created_utc"] = canonical_intent_created_utc(wire_intent.get("created_utc"))
         try:
             result = post_intent(wire_intent, token)
         except Exception as error:  # network failure is retriable with the same intent IDs
@@ -1535,12 +1703,20 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
 def receipt_classification(receipt: dict[str, Any]) -> str:
     if not receipt.get("complete", False):
         return "transport_uncertain"
+    saw_superseded_no_op = False
     for item in receipt.get("results", []):
         result = item.get("result") if isinstance(item, dict) else None
         if not isinstance(result, dict):
             return "transport_uncertain"
-        status = result.get("http_status")
         body = result.get("body")
+        if (
+            result.get("delivery_status") == "not_posted"
+            and isinstance(body, dict)
+            and body.get("executor_code") in SUPERSEDED_NO_OP_EXECUTOR_CODES
+        ):
+            saw_superseded_no_op = True
+            continue
+        status = result.get("http_status")
         if not isinstance(status, int):
             return "transport_uncertain"
         if status >= 400:
@@ -1548,11 +1724,14 @@ def receipt_classification(receipt: dict[str, Any]) -> str:
         if isinstance(body, dict):
             executor = body.get("executor")
             executor_code = body.get("executor_code")
+            if executor_code in SUPERSEDED_NO_OP_EXECUTOR_CODES:
+                saw_superseded_no_op = True
+                continue
             if executor == "failed":
                 return "terminal_rejection"
             if executor == "skipped" and executor_code != "no_op_action":
                 return "terminal_rejection"
-    return "successful"
+    return "superseded_no_op" if saw_superseded_no_op else "successful"
 
 
 def receipt_requires_new_packet_retry(receipt: dict[str, Any]) -> bool:
@@ -1571,6 +1750,7 @@ def mark_attempt_from_receipt(exchange: Path, cycle_id: str, receipt: dict[str, 
         attempt["status"] = "delivery_incomplete"
     else:
         attempt["status"] = "completed"
+    attempt["receipt_classification"] = classification
     attempt["completed_utc"] = utc_now()
     write_json_atomic(path, attempt)
 
@@ -1679,8 +1859,9 @@ def build_prompt(
         "For NOTHING, HOLD, EXIT omit all entry and management fields. snapshot_hash must be a JSON string copied exactly even if numeric-looking. "
         "wake_triggers is mandatory and is an array of {type:\"PRICE_CROSS\",direction:\"ABOVE\"|\"BELOW\",price:number}; mirror every explicit crossing "
         "level in change_condition and otherwise use []. Use top-level decisions, never intents. "
-        "If operator_advisory.directive_type is forced_entry and the supplied group is flat, honor its long/short direction as an operator experiment "
-        "while choosing evidence-based quantity and geometry. Ordinary advisories are soft and never override current evidence or protection. "
+        "If operator_advisory.directive_type is forced_entry, honor its long/short direction only for the exact route/account bindings in "
+        "operator_advisory.scope; every unscoped book remains an evidence-based decision. Choose evidence-based quantity and geometry for scoped flat books. "
+        "Ordinary advisories are soft and never override current evidence or protection. "
         "Invoke native memory retrieval exactly once for relevant durable Glitch lessons, do not write memory, and never store current market/account state. "
         "When operator_advisory.directive_type=native_tool_canary, that required retrieval is the diagnostic and must not bias the decision. "
         "Never fabricate missing facts, hide a loss, reset a baseline, rewrite history, or mark a discrepancy resolved without authoritative evidence. "
@@ -1900,10 +2081,26 @@ def run_once(
     pending = pending_outbox(exchange)
     if pending is not None:
         pending_id, pending_path = pending
+        pending_batch = normalize_batch(read_json(pending_path))
+        current_scenario = build_scenario(packet)
+        if not pending_outbox_scope_is_current(pending_batch, current_scenario):
+            if args.dry_run:
+                print(json.dumps({
+                    "cycle_id": pending_id,
+                    "submitted": False,
+                    "would_supersede": True,
+                    "reason": "route_account_scope_changed",
+                }))
+                return 0
+            superseded_receipt = supersede_pending_outbox(
+                exchange, pending_id, pending_batch, current_scenario
+            )
+            print(json.dumps(superseded_receipt, separators=(",", ":")))
+            return 0
         original_packet_path = exchange / "glitch" / "decision-packets" / f"{pending_id}.json"
         original_packet = packet if pending_id == packet_id else read_json(original_packet_path)
         original_scenario = build_scenario(original_packet)
-        pending_batch = normalize_batch(read_json(pending_path), original_scenario)
+        pending_batch = normalize_batch(pending_batch, original_scenario)
         validate_batch(pending_batch, original_scenario)
         if args.dry_run:
             print(json.dumps({
@@ -1917,7 +2114,7 @@ def run_once(
         pending_receipt = submit_batch(pending_batch, glitch_data, exchange)
         mark_attempt_from_receipt(exchange, pending_id, pending_receipt)
         print(json.dumps(pending_receipt, separators=(",", ":")))
-        return 1 if receipt_classification(pending_receipt) != "successful" else 0
+        return 1 if receipt_classification(pending_receipt) not in COMPLETED_RECEIPT_CLASSIFICATIONS else 0
 
     receipt_path = exchange / "hermes" / "receipts" / f"{packet_id}.json"
     outbox_path = exchange / "hermes" / "outbox" / f"{packet_id}.json"
@@ -1945,7 +2142,7 @@ def run_once(
         receipt = submit_batch(batch, glitch_data, exchange)
         mark_attempt_from_receipt(exchange, packet_id, receipt)
         print(json.dumps(receipt, separators=(",", ":")))
-        return 0 if receipt_classification(receipt) == "successful" else 1
+        return 0 if receipt_classification(receipt) in COMPLETED_RECEIPT_CLASSIFICATIONS else 1
     if receipt_path.is_file():
         raise ValueError("receipt_without_outbox")
 
@@ -2055,7 +2252,7 @@ def run_once(
     mark_attempt_from_receipt(exchange, packet_id, receipt)
     classification = receipt_classification(receipt)
     print(json.dumps(receipt, separators=(",", ":")))
-    return 1 if classification != "successful" else 0
+    return 1 if classification not in COMPLETED_RECEIPT_CLASSIFICATIONS else 0
 
 
 def process_is_alive(pid: int) -> bool:

@@ -140,7 +140,71 @@ def _status_text() -> str:
     return f"Glitch trading: {'ON' if on else 'OFF'}; policy: {policy}; replication: {replication}; gateway: {gateway}{mismatch}."
 
 
-def _write_operator_directive(bias: str, raw_args: str, *, directive_type: str = "advisory") -> str:
+def _route_account_bindings() -> dict[str, str]:
+    policy = json.loads((GLITCH_DATA / "ai" / "policy.json").read_text(encoding="utf-8-sig"))
+    bindings: dict[str, str] = {}
+    for raw in policy.get("profile_account_bindings", []):
+        if not isinstance(raw, str) or "=" not in raw:
+            continue
+        route, account = (value.strip() for value in raw.split("=", 1))
+        if not route or not account:
+            continue
+        if route in bindings and bindings[route] != account:
+            raise RuntimeError(f"Route {route} is bound to more than one account; no forced entry queued.")
+        bindings[route] = account
+    if not bindings:
+        raise RuntimeError("Forced entries require at least one route-bound Glitch account.")
+    return bindings
+
+
+def _forced_entry_scope(raw_args: str) -> tuple[dict[str, Any], str, str]:
+    bindings = _route_account_bindings()
+    routes = list(bindings)
+    arguments = raw_args.strip().split(maxsplit=1)
+    if not arguments:
+        if len(routes) != 1:
+            choices = ", ".join(routes)
+            raise RuntimeError(
+                f"Multiple routes are configured ({choices}). Use all or one exact route after /long or /short."
+            )
+        selected = [routes[0]]
+        kind = "route"
+        rationale = ""
+    else:
+        requested = arguments[0]
+        rationale = arguments[1].strip() if len(arguments) == 2 else ""
+        if requested == "all":
+            selected = routes
+            kind = "all"
+        elif requested in bindings:
+            selected = [requested]
+            kind = "route"
+        else:
+            choices = ", ".join(routes)
+            raise RuntimeError(f"Unknown forced-entry scope {requested!r}; use all or one of: {choices}.")
+    scope_bindings = [
+        {"route_id": route, "account": bindings[route]}
+        for route in selected
+    ]
+    scope = {"kind": kind, "bindings": scope_bindings}
+    if kind == "all":
+        description = "all route-bound books (" + ", ".join(
+            f"{route}={bindings[route]}" for route in selected
+        ) + ")"
+    else:
+        route = selected[0]
+        description = f"route {route} ({bindings[route]})"
+    return scope, rationale, description
+
+
+def _write_operator_directive(
+    bias: str,
+    raw_args: str,
+    *,
+    directive_type: str = "advisory",
+    scope: Any = "all_route_bound_groups",
+    scope_description: str = "all route-bound books",
+) -> str:
     now = datetime.now(timezone.utc)
     directive = {
         "schema_version": "glitch.operator.directive.v1",
@@ -148,7 +212,7 @@ def _write_operator_directive(bias: str, raw_args: str, *, directive_type: str =
         "created_utc": now.isoformat().replace("+00:00", "Z"),
         "expires_utc": (now + timedelta(minutes=15)).isoformat().replace("+00:00", "Z"),
         "status": "pending",
-        "scope": "all_route_bound_groups",
+        "scope": scope,
         "bias": bias,
         "directive_type": directive_type,
         "rationale": raw_args.strip() or f"Operator requested a {bias} bias for the next cycle.",
@@ -169,7 +233,7 @@ def _write_operator_directive(bias: str, raw_args: str, *, directive_type: str =
         stream.write(json.dumps(directive, separators=(",", ":"), ensure_ascii=False) + "\n")
     if directive_type == "forced_entry":
         return (
-            f"Protected {bias} entry queued for the next Glitch cycle. Hermes must choose the requested "
+            f"Protected {bias} entry queued for {scope_description} on the next Glitch cycle. Hermes must choose the requested "
             "direction and calculate SL/TP; Glitch retains final risk and execution authority."
         )
     return (
@@ -211,13 +275,21 @@ def _require_flat_group() -> None:
 
 
 def _long(raw_args: str) -> str:
+    scope, rationale, description = _forced_entry_scope(raw_args)
     _require_flat_group()
-    return _write_operator_directive("long", raw_args, directive_type="forced_entry")
+    return _write_operator_directive(
+        "long", rationale, directive_type="forced_entry",
+        scope=scope, scope_description=description,
+    )
 
 
 def _short(raw_args: str) -> str:
+    scope, rationale, description = _forced_entry_scope(raw_args)
     _require_flat_group()
-    return _write_operator_directive("short", raw_args, directive_type="forced_entry")
+    return _write_operator_directive(
+        "short", rationale, directive_type="forced_entry",
+        scope=scope, scope_description=description,
+    )
 
 
 def _bias_long(raw_args: str) -> str:
@@ -303,8 +375,8 @@ def register(ctx) -> None:
         "bias-long": (_bias_long, "Suggest a long bias for the next Glitch cycle; Hermes decides."),
         "bias-short": (_bias_short, "Suggest a short bias for the next Glitch cycle; Hermes decides."),
         "bias-neutral": (_bias_neutral, "Remove directional bias for the next Glitch cycle."),
-        "long": (_long, "Queue one protected operator-directed long for the next configured cycle."),
-        "short": (_short, "Queue one protected operator-directed short for the next configured cycle."),
+        "long": (_long, "Queue one protected long for one exact route or explicit all scope."),
+        "short": (_short, "Queue one protected short for one exact route or explicit all scope."),
         "replicate-on": (_replicate_on, "Enable Glitch replication idempotently."),
         "replicate-off": (_replicate_off, "Disable Glitch replication idempotently."),
         "glitch-status": (_status, "Show Glitch, trading-job, and replication state."),

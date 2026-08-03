@@ -1,22 +1,36 @@
 """Reconcile completed master/follower trades into Hermes learning outcomes.
 
 The direct exchange outbox is the decision authority. NinjaTrader execution
-events prove the AI-owned master lifecycle; CopyEngine Journal events prove
-follower-native protection; TradeLedger.tsv proves each observed account round
-trip. A complete terminal master trade is always attributable to Hermes.
-Follower misses remain replication diagnostics and never erase master learning.
+events prove the AI-owned master lifecycle; CopyEngine Journal events or
+NinjaTrader's durable daily order log can prove follower-native protection;
+TradeLedger.tsv proves each observed account round trip. A complete terminal
+master trade is always attributable to Hermes. Missing follower evidence is
+unknown, not failure, and never erases master learning.
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
 DOTNET_EPOCH_TICKS = 621355968000000000
+NATIVE_LOG_QUANTITY_PATTERN = re.compile(r"(?:^|\s)Quantity=(?P<quantity>\d+(?:\.\d+)?)")
+COPY_ENTRY_SIGNAL_PATTERN = re.compile(
+    r"^GLT-COPY-E-[^-]+-(?P<correlation>[^-]+)-",
+    re.IGNORECASE,
+)
+COPY_PROTECTION_SIGNAL_PATTERN = re.compile(
+    r"^GLT-COPY-(?P<role>[ST])-[^-]+-(?P<correlation>[^-]+)-",
+    re.IGNORECASE,
+)
+NATIVE_PROTECTION_STATES = {"accepted", "working", "partially filled", "filled"}
+NATIVE_PROTECTION_WINDOW_SECONDS = 5
 
 
 def parse_utc(value):
@@ -74,7 +88,7 @@ def read_trade_ledger(path):
         "side", "contracts", "entry_price", "exit_price", "pnl_points",
         "open_reason", "close_reason", "entry_session", "exit_session",
         "trade_source", "entry_type", "exit_type", "entry_signal", "exit_signal",
-        "commission_total",
+        "commission_total", "entry_order_identity", "exit_order_identity",
     ]
     rows = []
     for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
@@ -254,6 +268,235 @@ def nearest_before(snapshots, when):
     return candidates[-1] if candidates else None
 
 
+def snapshot_reference(snapshots, when):
+    """Return a stable reference to the latest portfolio state before entry."""
+    candidates = [(stamp, row) for stamp, row in snapshots if stamp < when]
+    if not candidates:
+        return None
+    stamp, row = candidates[-1]
+    canonical = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return {
+        "snapshot_id": row.get("snapshot_id"),
+        "snapshot_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "created_utc": stamp.isoformat().replace("+00:00", "Z"),
+        "relation": "nearest_before_entry",
+    }
+
+
+def market_snapshot_reference(glitch_data, when):
+    """Reference the nearest market frame without treating it as native account truth."""
+    root = glitch_data / "hermes" / "exchange" / "glitch" / "minute-frames"
+    candidates = []
+    for path in root.glob("*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8-sig"))
+            raw_stamp = row.get("created_utc") or row.get("minute_id")
+            try:
+                stamp = parse_utc(raw_stamp)
+            except (TypeError, ValueError):
+                stamp = datetime.strptime(str(raw_stamp), "%Y%m%dT%H%MZ").replace(tzinfo=timezone.utc)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if stamp < when:
+            candidates.append((stamp, row))
+    if not candidates:
+        return None
+    stamp, row = sorted(candidates, key=lambda item: item[0])[-1]
+    market = row.get("market_snapshot") if isinstance(row, dict) else None
+    if not isinstance(market, dict):
+        return None
+    return {
+        "minute_id": row.get("minute_id"),
+        "snapshot_hash": market.get("snapshot_hash"),
+        "created_utc": stamp.isoformat().replace("+00:00", "Z"),
+        "relation": "nearest_before_entry",
+    }
+
+
+def configured_master_accounts(path):
+    masters = set()
+    if not path.exists():
+        return masters
+    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        fields = raw.strip().split("\t")
+        if len(fields) >= 3 and fields[0] == "G" and fields[2].strip():
+            masters.add(fields[2].strip().lower())
+    return masters
+
+
+def _normalized_entry_order_identity(record):
+    for key in ("entry_order_identity", "entry_order_id"):
+        value = str(record.get(key) or "").strip()
+        if value:
+            return value.lower()
+    return ""
+
+
+def _manual_entry_order_key(record):
+    manual = record.get("manual_trade") if isinstance(record.get("manual_trade"), dict) else {}
+    order_identity = _normalized_entry_order_identity(record) or _normalized_entry_order_identity(manual)
+    account = str(record.get("account") or record.get("master_account") or "").strip().lower()
+    instrument = str(record.get("instrument") or "").split()[0].upper()
+    if not account or not instrument or not order_identity:
+        return ""
+    return "|".join(("entry-order-v1", account, instrument, order_identity))
+
+
+def _manual_entry_fallback_key(record):
+    account = str(record.get("account") or record.get("master_account") or "").strip().lower()
+    instrument = str(record.get("instrument") or "").split()[0].upper()
+    side = str(record.get("side") or record.get("action") or "").strip().lower()
+    if side in {"long", "buy", "enter_long"}:
+        side = "long"
+    elif side in {"short", "sell", "sellshort", "enter_short"}:
+        side = "short"
+    entry_value = record.get("entry_utc")
+    try:
+        entry_utc = parse_utc(entry_value).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError):
+        return ""
+    manual = record.get("manual_trade") if isinstance(record.get("manual_trade"), dict) else {}
+    source = str(record.get("trade_source") or manual.get("trade_source") or "").strip().lower()
+    entry_type = str(record.get("entry_type") or manual.get("entry_type") or "").strip().lower()
+    signal = str(record.get("entry_signal") or manual.get("entry_signal") or "").strip().lower()
+    if not account or not instrument or not side:
+        return ""
+    return "|".join(("entry-fallback-v1", account, instrument, side, entry_utc, source, entry_type, signal))
+
+
+def manual_episode_identity(trade):
+    """Return an immutable manual-entry identity, with a legacy-ledger fallback."""
+    return _manual_entry_order_key(trade) or _manual_entry_fallback_key(trade)
+
+
+def replace_manual_outcome(existing, manual, trade):
+    """Replace corrected and legacy-ID variants of the same manual episode."""
+    current_order_key = _manual_entry_order_key(trade)
+    current_fallback = _manual_entry_fallback_key(trade)
+    for intent_id, prior in list(existing.items()):
+        if not isinstance(prior, dict) or str(prior.get("origin") or "").lower() != "manual":
+            continue
+        prior_order_key = _manual_entry_order_key(prior)
+        if current_order_key and prior_order_key:
+            same_episode = current_order_key == prior_order_key
+        elif prior_order_key:
+            same_episode = False
+        else:
+            same_episode = bool(current_fallback and current_fallback == _manual_entry_fallback_key(prior))
+        if same_episode:
+            existing.pop(intent_id, None)
+    existing[manual["intent_id"]] = manual
+
+
+def contemporaneous_ai_comparison(intents, trade):
+    """Return nearby AI thought, when present, without inventing one for manual trades."""
+    candidates = []
+    for intent in intents.values():
+        if str(intent.get("account") or "").lower() != str(trade.get("account") or "").lower():
+            continue
+        if str(intent.get("instrument") or "").split()[0].upper() != str(trade.get("instrument") or "").split()[0].upper():
+            continue
+        try:
+            created = parse_utc(intent.get("created_utc"))
+        except (TypeError, ValueError):
+            continue
+        distance = (trade["entry_utc"] - created).total_seconds()
+        if distance < 0 or distance > 90:
+            continue
+        candidates.append((distance, created, intent))
+    if not candidates:
+        return None
+    _, created, intent = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
+    return {
+        "intent_id": intent.get("intent_id"),
+        "cycle_id": intent.get("_cycle_id"),
+        "created_utc": created.isoformat().replace("+00:00", "Z"),
+        "action": intent.get("action"),
+        "confidence": intent.get("confidence"),
+        "snapshot_hash": intent.get("snapshot_hash"),
+        "reason": intent.get("reason"),
+        "decision_audit": intent.get("decision_audit"),
+        "comparison_status": "nearby_ai_decision",
+    }
+
+
+def manual_trade_outcome(glitch_data, snapshots, intents, trade):
+    """Build a learning-only manual episode from completed native round-trip truth."""
+    source = str(trade.get("trade_source") or "").strip().lower()
+    entry_type = str(trade.get("entry_type") or "").strip().lower()
+    signal = str(trade.get("entry_signal") or "").strip().upper()
+    if source != "manual" and entry_type != "manual":
+        return None
+    if source == "replication" or signal.startswith("GLT-"):
+        return None
+    account = str(trade.get("account") or "")
+    instrument = str(trade.get("instrument") or "MNQ").split()[0].upper()
+    origin_key = manual_episode_identity(trade)
+    if not account or not origin_key:
+        return None
+    digest = hashlib.sha256(origin_key.encode("utf-8")).hexdigest()
+    intent_id = "manual-" + digest[:32]
+    cycle_id = "manual-cycle-" + digest[:24]
+    side = "ENTER_LONG" if str(trade.get("side") or "").lower() == "long" else "ENTER_SHORT"
+    portfolio = snapshot_reference(snapshots, trade["entry_utc"])
+    market = market_snapshot_reference(glitch_data, trade["entry_utc"])
+    terminal = terminal_group_snapshot(snapshots, trade["exit_utc"], [account])
+    master_result = {
+        "account": account,
+        "quantity": int(abs(trade.get("contracts") or 1)),
+        "entry_price": trade.get("entry_price"),
+        "exit_price": trade.get("exit_price"),
+        "realized_pnl_usd": None,
+        "pnl_points": trade.get("pnl_points"),
+        "commission_total": trade.get("commission_total"),
+        "trade_id": trade.get("trade_id"),
+        "close_kind": infer_close_kind(trade),
+        **excursion(
+            snapshots, account, trade["entry_utc"], trade["exit_utc"], instrument, 0.0
+        ),
+    }
+    return {
+        "schema_version": "glitch.hermes.trade_outcome.v1",
+        "recorded_utc": trade["exit_utc"].isoformat().replace("+00:00", "Z"),
+        "intent_id": intent_id,
+        "cycle_id": cycle_id,
+        "origin": "manual",
+        "route_id": "manual",
+        "master_account": account,
+        "instrument": instrument,
+        "action": side,
+        "entry_utc": trade["entry_utc"].isoformat().replace("+00:00", "Z"),
+        "exit_utc": trade["exit_utc"].isoformat().replace("+00:00", "Z"),
+        "terminal_verified_utc": terminal.isoformat().replace("+00:00", "Z") if terminal else None,
+        "reason": trade.get("open_reason"),
+        "account_outcomes": [master_result],
+        "replication_diagnostics": [],
+        "master_realized_pnl_usd": None,
+        "group_realized_pnl_usd": None,
+        "master_realized_pnl_points": trade.get("pnl_points"),
+        "master_attribution_status": "complete",
+        "master_learning_eligible": True,
+        "attribution_status": "complete",
+        "learning_eligible": True,
+        "evidence": "TradeLedger.tsv",
+        "snapshot_reference": {
+            "portfolio": portfolio,
+            "market": market,
+            "status": "complete" if portfolio or market else "unavailable",
+        },
+        "ai_comparison": contemporaneous_ai_comparison(intents, trade),
+        "manual_trade": {
+            "entry_order_identity": str(trade.get("entry_order_identity") or trade.get("entry_order_id") or "").strip() or None,
+            "trade_source": trade.get("trade_source"),
+            "entry_type": trade.get("entry_type"),
+            "entry_signal": trade.get("entry_signal"),
+            "exit_signal": trade.get("exit_signal"),
+            "open_reason": trade.get("open_reason"),
+            "close_reason": trade.get("close_reason"),
+        },
+    }
+
+
 def nearest_after(snapshots, when):
     for stamp, row in snapshots:
         if stamp > when:
@@ -331,6 +574,106 @@ def _float(fields, key, fallback=None):
 
 def _instrument_root(value):
     return str(value or "").split()[0].upper()
+
+
+def _native_log_field(message, name):
+    match = re.search(rf"(?:^|\s){re.escape(name)}='([^']*)'", message)
+    return match.group(1) if match else ""
+
+
+def parse_native_protection_log_line(raw):
+    """Parse one positive native follower-protection order lifecycle row."""
+    if "Name='GLT-COPY-" not in raw:
+        return None
+    parts = raw.rstrip("\r\n").split("|", 3)
+    if len(parts) != 4:
+        return None
+    try:
+        recorded_local = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S:%f")
+    except ValueError:
+        return None
+    message = parts[3]
+    signal = COPY_PROTECTION_SIGNAL_PATTERN.match(_native_log_field(message, "Name"))
+    if signal is None or _native_log_field(message, "New state").lower() not in NATIVE_PROTECTION_STATES:
+        return None
+    order = _native_log_field(message, "Order")
+    if "/" not in order:
+        return None
+    quantity_match = NATIVE_LOG_QUANTITY_PATTERN.search(message)
+    try:
+        quantity_value = float(quantity_match.group("quantity") if quantity_match else "")
+        quantity = int(quantity_value)
+    except (TypeError, ValueError):
+        return None
+    oco = _native_log_field(message, "Oco").strip()
+    if quantity <= 0 or quantity_value != quantity or not oco:
+        return None
+    return {
+        "recorded_local": recorded_local,
+        "account": order.rsplit("/", 1)[1].strip(),
+        "instrument_root": _instrument_root(_native_log_field(message, "Instrument")),
+        "role": signal.group("role").upper(),
+        "correlation": signal.group("correlation").lower(),
+        "oco": oco,
+        "quantity": quantity,
+    }
+
+
+def read_native_protection_log_day(log_directory, date_key):
+    if not log_directory.is_dir():
+        return []
+    paths = sorted(log_directory.glob(f"log.{date_key}.*.txt"))
+    primary_paths = [path for path in paths if not path.name.lower().endswith(".en.txt")]
+    rows = []
+    for path in primary_paths or paths:
+        try:
+            with path.open("r", encoding="utf-8-sig", errors="replace") as stream:
+                for raw in stream:
+                    row = parse_native_protection_log_line(raw)
+                    if row is not None:
+                        rows.append(row)
+        except OSError:
+            continue
+    return rows
+
+
+def native_protection_rows_for_trade(log_directory, trade, cache):
+    entry_local = trade["entry_utc"].astimezone().replace(tzinfo=None)
+    date_keys = {
+        (entry_local + timedelta(seconds=offset)).strftime("%Y%m%d")
+        for offset in (-NATIVE_PROTECTION_WINDOW_SECONDS, NATIVE_PROTECTION_WINDOW_SECONDS)
+    }
+    rows = []
+    for date_key in sorted(date_keys):
+        if date_key not in cache:
+            cache[date_key] = read_native_protection_log_day(log_directory, date_key)
+        rows.extend(cache[date_key])
+    return entry_local, rows
+
+
+def native_follower_protection_submitted(log_directory, trade, account, cache):
+    entry_signal = COPY_ENTRY_SIGNAL_PATTERN.match(str(trade.get("entry_signal") or ""))
+    if entry_signal is None:
+        return False
+    entry_local, rows = native_protection_rows_for_trade(log_directory, trade, cache)
+    correlation = entry_signal.group("correlation").lower()
+    instrument = _instrument_root(trade.get("instrument"))
+    pairs = {}
+    for row in rows:
+        if str(row.get("account", "")).lower() != account.lower():
+            continue
+        if row.get("instrument_root") != instrument or row.get("correlation") != correlation:
+            continue
+        if abs((row["recorded_local"] - entry_local).total_seconds()) > NATIVE_PROTECTION_WINDOW_SECONDS:
+            continue
+        pair = pairs.setdefault(row["oco"], {})
+        role = row["role"]
+        pair[role] = max(int(pair.get(role, 0)), int(row["quantity"]))
+    protected_quantity = sum(
+        min(pair.get("S", 0), pair.get("T", 0))
+        for pair in pairs.values()
+    )
+    return protected_quantity >= int(abs(trade.get("contracts") or 0)) > 0
 
 
 def initial_native_risk(entry_price, quantity, fields, point_value):
@@ -423,6 +766,8 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
     snapshots = portfolio_snapshots(glitch_data)
     trade_ledger = read_trade_ledger(glitch_data / "TradeLedger.tsv")
     journal = read_journal(glitch_data / "Journal.tsv")
+    native_protection_log = glitch_data.parent / "log"
+    native_protection_cache = {}
     existing = {str(row.get("intent_id")): row for row in read_jsonl(output_path) if row.get("intent_id")}
     by_intent = {}
     for row in executions:
@@ -516,10 +861,18 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
                     (protection["recorded_utc"] - trade["entry_utc"]).total_seconds()
                 ) <= 5:
                     protection_evidence = "copy_engine_journal"
+                elif native_follower_protection_submitted(
+                    native_protection_log, trade, account, native_protection_cache
+                ):
+                    protection_evidence = "ninjatrader_daily_log"
                 else:
-                    protection_evidence = "terminal_trade_ledger"
-                    protection_status = "failed_or_missing"
-                    process_error = True
+                    protection_evidence = "unavailable"
+                    protection_status = "unknown"
+                    replication_diagnostics.append({
+                        "account": account,
+                        "status": "follower_protection_evidence_unknown",
+                        "learning_role": "replication_only",
+                    })
             account_outcomes.append({
                 "account": account,
                 "quantity": quantity,
@@ -557,6 +910,7 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
             "recorded_utc": exit_utc.isoformat().replace("+00:00", "Z"),
             "intent_id": intent_id,
             "cycle_id": intent.get("_cycle_id"),
+            "origin": "ai",
             "route_id": intent.get("operator_profile"),
             "master_account": master,
             "instrument": instrument_root,
@@ -588,6 +942,14 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
             "learning_eligible": not process_error,
             "evidence": intent.get("_evidence_path"),
         }
+
+    master_accounts = configured_master_accounts(glitch_data / "AccountGroups.tsv")
+    for trade in trade_ledger:
+        if master_accounts and str(trade.get("account") or "").lower() not in master_accounts:
+            continue
+        manual = manual_trade_outcome(glitch_data, snapshots, intents, trade)
+        if manual is not None:
+            replace_manual_outcome(existing, manual, trade)
 
     ordered = sorted(existing.values(), key=lambda row: (row.get("exit_utc", ""), row.get("intent_id", "")))
     write_jsonl_atomic(output_path, ordered)

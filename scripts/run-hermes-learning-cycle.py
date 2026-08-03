@@ -232,6 +232,17 @@ def entry_decision_context(
     master_result: dict[str, Any] | None,
 ) -> dict[str, Any]:
     cycle_id = str(outcome.get("cycle_id") or "")
+    if outcome.get("origin") == "manual":
+        reference = outcome.get("snapshot_reference")
+        return {
+            "status": "complete" if isinstance(reference, dict) and reference.get("status") == "complete" else "partial",
+            "origin": "manual",
+            "intent_id": str(outcome.get("intent_id") or ""),
+            "cycle_id": cycle_id,
+            "snapshot_reference": reference,
+            "human_trade": outcome.get("manual_trade"),
+            "contemporaneous_ai_decision": outcome.get("ai_comparison"),
+        }
     if not cycle_id or not isinstance(entry_intent, dict):
         return {"status": "unavailable", "reason": "entry_identity_missing"}
     packet_path = (
@@ -378,7 +389,8 @@ def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[
                 "master_account", "instrument", "contract", "action", "confidence",
                 "entry_utc", "exit_utc", "terminal_verified_utc", "planned_stop",
                 "planned_target", "reason", "decision_audit", "master_realized_pnl_usd",
-                "master_attribution_status", "master_learning_eligible", "evidence",
+                "master_realized_pnl_points", "origin", "master_attribution_status",
+                "master_learning_eligible", "evidence", "snapshot_reference", "ai_comparison",
             )
         }
         evidence.append({
@@ -656,6 +668,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         "debrief": (
             "Produce exactly one honest human-trader debrief per supplied outcome. Attribute cognition and PnL to the master only; follower ratios and follower PnL are replication diagnostics. "
             "Every supplied master_outcome has master_learning_eligible=true; that field alone authorizes cognitive learning, and replication diagnostics can never suppress it. "
+            "Treat origin=manual and origin=ai as separate provenance. Human trades are evidence, not demonstrations of correctness: identify effective decisions, mistakes, and uncertainty from native facts. When contemporaneous_ai_decision exists, compare what the human did with what AI observed or proposed without assuming either was right. "
             "Reconstruct the pre-decision regime, why Hermes entered, why the trade actually exited, geometry versus pivots/volatility/liquidity/drift, quantity, every management decision, duration, favorable excursion/rollback, and plausible alternatives. "
             "Use entry_decision_context to judge whether quantity and position architecture were evidence-based or habitual, and whether native target legs, reserved capacity, "
             "or a later independently protected addition deserved consideration. Do not assume a different quantity would have received identical fills; preserve that uncertainty. "
@@ -829,7 +842,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
             "master_result": {
                 key: master_result.get(key)
                 for key in (
-                    "entry_price", "exit_price", "quantity", "realized_pnl_usd",
+                    "entry_price", "exit_price", "quantity", "realized_pnl_usd", "pnl_points",
                     "initial_native_risk_usd", "realized_r", "sampled_mfe_usd",
                     "sampled_mae_usd", "sampled_mfe_r", "sampled_mae_r", "close_kind",
                     "initial_stop_prices", "initial_target_prices",
