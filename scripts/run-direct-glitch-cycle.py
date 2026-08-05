@@ -22,9 +22,10 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, time as datetime_time, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from win_subprocess import hermes_profile_lock, hide_flags, resolve_python_invocation
 
@@ -57,6 +58,10 @@ CURRENT_PLAN_SCHEMA = "glitch.hermes.portfolio_plan.v2"
 CURRENT_GUIDANCE_SCHEMA = "glitch.hermes.trading_guidance.v2"
 MNQ_POINT_VALUE_USD = 2.0
 MNQ_TICK_SIZE = 0.25
+LLM_MARKET_TIMEZONE = ZoneInfo("America/New_York")
+LLM_SESSION_OPEN = datetime_time(18, 0)
+LLM_SESSION_CLOSE = datetime_time(17, 0)
+LLM_ACTIVATION_STATE = "llm-activation-state.json"
 INTENT_CREATED_UTC_PATTERN = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})T(?P<time>\d{2}:\d{2}:\d{2})"
     r"(?:\.(?P<fraction>\d{1,7}))?(?P<offset>Z|[+-]\d{2}:\d{2})$"
@@ -1890,6 +1895,25 @@ def packet_is_current(packet: dict[str, Any], max_age_seconds: int | None = None
     return -60 <= age <= max_age_seconds
 
 
+def llm_maintenance_reason(now: datetime | None = None) -> str | None:
+    """Return a deterministic CME maintenance/weekend reason, if closed.
+
+    MNQ's regular session is Sunday 18:00 ET through Friday 17:00 ET,
+    with the daily 17:00-18:00 ET maintenance interval excluded.
+    This is an LLM-token gate only; it does not alter native execution.
+    """
+    local = (now or datetime.now(timezone.utc)).astimezone(LLM_MARKET_TIMEZONE)
+    if local.weekday() == 5:  # Saturday
+        return "weekend"
+    if local.weekday() == 6 and local.time() < LLM_SESSION_OPEN:  # Sunday pre-open
+        return "weekend"
+    if local.weekday() == 4 and local.time() >= LLM_SESSION_CLOSE:  # Friday post-close
+        return "weekend"
+    if LLM_SESSION_CLOSE <= local.time() < LLM_SESSION_OPEN:
+        return "maintenance_window"
+    return None
+
+
 def market_snapshot_age_seconds(packet: dict[str, Any]) -> float | None:
     """Return age of the newest embedded market observation, not the wrapper packet."""
     frames = packet.get("frames")
@@ -1931,7 +1955,7 @@ def market_snapshot_is_fresh(packet: dict[str, Any], max_age_seconds: int | None
         except (TypeError, ValueError):
             max_age_seconds = 180
     age = market_snapshot_age_seconds(packet)
-    return age is None or -60 <= age <= max_age_seconds
+    return age is not None and -60 <= age <= max_age_seconds
 
 
 def feed_observation_is_fresh(glitch_data: Path) -> bool:
@@ -1946,11 +1970,19 @@ def feed_observation_is_fresh(glitch_data: Path) -> bool:
         age_seconds = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
         feed_bus = rail.get("feed_bus")
         fresh_count = feed_bus.get("fresh_instrument_count") if isinstance(feed_bus, dict) else None
+        connection = rail.get("connection")
+        all_accounts_connected = (
+            isinstance(connection, dict)
+            and connection.get("all_accounts_connected") is True
+            and isinstance(connection.get("account_count"), int)
+            and connection.get("account_count", 0) > 0
+        )
         return (
             -60 <= age_seconds <= 180
             and isinstance(fresh_count, int)
             and not isinstance(fresh_count, bool)
             and fresh_count > 0
+            and all_accounts_connected
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
@@ -1980,6 +2012,34 @@ def scoped_master_is_positioned(packet: dict[str, Any], scenario: dict[str, Any]
         if _account_mnq_quantity(account) != 0:
             return True
     return False
+
+
+def packet_fingerprint(packet: dict[str, Any]) -> str:
+    """Identify repeated observation content, excluding rolling packet identity."""
+    stable = {
+        key: value for key, value in packet.items()
+        if key not in {"packet_id", "created_utc", "window_close_utc"}
+    }
+    encoded = json.dumps(stable, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def repeated_packet_is_suppressed(exchange: Path, packet: dict[str, Any]) -> bool:
+    path = exchange / "hermes" / LLM_ACTIVATION_STATE
+    try:
+        state = read_json(path)
+        return state.get("packet_fingerprint") == packet_fingerprint(packet)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def remember_packet_activation(exchange: Path, packet: dict[str, Any]) -> None:
+    write_json_atomic(exchange / "hermes" / LLM_ACTIVATION_STATE, {
+        "schema_version": "glitch.hermes.llm_activation_state.v1",
+        "packet_fingerprint": packet_fingerprint(packet),
+        "packet_id": packet.get("packet_id"),
+        "recorded_utc": utc_now(),
+    })
 
 
 def should_invoke_luna(
@@ -2148,12 +2208,32 @@ def run_once(
     if receipt_path.is_file():
         raise ValueError("receipt_without_outbox")
 
+    maintenance_reason = llm_maintenance_reason()
+    if maintenance_reason is not None:
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": maintenance_reason,
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+        })
+        return 0
+
     if not market_snapshot_is_fresh(packet):
         append_event(events_path, {
             "schema_version": "glitch.hermes.cycle_event.v1",
             "event": "llm_skipped",
             "reason": "stale_market_snapshot",
             "market_age_seconds": market_snapshot_age_seconds(packet),
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+        })
+        return 0
+    if repeated_packet_is_suppressed(exchange, packet):
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": "repeated_snapshot",
             "recorded_utc": utc_now(),
             "cycle_id": packet_id,
         })
@@ -2175,6 +2255,7 @@ def run_once(
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
         return 0
+    remember_packet_activation(exchange, packet)
     try:
         reconcile_completed_outcomes(glitch_data, exchange, timeout_seconds=10)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,37 @@ def test_validator_rejects_compact_created_utc() -> None:
 
     with pytest.raises(ValueError, match=r"^intent_created_utc_invalid:0$"):
         DIRECT.validate_batch(batch, scenario)
+
+
+def test_llm_activation_is_closed_during_cme_maintenance_and_weekend() -> None:
+    # 17:30 ET Wednesday: daily maintenance.
+    assert DIRECT.llm_maintenance_reason(
+        datetime(2026, 8, 5, 21, 30, tzinfo=timezone.utc)
+    ) == "maintenance_window"
+    # 12:00 ET Saturday: weekend.
+    assert DIRECT.llm_maintenance_reason(
+        datetime(2026, 8, 8, 16, 0, tzinfo=timezone.utc)
+    ) == "weekend"
+    # 11:00 ET Wednesday: open.
+    assert DIRECT.llm_maintenance_reason(
+        datetime(2026, 8, 5, 15, 0, tzinfo=timezone.utc)
+    ) is None
+
+
+def test_missing_market_timestamp_fails_closed() -> None:
+    packet = {
+        "policy": {"snapshot_max_age_seconds": 180},
+        "frames": [{"market_snapshot": {
+            "instruments": [{"instrument": "MNQ", "timeframe_bars": []}],
+        }}],
+    }
+    assert DIRECT.market_snapshot_is_fresh(packet) is False
+
+
+def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
+    first = {"packet_id": "20260805T1500Z", "created_utc": "a", "frames": [{"x": 1}]}
+    second = {"packet_id": "20260805T1501Z", "created_utc": "b", "frames": [{"x": 1}]}
+    assert DIRECT.packet_fingerprint(first) == DIRECT.packet_fingerprint(second)
 
 
 def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
