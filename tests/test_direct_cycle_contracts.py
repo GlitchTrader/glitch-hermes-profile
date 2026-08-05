@@ -111,6 +111,18 @@ def test_missing_market_timestamp_fails_closed() -> None:
     assert DIRECT.market_snapshot_is_fresh(packet) is False
 
 
+def test_feed_observation_does_not_depend_on_unrelated_native_connections(tmp_path: Path) -> None:
+    rail = tmp_path / "selfcheck" / "rail.json"
+    rail.parent.mkdir(parents=True)
+    rail.write_text(json.dumps({
+        "created_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "feed_bus": {"fresh_instrument_count": 1},
+        "connection": {"all_accounts_connected": False, "account_count": 14, "connected_count": 7},
+    }), encoding="utf-8")
+
+    assert DIRECT.feed_observation_is_fresh(tmp_path) is True
+
+
 def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
     first = {"packet_id": "20260805T1500Z", "created_utc": "a", "frames": [{"x": 1}]}
     second = {"packet_id": "20260805T1501Z", "created_utc": "b", "frames": [{"x": 1}]}

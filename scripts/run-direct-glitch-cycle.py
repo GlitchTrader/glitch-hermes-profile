@@ -1970,19 +1970,16 @@ def feed_observation_is_fresh(glitch_data: Path) -> bool:
         age_seconds = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
         feed_bus = rail.get("feed_bus")
         fresh_count = feed_bus.get("fresh_instrument_count") if isinstance(feed_bus, dict) else None
-        connection = rail.get("connection")
-        all_accounts_connected = (
-            isinstance(connection, dict)
-            and connection.get("all_accounts_connected") is True
-            and isinstance(connection.get("account_count"), int)
-            and connection.get("account_count", 0) > 0
-        )
+        # Account.All includes unrelated NinjaTrader connections. It is not
+        # the market-feed health signal and must not gate Hermes cognition.
+        # A fresh native feed bus with at least one instrument is sufficient;
+        # execution/account state is validated separately when an intent is
+        # actually submitted.
         return (
             -60 <= age_seconds <= 180
             and isinstance(fresh_count, int)
             and not isinstance(fresh_count, bool)
             and fresh_count > 0
-            and all_accounts_connected
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
