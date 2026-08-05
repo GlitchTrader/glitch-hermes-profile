@@ -1685,9 +1685,11 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
         status = result.get("http_status") if isinstance(result, dict) else None
         if isinstance(status, int) and (status in {408, 425, 429} or status >= 500):
             complete = False
-        body = result.get("body") if isinstance(result, dict) else None
-        if isinstance(body, dict) and body.get("executor") == "pending":
-            complete = False
+        # HTTP success is delivery evidence.  Glitch deliberately returns a
+        # 202 with executor=pending while the durable native queue processes
+        # the intent; that is not transport uncertainty and must not cause
+        # Hermes to replay the same intent on every packet.  Native execution
+        # outcomes are classified separately from this delivery receipt.
         results.append({"intent_id": intent["intent_id"], "result": result})
     receipt = {
         "schema_version": "glitch.hermes.delivery_receipt.v1",
