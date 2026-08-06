@@ -23,12 +23,21 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from win_subprocess import hermes_profile_lock, hide_flags, resolve_python_invocation
+from win_subprocess import (
+    hermes_operator_waiting,
+    hermes_profile_lock,
+    hide_flags,
+    resolve_python_invocation,
+)
 
 
 MODEL = "gpt-5.6-luna"
 PROVIDER = "openai-codex"
 SOURCE = "trading"
+
+
+class LearningDeferred(RuntimeError):
+    pass
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 EASTERN = ZoneInfo("America/New_York")
 LOOP_SCHEMAS = {
@@ -148,10 +157,11 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
         timeout_seconds=min(timeout_seconds, 60),
         priority="background",
     ):
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [resolved_python, "-c", wrapper],
-            input=prompt,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -159,6 +169,32 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
             check=False,
             env=env,
             creationflags=hide_flags(),
+        )
+        started = time.monotonic()
+        stdout = ""
+        stderr = ""
+        try:
+            while True:
+                try:
+                    stdout, stderr = process.communicate(
+                        input=prompt if process.stdin is not None else None,
+                        timeout=0.25,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    prompt = None
+                    if hermes_operator_waiting(profile):
+                        process.terminate()
+                        raise LearningDeferred("trading_decision_waiting")
+                    if time.monotonic() - started >= timeout_seconds:
+                        process.terminate()
+                        raise
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+        completed = subprocess.CompletedProcess(
+            process.args, process.returncode, stdout, stderr
         )
     if completed.returncode != 0:
         stderr = process_text(completed.stderr)
@@ -1515,6 +1551,14 @@ def main() -> int:
     try:
         try:
             result = run_once(args)
+        except LearningDeferred as deferred:
+            DIRECT.write_json_atomic(status_path, {
+                "schema_version": "glitch.hermes.learning_worker_status.v1",
+                "recorded_utc": utc_now(),
+                "status": "deferred",
+                "reason": str(deferred),
+            })
+            return 0
         except Exception as error:
             failure = {
                 "schema_version": "glitch.hermes.learning_worker_status.v1",

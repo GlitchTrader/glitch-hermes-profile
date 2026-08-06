@@ -99,7 +99,8 @@
         "glitch-market-structure retains vocabulary while removing playbooks, fixed recipes, and unverified base rates.",
         "glitch-build-intent preserves strict intent shape and forbids replacing the chosen intent with an unrelated strategy.",
         "tests/test_intelligence_first_contract.py locks the removed strategy phrases and required authority language.",
-        "Profile distribution 0.0.2.21 removes unrelated Account.All connectivity from the LLM market-feed gate and has regenerated SHA256SUMS."
+        "Profile distribution 0.0.2.21 removes unrelated Account.All connectivity from the LLM market-feed gate and has regenerated SHA256SUMS.",
+        "Profile distribution 0.0.2.22 makes background learning yield its Hermes profile lock whenever a live trading decision is waiting."
       ],
       "sources": [
         "SOUL.md",

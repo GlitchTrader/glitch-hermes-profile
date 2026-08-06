@@ -27,6 +27,25 @@ def hide_flags() -> int:
     return _CREATE_NO_WINDOW
 
 
+def hermes_operator_waiting(profile: str, stale_after: int = 900) -> bool:
+    """Return whether a live decision is waiting for this profile lock."""
+    lock_dir = Path.home() / "AppData" / "Local" / "hermes" / "profiles" / profile / "runtime"
+    waiting = False
+    for path in lock_dir.glob("hermes-cli.operator-waiting.*"):
+        try:
+            age = time.time() - path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        if age > stale_after:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            waiting = True
+    return waiting
+
+
 @contextmanager
 def hermes_profile_lock(
     profile: str,
@@ -52,20 +71,7 @@ def hermes_profile_lock(
     try:
         while descriptor is None:
             if priority == "background":
-                operator_waiting = False
-                for path in lock_dir.glob("hermes-cli.operator-waiting.*"):
-                    try:
-                        age = time.time() - path.stat().st_mtime
-                    except FileNotFoundError:
-                        continue
-                    if age > stale_after:
-                        try:
-                            path.unlink()
-                        except FileNotFoundError:
-                            pass
-                    else:
-                        operator_waiting = True
-                if operator_waiting:
+                if hermes_operator_waiting(profile, stale_after):
                     if time.monotonic() - started >= timeout_seconds:
                         raise TimeoutError(f"hermes_profile_lock_timeout:{profile}")
                     time.sleep(0.1)

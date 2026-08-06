@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ LEARNING = importlib.util.module_from_spec(LEARNING_SPEC)
 assert LEARNING_SPEC.loader is not None
 LEARNING_SPEC.loader.exec_module(LEARNING)
 DIRECT_WORKER = ROOT / "scripts" / "run-direct-glitch-cycle.py"
+import win_subprocess as WIN_SUBPROCESS
 
 
 class RailRepairTests(unittest.TestCase):
@@ -72,6 +74,23 @@ class RailRepairTests(unittest.TestCase):
     def test_learning_process_text_handles_missing_output(self):
         self.assertEqual(LEARNING.process_text(None), "")
         self.assertEqual(LEARNING.process_text("valid utf-8 output"), "valid utf-8 output")
+
+    def test_learning_yields_to_a_waiting_trading_decision(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            WIN_SUBPROCESS.Path, "home", return_value=Path(directory)
+        ):
+            runtime = (
+                Path(directory) / "AppData" / "Local" / "hermes" / "profiles"
+                / "glitch" / "runtime"
+            )
+            runtime.mkdir(parents=True)
+            (runtime / "hermes-cli.operator-waiting.123").write_text("pid=123\n")
+            self.assertTrue(WIN_SUBPROCESS.hermes_operator_waiting("glitch"))
+
+        source = (ROOT / "scripts" / "run-hermes-learning-cycle.py").read_text(encoding="utf-8")
+        self.assertIn("if hermes_operator_waiting(profile):", source)
+        self.assertIn('raise LearningDeferred("trading_decision_waiting")', source)
+        self.assertIn('"status": "deferred"', source)
 
     def test_completed_entry_intent_survives_packet_rollover(self):
         source = DIRECT_WORKER.read_text(encoding="utf-8")
