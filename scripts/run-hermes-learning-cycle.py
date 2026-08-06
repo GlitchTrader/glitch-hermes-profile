@@ -277,6 +277,14 @@ def entry_decision_context(
             "snapshot_reference": reference,
             "human_trade": outcome.get("manual_trade"),
             "contemporaneous_ai_decision": outcome.get("ai_comparison"),
+            "canonical_outcome_layers": {
+                key: outcome.get(key)
+                for key in (
+                    "decision_geometry", "native_geometry", "execution_diagnostics",
+                    "normalized_outcome", "forecast_outcome", "attribution",
+                )
+                if key in outcome
+            },
         }
     if not cycle_id or not isinstance(entry_intent, dict):
         return {"status": "unavailable", "reason": "entry_identity_missing"}
@@ -296,7 +304,11 @@ def entry_decision_context(
             == str(outcome.get("master_account") or "").lower()
         )
         decision_reference_price = float(scenario["market"]["current_price"])
-        legs = DIRECT.entry_risk_legs(entry_intent, decision_reference_price)
+        legs = DIRECT.entry_risk_legs(
+            entry_intent,
+            decision_reference_price,
+            scenario["market"].get("instrument_economics"),
+        )
     except (KeyError, StopIteration, TypeError, ValueError, OSError) as error:
         return {"status": "unavailable", "reason": str(error)[:160], "cycle_id": cycle_id}
 
@@ -381,6 +393,14 @@ def entry_decision_context(
             ),
             "close_kind": result.get("close_kind"),
         },
+        "canonical_outcome_layers": {
+            key: outcome.get(key)
+            for key in (
+                "decision_geometry", "native_geometry", "execution_diagnostics",
+                "normalized_outcome", "forecast_outcome", "attribution",
+            )
+            if key in outcome
+        },
     }
 
 
@@ -426,6 +446,8 @@ def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[
                 "planned_target", "reason", "decision_audit", "master_realized_pnl_usd",
                 "master_realized_pnl_points", "origin", "master_attribution_status",
                 "master_learning_eligible", "evidence", "snapshot_reference", "ai_comparison",
+                "decision_geometry", "native_geometry", "execution_diagnostics",
+                "normalized_outcome", "forecast_outcome", "attribution",
             )
         }
         evidence.append({
@@ -870,7 +892,9 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
                     "intent_id", "master_account", "instrument", "action", "confidence",
                     "entry_utc", "exit_utc", "planned_stop", "planned_target", "reason",
                     "decision_audit", "master_realized_pnl_usd", "master_attribution_status",
-                    "master_learning_eligible",
+                    "master_learning_eligible", "decision_geometry", "native_geometry",
+                    "execution_diagnostics", "normalized_outcome", "forecast_outcome",
+                    "attribution",
                 )
                 if isinstance(master_outcome, dict) and key in master_outcome
             },
@@ -890,7 +914,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
                     "status", "reason", "cycle_id", "packet_hash", "pre_entry",
                     "intent_id", "master_account", "snapshot_hash", "rationale",
                     "decision_reference_price", "actual_entry_vwap", "selected_plan",
-                    "native_entry_facts", "normalized_outcome",
+                    "native_entry_facts", "normalized_outcome", "canonical_outcome_layers",
                 )
                 if isinstance(entry_context, dict) and key in entry_context
             },

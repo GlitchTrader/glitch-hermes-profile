@@ -151,6 +151,12 @@ def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
             "intent_id": "intent-1",
             "created_utc": "2026-08-03T04:02:41.5-03:00",
             "wake_triggers": [],
+            "forecast": {
+                "event": "STOP_BEFORE_PRIMARY_TARGET",
+                "probability": 0.4,
+                "method": "test",
+                "confidence": 0.6,
+            },
         }],
     }
 
@@ -158,6 +164,81 @@ def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
 
     assert posted[0]["created_utc"] == "2026-08-03T07:02:41.5000000Z"
     assert "wake_triggers" not in posted[0]
+    assert "forecast" not in posted[0]
+
+
+def test_native_economics_drive_risk_geometry() -> None:
+    economics = DIRECT.resolve_instrument_economics({
+        "instrument_economics": {
+            "point_value_usd": 5.0,
+            "tick_size": 0.25,
+            "source": "ninjatrader_master_instrument",
+        },
+    })
+    intent = {
+        "action": "ENTER_LONG",
+        "quantity": 1,
+        "stop_loss": 19970.0,
+        "take_profit_1": 20040.0,
+    }
+
+    legs = DIRECT.entry_risk_legs(intent, 20000.0, economics)
+
+    assert economics["source"] == "ninjatrader_master_instrument"
+    assert legs[0]["planned_risk_usd"] == 150.0
+
+
+def test_forecast_is_validated_as_non_gating_metadata() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    batch["decisions"][0]["forecast"] = {
+        "event": "STOP_BEFORE_PRIMARY_TARGET",
+        "probability": 0.4,
+        "method": "bounded_path",
+        "confidence": 0.7,
+    }
+
+    DIRECT.validate_batch(batch, scenario)
+
+    assert batch["decisions"][0]["forecast"]["probability"] == 0.4
+
+    batch["decisions"][0]["forecast"]["probability"] = 1.1
+    with pytest.raises(ValueError, match=r"^forecast_probability_invalid:0$"):
+        DIRECT.validate_batch(batch, scenario)
+
+
+def test_packet_labels_native_and_heuristic_observation_layers() -> None:
+    packet = {
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {
+                "instruments": [{
+                    "instrument": "MNQ",
+                    "current_price": 20000.0,
+                    "instrument_economics": {
+                        "point_value_usd": 5.0,
+                        "tick_size": 0.25,
+                        "source": "ninjatrader_master_instrument",
+                    },
+                }],
+                "coverage": [],
+            },
+            "portfolio_snapshot": {"accounts": []},
+        }],
+    }
+    scenario = {
+        "books": [{
+            "route_id": "glitch",
+            "master_account": "Sim101",
+            "followers": [],
+        }],
+    }
+
+    result = DIRECT.packet_for_model(packet, scenario)
+    instrument = result["frames"][0]["market_snapshot"]["instruments"][0]
+
+    assert instrument["native_observations"]["source"] == "ninjatrader"
+    assert instrument["native_observations"]["instrument_economics"]["point_value_usd"] == 5.0
+    assert instrument["heuristic_projections"]["strategy_semantics"] == "none"
 
 
 def test_human_override_flat_is_audited_as_superseded_no_op(tmp_path: Path) -> None:

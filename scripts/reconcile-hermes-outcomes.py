@@ -283,7 +283,7 @@ def snapshot_reference(snapshots, when):
     }
 
 
-def market_snapshot_reference(glitch_data, when):
+def market_snapshot_reference(glitch_data, when, instrument_root=None):
     """Reference the nearest market frame without treating it as native account truth."""
     root = glitch_data / "hermes" / "exchange" / "glitch" / "minute-frames"
     candidates = []
@@ -305,11 +305,237 @@ def market_snapshot_reference(glitch_data, when):
     market = row.get("market_snapshot") if isinstance(row, dict) else None
     if not isinstance(market, dict):
         return None
-    return {
+    target_root = _instrument_root(instrument_root or "MNQ")
+    instruments = market.get("instruments") if isinstance(market.get("instruments"), list) else []
+    instrument = next(
+        (
+            value for value in instruments
+            if isinstance(value, dict)
+            and _instrument_root(value.get("instrument") or value.get("instrument_root")) == target_root
+        ),
+        None,
+    )
+    reference = {
         "minute_id": row.get("minute_id"),
         "snapshot_hash": market.get("snapshot_hash"),
         "created_utc": stamp.isoformat().replace("+00:00", "Z"),
         "relation": "nearest_before_entry",
+    }
+    if isinstance(instrument, dict):
+        reference["instrument_root"] = _instrument_root(instrument.get("instrument") or instrument.get("instrument_root"))
+        reference["current_price"] = instrument.get("current_price")
+        reference["descriptive_state"] = instrument.get("descriptive_state")
+        reference["instrument_economics"] = instrument.get("instrument_economics")
+        reference["native_observations"] = instrument.get("native_observations")
+    return reference
+
+
+def _iso_or_none(value):
+    if not value:
+        return None
+    try:
+        return parse_utc(value).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError):
+        return None
+
+
+def _duration_ms(start, end):
+    try:
+        return round((parse_utc(end) - parse_utc(start)).total_seconds() * 1000, 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def first_touch_state(close_kind):
+    """Map native close evidence without claiming unavailable intrabar order."""
+    return {
+        "stop": "STOP_FIRST",
+        "target": "PRIMARY_TARGET_FIRST",
+        "managed_exit": "NEITHER",
+    }.get(str(close_kind or ""), "UNRESOLVED")
+
+
+def normalized_outcome(account_outcome):
+    risk = account_outcome.get("initial_native_risk_usd")
+    realized = account_outcome.get("realized_pnl_usd")
+    risk_complete = (
+        isinstance(risk, (int, float)) and risk > 0
+        and isinstance(realized, (int, float))
+    )
+    sampled_mfe = account_outcome.get("sampled_mfe_usd")
+    sampled_mae = account_outcome.get("sampled_mae_usd")
+    return {
+        "realized_pnl_usd": realized,
+        "realized_r": (realized / risk) if risk_complete else None,
+        "mfe_r": (sampled_mfe / risk) if isinstance(sampled_mfe, (int, float)) and risk_complete else None,
+        "mae_r": (sampled_mae / risk) if isinstance(sampled_mae, (int, float)) and risk_complete else None,
+        "first_touch": first_touch_state(account_outcome.get("close_kind")),
+        "source_quality": {
+            "realized": "native_trade_ledger_and_native_economics" if risk_complete else "native_trade_ledger_or_incomplete_risk",
+            "mfe_mae": "minute_snapshot_sampled_not_exact",
+            "first_touch": "native_exit_class_only_no_intrabar_order_claim",
+        },
+        "excursion_eligible": False,
+    }
+
+
+def intent_fidelity(intent, account_outcome, submitted, bracket_event, market_reference, events):
+    submit_fields = message_fields(submitted.get("message")) if isinstance(submitted, dict) else {}
+    bracket_fields = message_fields(bracket_event.get("message")) if isinstance(bracket_event, dict) else {}
+    decision_price = market_reference.get("current_price") if isinstance(market_reference, dict) else None
+    fill_price = account_outcome.get("entry_price")
+    tick_size = account_outcome.get("tick_size")
+    adverse_drift_ticks = None
+    try:
+        if decision_price is not None and fill_price is not None and float(tick_size) > 0:
+            signed_move = float(fill_price) - float(decision_price)
+            if intent.get("action") == "ENTER_SHORT":
+                signed_move = -signed_move
+            adverse_drift_ticks = signed_move / float(tick_size)
+    except (TypeError, ValueError):
+        adverse_drift_ticks = None
+
+    quantity = int(account_outcome.get("quantity") or 0)
+    legs = account_outcome.get("initial_protection_legs") or []
+    stop_coverage = sum(int(leg.get("quantity") or 0) for leg in legs if isinstance(leg, dict))
+    target_present = any(
+        _float(bracket_fields, f"tp{index}") is not None for index in range(1, 4)
+    )
+    target_coverage = stop_coverage if target_present else 0
+    if quantity > 0 and stop_coverage == quantity and target_coverage == quantity:
+        native_state = "fully_protected"
+    elif stop_coverage > 0 or target_coverage > 0:
+        native_state = "partially_protected"
+    else:
+        native_state = "unknown"
+
+    management_history = []
+    for event in events or []:
+        code = str(event.get("code") or "")
+        if any(token in code.lower() for token in ("move", "amend", "modify", "managed_exit")):
+            management_history.append({
+                "code": code,
+                "recorded_utc": event.get("recorded_utc"),
+                "message": event.get("message"),
+            })
+    return {
+        "identity": {
+            "intent_id": intent.get("intent_id"),
+            "cycle_id": intent.get("_cycle_id"),
+            "instrument": intent.get("instrument"),
+            "account": intent.get("account"),
+        },
+        "decision_price": decision_price,
+        "submission_price": _float(bracket_fields, "fill"),
+        "native_fill_price": fill_price,
+        "signed_adverse_drift_ticks": adverse_drift_ticks,
+        "timing": {
+            "decision_to_submission_ms": _duration_ms(
+                market_reference.get("created_utc") if isinstance(market_reference, dict) else None,
+                bracket_event.get("recorded_utc") if isinstance(bracket_event, dict) else None,
+            ),
+            "submission_to_fill_ms": _duration_ms(
+                submitted.get("recorded_utc") if isinstance(submitted, dict) else None,
+                account_outcome.get("entry_utc"),
+            ),
+            "fill_to_bracket_submission_ms": _duration_ms(
+                account_outcome.get("entry_utc"),
+                bracket_event.get("recorded_utc") if isinstance(bracket_event, dict) else None,
+            ),
+            "fill_to_full_protection_ack_ms": None,
+            "full_protection_acknowledgement_status": "unavailable_native_receipt",
+        },
+        "coverage": {
+            "position_quantity": quantity,
+            "stop_coverage_quantity": stop_coverage,
+            "target_coverage_quantity": target_coverage,
+            "unprotected_quantity": max(0, quantity - min(stop_coverage, target_coverage)),
+            "native_state": native_state,
+            "source": "native_bracket_receipt_and_trade_ledger",
+        },
+        "native_state": {
+            "protection_status": account_outcome.get("protection_status"),
+            "protection_evidence": account_outcome.get("protection_evidence"),
+            "submission_correlation": submit_fields.get("correlation"),
+        },
+        "management_history": management_history,
+    }
+
+
+def forecast_outcome(forecast, close_kind):
+    observed = None
+    if close_kind in {"stop", "target", "managed_exit"}:
+        observed = close_kind == "stop"
+    if not isinstance(forecast, dict):
+        return {
+            "status": "not_provided",
+            "event": "STOP_BEFORE_PRIMARY_TARGET",
+            "observed": observed,
+            "brier_score": None,
+        }
+    probability = forecast.get("probability")
+    brier = None
+    if observed is not None and isinstance(probability, (int, float)):
+        brier = (float(probability) - (1.0 if observed else 0.0)) ** 2
+    return {
+        "status": "observed" if observed is not None else "unresolved",
+        "event": forecast.get("event"),
+        "probability": probability,
+        "method": forecast.get("method"),
+        "confidence": forecast.get("confidence"),
+        "observed": observed,
+        "brier_score": brier,
+        "observation_source": "native_trade_ledger_exit_type" if observed is not None else None,
+    }
+
+
+def canonical_outcome_layers(intent, account_outcome, submitted, bracket_event, market_reference, events):
+    normalized = normalized_outcome(account_outcome)
+    return {
+        "decision_geometry": {
+            "source": "hermes_intent",
+            "action": intent.get("action"),
+            "instrument": intent.get("instrument"),
+            "quantity": intent.get("quantity"),
+            "decision_price": market_reference.get("current_price") if isinstance(market_reference, dict) else None,
+            "planned_stop": intent.get("stop_loss"),
+            "planned_target": intent.get("take_profit_1"),
+            "planned_stop_2": intent.get("stop_loss_2"),
+            "planned_target_2": intent.get("take_profit_2"),
+            "planned_stop_3": intent.get("stop_loss_3"),
+            "planned_target_3": intent.get("take_profit_3"),
+        },
+        "native_geometry": {
+            "source": "native_execution_receipt_and_trade_ledger",
+            "entry_price": account_outcome.get("entry_price"),
+            "exit_price": account_outcome.get("exit_price"),
+            "point_value_usd": account_outcome.get("point_value_usd"),
+            "tick_size": account_outcome.get("tick_size"),
+            "initial_protection_legs": account_outcome.get("initial_protection_legs"),
+            "initial_native_risk_usd": account_outcome.get("initial_native_risk_usd"),
+            "geometry_comparison": {
+                "planned_stop": intent.get("stop_loss"),
+                "native_initial_stops": [
+                    leg.get("initial_stop_price") for leg in account_outcome.get("initial_protection_legs", [])
+                    if isinstance(leg, dict)
+                ],
+            },
+        },
+        "execution_diagnostics": {
+            "intent_fidelity": intent_fidelity(
+                intent, account_outcome, submitted, bracket_event, market_reference, events
+            ),
+        },
+        "normalized_outcome": normalized,
+        "forecast_outcome": forecast_outcome(
+            intent.get("forecast"), account_outcome.get("close_kind")
+        ),
+        "attribution": {
+            "origin": intent.get("origin") or ("ai" if intent.get("intent_id") else "manual"),
+            "master_learning_eligible": True,
+            "normalization_status": account_outcome.get("risk_normalization_status"),
+            "excursion_source_quality": "sampled_minute_snapshots_not_exact",
+        },
     }
 
 
@@ -439,11 +665,13 @@ def manual_trade_outcome(glitch_data, snapshots, intents, trade):
     cycle_id = "manual-cycle-" + digest[:24]
     side = "ENTER_LONG" if str(trade.get("side") or "").lower() == "long" else "ENTER_SHORT"
     portfolio = snapshot_reference(snapshots, trade["entry_utc"])
-    market = market_snapshot_reference(glitch_data, trade["entry_utc"])
+    market = market_snapshot_reference(glitch_data, trade["entry_utc"], instrument)
     terminal = terminal_group_snapshot(snapshots, trade["exit_utc"], [account])
     master_result = {
         "account": account,
         "quantity": int(abs(trade.get("contracts") or 1)),
+        "entry_utc": trade["entry_utc"].isoformat().replace("+00:00", "Z"),
+        "exit_utc": trade["exit_utc"].isoformat().replace("+00:00", "Z"),
         "entry_price": trade.get("entry_price"),
         "exit_price": trade.get("exit_price"),
         "realized_pnl_usd": None,
@@ -455,6 +683,19 @@ def manual_trade_outcome(glitch_data, snapshots, intents, trade):
             snapshots, account, trade["entry_utc"], trade["exit_utc"], instrument, 0.0
         ),
     }
+    manual_intent = {
+        "intent_id": intent_id,
+        "_cycle_id": cycle_id,
+        "instrument": instrument,
+        "account": account,
+        "action": side,
+        "quantity": master_result["quantity"],
+        "origin": "manual",
+        "forecast": None,
+    }
+    canonical_layers = canonical_outcome_layers(
+        manual_intent, master_result, None, None, market, []
+    )
     return {
         "schema_version": "glitch.hermes.trade_outcome.v1",
         "recorded_utc": trade["exit_utc"].isoformat().replace("+00:00", "Z"),
@@ -485,6 +726,7 @@ def manual_trade_outcome(glitch_data, snapshots, intents, trade):
             "status": "complete" if portfolio or market else "unavailable",
         },
         "ai_comparison": contemporaneous_ai_comparison(intents, trade),
+        **canonical_layers,
         "manual_trade": {
             "entry_order_identity": str(trade.get("entry_order_identity") or trade.get("entry_order_id") or "").strip() or None,
             "trade_source": trade.get("trade_source"),
@@ -876,6 +1118,8 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
             account_outcomes.append({
                 "account": account,
                 "quantity": quantity,
+                "entry_utc": trade["entry_utc"].isoformat().replace("+00:00", "Z"),
+                "exit_utc": trade["exit_utc"].isoformat().replace("+00:00", "Z"),
                 "entry_price": entry_price,
                 "exit_price": exit_price,
                 "realized_pnl_usd": pnl_usd,
@@ -905,6 +1149,16 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
         master_outcome = next((row for row in account_outcomes if row["account"].lower() == master.lower()), None)
         if master_outcome is None:
             continue
+        master_bracket_event, _ = bracket_by_account[master.lower()]
+        market_reference = market_snapshot_reference(glitch_data, entry_utc, instrument_root)
+        canonical_layers = canonical_outcome_layers(
+            intent,
+            master_outcome,
+            submitted,
+            master_bracket_event,
+            market_reference,
+            events,
+        )
         existing[intent_id] = {
             "schema_version": "glitch.hermes.trade_outcome.v1",
             "recorded_utc": exit_utc.isoformat().replace("+00:00", "Z"),
@@ -941,6 +1195,11 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
             "attribution_status": "process_error" if process_error else "complete",
             "learning_eligible": not process_error,
             "evidence": intent.get("_evidence_path"),
+            "snapshot_reference": {
+                "market": market_reference,
+                "status": "complete" if market_reference else "unavailable",
+            },
+            **canonical_layers,
         }
 
     master_accounts = configured_master_accounts(glitch_data / "AccountGroups.tsv")

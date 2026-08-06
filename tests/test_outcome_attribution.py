@@ -230,6 +230,10 @@ def test_reconcile_uses_native_fallback_and_keeps_missing_follower_unknown(
     assert account_outcomes["FollowerA"]["protection_status"] == "submitted"
     assert account_outcomes["FollowerB"]["protection_evidence"] == "unavailable"
     assert account_outcomes["FollowerB"]["protection_status"] == "unknown"
+    assert account_outcomes["Master"]["entry_utc"].endswith("Z")
+    assert outcome["normalized_outcome"]["first_touch"] == "NEITHER"
+    assert outcome["forecast_outcome"]["status"] == "not_provided"
+    assert outcome["execution_diagnostics"]["intent_fidelity"]["coverage"]["native_state"] == "fully_protected"
     assert outcome["replication_diagnostics"] == [{
         "account": "FollowerB",
         "status": "follower_protection_evidence_unknown",
@@ -292,11 +296,75 @@ def test_manual_master_trade_preserves_snapshot_and_ai_comparison(tmp_path: Path
     assert outcome["snapshot_reference"]["market"]["snapshot_hash"] == "market-at-entry"
     assert outcome["ai_comparison"]["intent_id"] == "ai-nearby"
     assert outcome["master_learning_eligible"] is True
+    assert outcome["attribution"]["origin"] == "manual"
 
     context = LEARNING.entry_decision_context(glitch_data, outcome, None, outcome["account_outcomes"][0])
     assert context["origin"] == "manual"
     assert context["human_trade"]["entry_signal"] == "ChartTrader"
     assert context["contemporaneous_ai_decision"]["intent_id"] == "ai-nearby"
+    assert context["canonical_outcome_layers"]["forecast_outcome"]["status"] == "not_provided"
+
+
+def test_canonical_outcome_layers_normalize_first_touch_and_forecast() -> None:
+    intent = {
+        "intent_id": "intent-1",
+        "_cycle_id": "cycle-1",
+        "action": "ENTER_LONG",
+        "instrument": "MNQ",
+        "account": "Master",
+        "quantity": 1,
+        "stop_loss": 19990.0,
+        "take_profit_1": 20020.0,
+        "forecast": {
+            "event": "STOP_BEFORE_PRIMARY_TARGET",
+            "probability": 0.25,
+            "method": "bounded_path",
+            "confidence": 0.8,
+        },
+    }
+    account_outcome = {
+        "quantity": 1,
+        "entry_utc": "2026-08-03T12:50:00Z",
+        "entry_price": 20001.0,
+        "exit_price": 19990.0,
+        "exit_utc": "2026-08-03T12:51:00Z",
+        "point_value_usd": 5.0,
+        "tick_size": 0.25,
+        "initial_protection_legs": [{
+            "leg": 1,
+            "quantity": 1,
+            "initial_stop_price": 19990.0,
+        }],
+        "initial_native_risk_usd": 50.0,
+        "risk_normalization_status": "complete",
+        "realized_pnl_usd": -51.25,
+        "sampled_mfe_usd": 5.0,
+        "sampled_mae_usd": -55.0,
+        "close_kind": "stop",
+        "protection_status": "submitted",
+        "protection_evidence": "execution_receipt",
+    }
+    market_reference = {
+        "created_utc": "2026-08-03T12:49:59Z",
+        "current_price": 20000.0,
+    }
+    submitted = {"recorded_utc": "2026-08-03T12:49:59.500Z", "message": "correlation=corr1234"}
+    bracket_event = {
+        "recorded_utc": "2026-08-03T12:50:01Z",
+        "message": "fill=20001|tp1=20020",
+    }
+
+    layers = RECONCILER.canonical_outcome_layers(
+        intent, account_outcome, submitted, bracket_event, market_reference, []
+    )
+
+    assert layers["normalized_outcome"]["realized_r"] == -1.025
+    assert layers["normalized_outcome"]["first_touch"] == "STOP_FIRST"
+    assert layers["forecast_outcome"]["observed"] is True
+    assert layers["forecast_outcome"]["brier_score"] == 0.5625
+    assert layers["execution_diagnostics"]["intent_fidelity"]["timing"][
+        "full_protection_acknowledgement_status"
+    ] == "unavailable_native_receipt"
 
 
 def test_manual_learning_rejects_replication_identity() -> None:

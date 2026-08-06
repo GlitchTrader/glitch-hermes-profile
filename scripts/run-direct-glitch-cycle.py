@@ -53,11 +53,19 @@ DECISION_AUDIT_FIELDS = {
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
     "decisive_evidence", "disconfirming_evidence", "change_condition", "final_choice",
 }
+FORECAST_FIELDS = {"event", "probability", "method", "confidence"}
+ALLOWED_DECISION_FIELDS = ALLOWED_DECISION_FIELDS | {"forecast"}
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 CURRENT_PLAN_SCHEMA = "glitch.hermes.portfolio_plan.v2"
 CURRENT_GUIDANCE_SCHEMA = "glitch.hermes.trading_guidance.v2"
-MNQ_POINT_VALUE_USD = 2.0
-MNQ_TICK_SIZE = 0.25
+# Only legacy fixtures lack the NinjaTrader descriptive economics.  Live
+# packets must carry these values from MasterInstrument.
+LEGACY_FIXTURE_ECONOMICS = {
+    "point_value_usd": 2.0,
+    "tick_size": 0.25,
+    "source": "legacy_fixture_compatibility",
+}
+FORECAST_EVENT_STOP_BEFORE_PRIMARY_TARGET = "STOP_BEFORE_PRIMARY_TARGET"
 LLM_MARKET_TIMEZONE = ZoneInfo("America/New_York")
 LLM_SESSION_OPEN = datetime_time(18, 0)
 LLM_SESSION_CLOSE = datetime_time(17, 0)
@@ -71,6 +79,52 @@ SUPERSEDED_NO_OP_EXECUTOR_CODES = {
     "stale_outbox_scope_superseded",
 }
 COMPLETED_RECEIPT_CLASSIFICATIONS = {"successful", "superseded_no_op"}
+
+
+def resolve_instrument_economics(instrument: dict[str, Any]) -> dict[str, Any]:
+    """Resolve economics from NT observations, with an explicit fixture fallback."""
+    candidates: list[dict[str, Any]] = []
+    if isinstance(instrument, dict):
+        for value in (
+            instrument.get("instrument_economics"),
+            instrument.get("native_observations", {}).get("instrument_economics")
+            if isinstance(instrument.get("native_observations"), dict) else None,
+        ):
+            if isinstance(value, dict):
+                candidates.append(value)
+        descriptive = instrument.get("descriptive_state")
+        if isinstance(descriptive, dict):
+            for value in (
+                descriptive.get("instrument_economics"),
+                descriptive.get("native_observations", {}).get("instrument_economics")
+                if isinstance(descriptive.get("native_observations"), dict) else None,
+            ):
+                if isinstance(value, dict):
+                    candidates.append(value)
+
+    for candidate in candidates:
+        try:
+            point_value = float(candidate.get("point_value_usd"))
+            tick_size = float(candidate.get("tick_size"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(point_value) or not math.isfinite(tick_size) or point_value <= 0 or tick_size <= 0:
+            continue
+        return {
+            "point_value_usd": point_value,
+            "tick_size": tick_size,
+            "source": str(candidate.get("source") or instrument.get("instrument_economics_source") or "ninjatrader_descriptive_state"),
+        }
+    return dict(LEGACY_FIXTURE_ECONOMICS)
+
+
+def _point_value(economics: dict[str, Any] | None) -> float:
+    candidate = economics or LEGACY_FIXTURE_ECONOMICS
+    try:
+        value = float(candidate.get("point_value_usd"))
+    except (TypeError, ValueError):
+        value = float(LEGACY_FIXTURE_ECONOMICS["point_value_usd"])
+    return value if math.isfinite(value) and value > 0 else float(LEGACY_FIXTURE_ECONOMICS["point_value_usd"])
 
 
 def utc_now() -> str:
@@ -291,7 +345,11 @@ def _glitch_leg_id(name: str, role: str) -> str | None:
     return f"{parts[0]}:{leg_index}"
 
 
-def owned_native_protection(account: dict[str, Any], current_price: float) -> dict[str, Any]:
+def owned_native_protection(
+    account: dict[str, Any],
+    current_price: float,
+    economics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     signed_quantity = _account_mnq_quantity(account)
     expected = abs(signed_quantity)
     orders = account.get("working_order_details")
@@ -309,6 +367,7 @@ def owned_native_protection(account: dict[str, Any], current_price: float) -> di
     stop_coverage = 0
     target_coverage = 0
     downside = 0.0
+    point_value_usd = _point_value(economics)
     compact_orders = []
     valid = True
     for order in orders:
@@ -346,7 +405,7 @@ def owned_native_protection(account: dict[str, Any], current_price: float) -> di
             valid = False
             continue
         stop_coverage += remaining
-        downside += max(0.0, points) * MNQ_POINT_VALUE_USD * remaining
+        downside += max(0.0, points) * point_value_usd * remaining
 
     complete = valid and stop_coverage == expected and target_coverage == expected
     return {
@@ -360,7 +419,11 @@ def owned_native_protection(account: dict[str, Any], current_price: float) -> di
     }
 
 
-def entry_risk_legs(intent: dict[str, Any], current_price: float) -> list[dict[str, Any]]:
+def entry_risk_legs(
+    intent: dict[str, Any],
+    current_price: float,
+    economics: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Return leg-risk evidence for learning; this does not admit or veto an intent."""
     quantity = intent.get("quantity")
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
@@ -381,6 +444,7 @@ def entry_risk_legs(intent: dict[str, Any], current_price: float) -> list[dict[s
         leg_specs.append((quantity_3, float(intent.get("stop_loss_3", intent.get("stop_loss_2", stop_1)))))
 
     legs = []
+    point_value_usd = _point_value(economics)
     for index, (leg_quantity, stop_price) in enumerate(leg_specs, start=1):
         points = current_price - stop_price if is_long else stop_price - current_price
         if leg_quantity < 1 or points <= 0:
@@ -390,12 +454,17 @@ def entry_risk_legs(intent: dict[str, Any], current_price: float) -> list[dict[s
             "quantity": leg_quantity,
             "stop_price": stop_price,
             "risk_points_per_contract": points,
-            "planned_risk_usd": points * MNQ_POINT_VALUE_USD * leg_quantity,
+            "planned_risk_usd": points * point_value_usd * leg_quantity,
         })
     return legs
 
 
-def add_group_exposure_context(packet: dict[str, Any], books: list[dict[str, Any]], current_price: float) -> None:
+def add_group_exposure_context(
+    packet: dict[str, Any],
+    books: list[dict[str, Any]],
+    current_price: float,
+    economics: dict[str, Any] | None = None,
+) -> None:
     """Derive Hermes capacity from the master only.
 
     Followers remain visible replication context, but user-owned ratios and
@@ -455,11 +524,12 @@ def add_group_exposure_context(packet: dict[str, Any], books: list[dict[str, Any
         book["effective_master_remaining_capacity"] = max(valid_quantities, default=0)
         observed_master = by_name.get(book["master_account"], {})
         position = _mnq_position(observed_master)
-        protection = owned_native_protection(observed_master, current_price)
+        protection = owned_native_protection(observed_master, current_price, economics)
         book["position_building_context"] = {
             "instrument": "MNQ",
-            "point_value_usd": MNQ_POINT_VALUE_USD,
-            "tick_size": MNQ_TICK_SIZE,
+            "point_value_usd": (economics or LEGACY_FIXTURE_ECONOMICS)["point_value_usd"],
+            "tick_size": (economics or LEGACY_FIXTURE_ECONOMICS)["tick_size"],
+            "instrument_economics_source": (economics or LEGACY_FIXTURE_ECONOMICS)["source"],
             "account_size": observed_master.get("account_size", book["master_size"]),
             "equity": observed_master.get("equity"),
             "liquidation_threshold": observed_master.get("liquidation_threshold"),
@@ -1175,7 +1245,8 @@ def build_scenario(packet: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("no_route_bound_groups")
     market, mnq = latest_market(packet)
     current_price = float(mnq.get("current_price"))
-    add_group_exposure_context(packet, books, current_price)
+    economics = resolve_instrument_economics(mnq)
+    add_group_exposure_context(packet, books, current_price, economics)
     return {
         "cycle_id": packet["packet_id"],
         "packet_hash": packet.get("packet_hash"),
@@ -1183,6 +1254,8 @@ def build_scenario(packet: dict[str, Any]) -> dict[str, Any]:
             "instrument": "MNQ",
             "current_price": mnq.get("current_price"),
             "snapshot_hash": market["snapshot_hash"],
+            "instrument_economics": economics,
+            "descriptive_state": mnq.get("descriptive_state"),
         },
         "books": books,
     }
@@ -1255,6 +1328,7 @@ def validate_batch(
         unknown = sorted(set(intent).difference(ALLOWED_DECISION_FIELDS))
         if unknown:
             raise ValueError(f"intent_unknown_fields:{index}:{','.join(unknown)}")
+        validate_forecast(intent.get("forecast"), index)
         validate_wake_triggers(intent.get("wake_triggers"), index)
         if intent.get("schema_version") != "glitch.intent.v3":
             raise ValueError(f"intent_schema_version_invalid:{index}")
@@ -1343,6 +1417,24 @@ def validate_batch(
                 )
 
 
+def validate_forecast(forecast: Any, index: int) -> None:
+    """Validate optional calibration metadata without using it as a gate."""
+    if forecast is None:
+        return
+    if not isinstance(forecast, dict) or set(forecast) != FORECAST_FIELDS:
+        raise ValueError(f"forecast_contract_invalid:{index}")
+    if forecast.get("event") != FORECAST_EVENT_STOP_BEFORE_PRIMARY_TARGET:
+        raise ValueError(f"forecast_event_invalid:{index}")
+    for key in ("probability", "confidence"):
+        value = forecast.get(key)
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(float(value)) or not 0 <= value <= 1):
+            raise ValueError(f"forecast_{key}_invalid:{index}")
+    method = forecast.get("method")
+    if not isinstance(method, str) or not method.strip() or len(method) > 128:
+        raise ValueError(f"forecast_method_invalid:{index}")
+
+
 def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = None) -> dict[str, Any]:
     """Map the model's documented no-action synonym onto the wire enum."""
     if scenario is not None:
@@ -1394,6 +1486,25 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
     return batch
 
 
+def _attach_observation_layers(instrument: dict[str, Any]) -> None:
+    """Label native NT observations separately from legacy heuristic context."""
+    economics = resolve_instrument_economics(instrument)
+    native = instrument.get("native_observations")
+    if not isinstance(native, dict):
+        native = {}
+    native["source"] = "ninjatrader"
+    native["instrument_economics"] = dict(economics)
+    instrument["native_observations"] = native
+    instrument["instrument_economics"] = dict(economics)
+
+    projections = instrument.get("heuristic_projections")
+    if not isinstance(projections, dict):
+        projections = {}
+    projections["source"] = str(projections.get("source") or "glitch_analytics_bridge_legacy")
+    projections["strategy_semantics"] = str(projections.get("strategy_semantics") or "none")
+    instrument["heuristic_projections"] = projections
+
+
 def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
     """Expose only current routes, truthful observation semantics, and Glitch limits."""
     model_packet = json.loads(json.dumps(packet))
@@ -1426,11 +1537,14 @@ def packet_for_model(packet: dict[str, Any], scenario: dict[str, Any]) -> dict[s
     for frame_index, frame in enumerate(frames):
         market = frame.get("market_snapshot") if isinstance(frame, dict) else None
         if isinstance(market, dict):
-            market["instruments"] = [
+            instruments = [
                 instrument for instrument in market.get("instruments", [])
                 if isinstance(instrument, dict)
                 and str(instrument.get("instrument") or instrument.get("instrument_root")) == "MNQ"
             ]
+            for instrument in instruments:
+                _attach_observation_layers(instrument)
+            market["instruments"] = instruments
             market["coverage"] = [
                 item for item in market.get("coverage", [])
                 if isinstance(item, dict) and item.get("instrument_root") == "MNQ"
@@ -1681,6 +1795,7 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
         # Hermes-only field across the strict Glitch execution API boundary.
         wire_intent = dict(intent)
         wire_intent.pop("wake_triggers", None)
+        wire_intent.pop("forecast", None)
         wire_intent["created_utc"] = canonical_intent_created_utc(wire_intent.get("created_utc"))
         try:
             result = post_intent(wire_intent, token)
@@ -1865,7 +1980,9 @@ def build_prompt(
         "protection_updates array of {leg_id,stop_loss}; for MOVE_TP use {leg_id,take_profit} with optional stop_loss. Select only exposed active leg IDs. "
         "For NOTHING, HOLD, EXIT omit all entry and management fields. snapshot_hash must be a JSON string copied exactly even if numeric-looking. "
         "wake_triggers is mandatory and is an array of {type:\"PRICE_CROSS\",direction:\"ABOVE\"|\"BELOW\",price:number}; mirror every explicit crossing "
-        "level in change_condition and otherwise use []. Use top-level decisions, never intents. "
+        "level in change_condition and otherwise use []. Optionally include forecast exactly as "
+        "{event:\"STOP_BEFORE_PRIMARY_TARGET\",probability:number,method:string,confidence:number}; it is recorded for calibration only and never acts as a deterministic "
+        "entry, management, or execution gate. Use top-level decisions, never intents. "
         "If operator_advisory.directive_type is forced_entry, honor its long/short direction only for the exact route/account bindings in "
         "operator_advisory.scope; every unscoped book remains an evidence-based decision. Choose evidence-based quantity and geometry for scoped flat books. "
         "Ordinary advisories are soft and never override current evidence or protection. "
