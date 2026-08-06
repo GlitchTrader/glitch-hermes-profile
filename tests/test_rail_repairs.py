@@ -5,6 +5,7 @@ import re
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -94,6 +95,24 @@ class RailRepairTests(unittest.TestCase):
         popen_call = source.split("process = subprocess.Popen(", 1)[1].split(")\n", 1)[0]
         self.assertNotIn("timeout=", popen_call)
         self.assertNotIn("check=", popen_call)
+
+    def test_learning_invokes_hermes_through_popen(self):
+        process = mock.Mock()
+        process.stdin = object()
+        process.args = ["python", "-c", "wrapper"]
+        process.returncode = 0
+        process.communicate.return_value = ("{}", "")
+        process.poll.return_value = 0
+        expected = {"schema_version": "glitch.hermes.learning_output.v1"}
+        with mock.patch.object(LEARNING.shutil, "which", return_value="C:/hermes/hermes.exe"), \
+             mock.patch.object(LEARNING.Path, "is_file", return_value=True), \
+             mock.patch.object(LEARNING, "resolve_python_invocation", return_value=("python", {})), \
+             mock.patch.object(LEARNING, "hermes_profile_lock", return_value=nullcontext()), \
+             mock.patch.object(LEARNING.subprocess, "Popen", return_value=process) as popen, \
+             mock.patch.object(LEARNING.DIRECT, "extract_json", return_value=expected):
+            self.assertEqual(LEARNING.invoke_hermes("glitch", "prompt", "skill", 10), expected)
+        self.assertNotIn("timeout", popen.call_args.kwargs)
+        self.assertNotIn("check", popen.call_args.kwargs)
 
     def test_completed_entry_intent_survives_packet_rollover(self):
         source = DIRECT_WORKER.read_text(encoding="utf-8")
