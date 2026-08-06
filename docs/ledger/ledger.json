@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-08-02",
+  "updated": "2026-08-05",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -17,7 +17,8 @@
       "depends_on": [],
       "evidence": [
         "2026-07-31: repo promoted to active development for the cognition-equipment campaign.",
-        "2026-08-02: profile-side beta acceptance is represented by PROFILE-BETA-01."
+        "2026-08-02: profile-side beta acceptance is represented by PROFILE-BETA-01.",
+        "2026-08-05: canonical public profile source is 4a3d8a58dc4d9ba5cccae61910dffb3b6d3e1af4; paired NinjaTrader source candidate is e7415a209528b356a5963cbd934e0cff7774de3e."
       ]
     },
     {
