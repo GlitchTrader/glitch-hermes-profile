@@ -91,6 +91,9 @@ class RailRepairTests(unittest.TestCase):
         self.assertIn("if hermes_operator_waiting(profile):", source)
         self.assertIn('raise LearningDeferred("trading_decision_waiting")', source)
         self.assertIn('"status": "deferred"', source)
+        popen_call = source.split("process = subprocess.Popen(", 1)[1].split(")\n", 1)[0]
+        self.assertNotIn("timeout=", popen_call)
+        self.assertNotIn("check=", popen_call)
 
     def test_completed_entry_intent_survives_packet_rollover(self):
         source = DIRECT_WORKER.read_text(encoding="utf-8")

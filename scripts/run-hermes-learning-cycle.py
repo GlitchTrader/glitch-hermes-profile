@@ -165,8 +165,6 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout_seconds,
-            check=False,
             env=env,
             creationflags=hide_flags(),
         )
