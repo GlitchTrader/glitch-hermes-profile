@@ -34,7 +34,7 @@ ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", 
 ACTION_ALIASES = {"NO_ACTION": "NOTHING"}
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_VERSION = "direct-v9-clean-experiment"
+DIRECT_PROMPT_VERSION = "direct-v10-active-management"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -330,7 +330,25 @@ def _remaining_order_quantity(order: dict[str, Any]) -> int | None:
     return rounded if remaining > 0 and abs(remaining - rounded) < 1e-9 else None
 
 
-def _glitch_leg_id(name: str, role: str) -> str | None:
+def _native_order_role(order: dict[str, Any]) -> str | None:
+    order_type = str(order.get("order_type") or "").lower()
+    if "stop" in order_type:
+        return "stop"
+    if "limit" in order_type:
+        return "target"
+    name = str(order.get("name") or "").upper()
+    if name.startswith("GLT-AI-S-"):
+        return "stop"
+    if name.startswith("GLT-AI-T-"):
+        return "target"
+    return None
+
+
+def _glitch_leg_id(order: dict[str, Any], role: str) -> str | None:
+    observed = order.get("leg_id")
+    if isinstance(observed, str) and observed.strip():
+        return observed.strip()
+    name = str(order.get("name") or "")
     prefix = "GLT-AI-S-" if role == "stop" else "GLT-AI-T-"
     if not name.upper().startswith(prefix):
         return None
@@ -375,11 +393,11 @@ def owned_native_protection(
             continue
         root = str(order.get("instrument_root") or order.get("instrument") or "").upper()
         name = str(order.get("name") or "")
-        role = "stop" if name.upper().startswith("GLT-AI-S-") else "target" if name.upper().startswith("GLT-AI-T-") else None
+        role = _native_order_role(order)
         if root != "MNQ" or role is None:
             continue
         remaining = _remaining_order_quantity(order)
-        leg_id = _glitch_leg_id(name, role)
+        leg_id = _glitch_leg_id(order, role)
         if remaining is None or leg_id is None:
             valid = False
             continue
@@ -393,6 +411,14 @@ def owned_native_protection(
             "oco": order.get("oco"),
         })
         if role == "target":
+            try:
+                target_price = float(order.get("limit_price"))
+            except (TypeError, ValueError):
+                valid = False
+                continue
+            if target_price <= 0:
+                valid = False
+                continue
             target_coverage += remaining
             continue
         try:
@@ -767,6 +793,18 @@ def _jsonl_objects(path: Path) -> list[dict[str, Any]]:
     return values
 
 
+def _native_entry_times(executions: list[dict[str, Any]]) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for row in executions:
+        if row.get("code") not in {"master_entry_submitted", "group_entries_submitted"}:
+            continue
+        intent_id = str(row.get("intent_id") or "")
+        recorded = row.get("recorded_utc")
+        if intent_id and isinstance(recorded, str) and recorded:
+            values.setdefault(intent_id, []).append(recorded)
+    return values
+
+
 def active_trade_state(
     packet: dict[str, Any],
     scenario: dict[str, Any],
@@ -784,6 +822,7 @@ def active_trade_state(
     }
     decisions = _jsonl_objects(glitch_data / "intents" / "decisions.jsonl")
     executions = _jsonl_objects(glitch_data / "intents" / "executions.jsonl")
+    native_entry_times = _native_entry_times(executions)
     outcomes = _jsonl_objects(glitch_data / "intents" / "hermes-trade-outcomes.jsonl")
     closed_entries = {str(row.get("intent_id")) for row in outcomes if row.get("intent_id")}
     submitted_entries = {
@@ -829,8 +868,15 @@ def active_trade_state(
         unrealized = float(position.get("unrealized_pnl", 0) or 0)
         peak = max(float(prior.get("peak_unrealized_pnl_usd", unrealized) or unrealized), unrealized) if same_trade else unrealized
         trough = min(float(prior.get("trough_unrealized_pnl_usd", unrealized) or unrealized), unrealized) if same_trade else unrealized
-        created_values = [str(row.get("created_utc")) for row in open_entries if row.get("created_utc")]
-        entry_utc = min(created_values) if created_values else str(prior.get("entry_decision_utc") or "")
+        entry_candidates = []
+        for row in open_entries:
+            intent_id = str(row.get("intent_id") or "")
+            native_times = native_entry_times.get(intent_id, [])
+            if native_times:
+                entry_candidates.append(min(native_times))
+            elif row.get("created_utc"):
+                entry_candidates.append(str(row.get("created_utc")))
+        entry_utc = min(entry_candidates) if entry_candidates else str(prior.get("entry_decision_utc") or "")
         if entry_utc:
             management = [row for row in management if str(row.get("created_utc") or "") >= entry_utc]
         try:
@@ -841,6 +887,22 @@ def active_trade_state(
             row for row in account.get("working_order_details", [])
             if isinstance(row, dict) and str(row.get("instrument_root") or "").upper() == "MNQ"
         ]
+        compact_orders = []
+        for order in orders:
+            role = _native_order_role(order)
+            compact_orders.append({
+                "name": order.get("name"),
+                "order_type": order.get("order_type"),
+                "order_state": order.get("order_state"),
+                "role": role,
+                "leg_id": (order.get("leg_id") or _glitch_leg_id(order, role)) if role else order.get("leg_id"),
+                "quantity": order.get("quantity"),
+                "filled": order.get("filled"),
+                "remaining_quantity": _remaining_order_quantity(order),
+                "stop_price": order.get("stop_price"),
+                "limit_price": order.get("limit_price"),
+                "oco": order.get("oco"),
+            })
         trades.append({
             "master_account": master,
             "route_id": book.get("route_id"),
@@ -862,7 +924,7 @@ def active_trade_state(
                 "planned_targets": [row.get(key) for key in ("take_profit_1", "take_profit_2", "take_profit_3") if row.get(key) is not None],
                 "reason": row.get("reason"),
             } for row in open_entries],
-            "working_orders": orders,
+            "working_orders": compact_orders,
             "recent_management": [{
                 "intent_id": row.get("intent_id"),
                 "created_utc": row.get("created_utc"),
@@ -1486,6 +1548,17 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
     return batch
 
 
+def stamp_decision_created_utc(batch: dict[str, Any]) -> dict[str, Any]:
+    """Make the cycle, not Luna's copied text, authoritative for decision time."""
+    created_utc = utc_now()
+    decisions = batch.get("decisions")
+    if isinstance(decisions, list):
+        for intent in decisions:
+            if isinstance(intent, dict):
+                intent["created_utc"] = created_utc
+    return batch
+
+
 def _attach_observation_layers(instrument: dict[str, Any]) -> None:
     """Label native NT observations separately from legacy heuristic context."""
     economics = resolve_instrument_economics(instrument)
@@ -1746,7 +1819,9 @@ def invoke_validated_batch(
     """Regenerate once when Luna's content, rather than its provider, is invalid."""
     for repair_count in range(2):
         try:
-            batch = normalize_batch(invoke_hermes(profile, prompt, timeout_seconds), scenario)
+            batch = stamp_decision_created_utc(
+                normalize_batch(invoke_hermes(profile, prompt, timeout_seconds), scenario)
+            )
             validate_batch(batch, scenario, directive)
             return batch, repair_count
         except ValueError as error:
@@ -1962,8 +2037,13 @@ def build_prompt(
         "the noise or sweep zone. If one is missing, NOTHING is the disciplined choice; this is an entry-quality test, not a full-confirmation gate. "
         "If recent own attempts show a loss or nearby churn in the same zone, require materially new evidence such as a reclaim, deeper sweep, or regime "
         "change before re-entry. Do not use the loss itself as directional evidence. Do not default to cosmetic 1:1 geometry inside noise. "
-        "For each positioned book compare HOLD, exact-leg amendments, same-direction protected addition, and EXIT. "
-        "A prior change_condition is accountable: act when it is satisfied or identify genuinely new contrary evidence. Do not manufacture edge, force "
+        "For each positioned book perform a mandatory management pass before choosing: inspect current native leg IDs, working stop and target prices, "
+        "favorable excursion toward the native working target, rollback from peak, and the latest reversal or continuation evidence. Explicitly compare "
+        "MOVE_STOP, MOVE_TP, EXIT, and HOLD, plus a same-direction protected addition only when independently justified. Material progress in the "
+        "60-80% area and a reversal are attention cues, not automatic thresholds; a short may tighten above entry or move its target closer, a long has "
+        "the mirrored choice, and EXIT is valid when taking profit best preserves remaining asymmetry. Do not hard-code a fixed point or ratio rule. "
+        "If HOLD remains best, say why unchanged protection and target still beat an amendment or exit and state the next change condition. A prior "
+        "change_condition is accountable: act when it is satisfied or identify genuinely new contrary evidence. Do not manufacture edge, force "
         "activity, micromanage expected noise, mechanically maximize quantity, grid, martingale, or repeat nearby churn. "
         "Treat mid-range overlap with low trend strength, no room to the next objective, and a stop inside ordinary MNQ noise as reasons to remain flat. "
         "Do not confuse imperfect evidence with no edge, and do not use full confirmation as the entry requirement. "

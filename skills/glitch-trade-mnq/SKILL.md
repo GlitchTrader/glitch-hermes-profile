@@ -56,10 +56,17 @@ formula is preferred.
 
 When exposure exists, reassess the original thesis against current native facts,
 new evidence, remaining opportunity, protection state, execution uncertainty,
-and alternatives. Continuing unchanged, amending, adding supported protected
-exposure, reducing, exiting, or doing nothing are all case-specific choices.
-Unrealized profit, rollback, normal noise, prior attempts, elapsed time, and a
-recent loss can inform judgment but never issue an automatic command.
+and alternatives. Every positioned cycle must explicitly compare continuing
+unchanged, MOVE_STOP on active legs, MOVE_TP on active legs, EXIT to take
+profit, adding supported protected exposure, reducing, and doing nothing. Use
+the native working target and sampled favorable excursion as the reference;
+material progress around 60-80% plus a fresh reversal is a prompt to examine
+protection and profit capture, not a mechanical trigger. A case-specific stop
+ratchet, target adjustment, or exit may be right, while HOLD is right only when
+the unchanged bracket still offers the best bounded asymmetry and the reason
+states what would change it. Unrealized profit, rollback, normal noise, prior
+attempts, elapsed time, and a recent loss can inform judgment but never issue
+an automatic command.
 
 ## Be explicit and falsifiable
 

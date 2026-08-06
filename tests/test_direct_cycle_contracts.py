@@ -86,6 +86,129 @@ def test_validator_rejects_compact_created_utc() -> None:
         DIRECT.validate_batch(batch, scenario)
 
 
+def test_model_decisions_use_runtime_owned_created_utc() -> None:
+    batch, _ = valid_batch("2000-01-01T00:00:00Z")
+
+    DIRECT.stamp_decision_created_utc(batch)
+
+    created = batch["decisions"][0]["created_utc"]
+    assert created != "2000-01-01T00:00:00Z"
+    assert datetime.fromisoformat(created.replace("Z", "+00:00")).date() == datetime.now(timezone.utc).date()
+
+
+def test_native_gl1_protection_uses_authoritative_order_fields() -> None:
+    account = {
+        "positions": [{"instrument_root": "MNQ", "market_position": "Short", "quantity": 1}],
+        "working_order_details": [
+            {
+                "instrument_root": "MNQ",
+                "name": "GL1-command-HS0-LEG0",
+                "order_type": "StopMarket",
+                "quantity": 1,
+                "filled": 0,
+                "stop_price": 29569.75,
+                "limit_price": 0,
+                "leg_id": "LEG0",
+                "oco": "OCO0",
+            },
+            {
+                "instrument_root": "MNQ",
+                "name": "GL1-command-HT0-LEG0",
+                "order_type": "Limit",
+                "quantity": 1,
+                "filled": 0,
+                "stop_price": 0,
+                "limit_price": 29459.75,
+                "leg_id": "LEG0",
+                "oco": "OCO0",
+            },
+        ],
+    }
+
+    protection = DIRECT.owned_native_protection(
+        account,
+        29504.75,
+        {"point_value_usd": 2.0, "tick_size": 0.25, "source": "ninjatrader"},
+    )
+
+    assert protection["coverage_complete"] is True
+    assert {row["leg_id"] for row in protection["orders"]} == {"LEG0"}
+    assert {row["limit_price"] for row in protection["orders"]} == {0, 29459.75}
+
+
+def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometry(tmp_path: Path) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    exchange = tmp_path / "exchange"
+    (glitch_data / "intents").mkdir(parents=True)
+    native_entry_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    intent = {
+        "intent_id": "11111111-1111-4111-8111-111111111111",
+        "created_utc": "2000-01-01T00:00:00Z",
+        "action": "ENTER_SHORT",
+        "account": "Sim101",
+        "quantity": 1,
+        "stop_loss": 29569.75,
+        "take_profit_1": 29459.75,
+    }
+    (glitch_data / "intents" / "decisions.jsonl").write_text(
+        json.dumps({"intent": intent}) + "\n", encoding="utf-8"
+    )
+    (glitch_data / "intents" / "executions.jsonl").write_text(
+        json.dumps({
+            "intent_id": intent["intent_id"],
+            "code": "master_entry_submitted",
+            "recorded_utc": native_entry_utc,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    account = {
+        "account": "Sim101",
+        "positions": [{
+            "instrument_root": "MNQ",
+            "market_position": "Short",
+            "quantity": 1,
+            "average_price": 29534.75,
+            "unrealized_pnl": 72.0,
+        }],
+        "working_order_details": [
+            {
+                "instrument_root": "MNQ",
+                "name": "GL1-command-HS0-LEG0",
+                "order_type": "StopMarket",
+                "order_state": "Accepted",
+                "quantity": 1,
+                "filled": 0,
+                "stop_price": 29569.75,
+                "limit_price": 0,
+                "leg_id": "LEG0",
+                "oco": "OCO0",
+            },
+            {
+                "instrument_root": "MNQ",
+                "name": "GL1-command-HT0-LEG0",
+                "order_type": "Limit",
+                "order_state": "Working",
+                "quantity": 1,
+                "filled": 0,
+                "stop_price": 0,
+                "limit_price": 29459.75,
+                "leg_id": "LEG0",
+                "oco": "OCO0",
+            },
+        ],
+    }
+    packet = {"frames": [{"portfolio_snapshot": {"accounts": [account]}}]}
+    scenario = {"books": [{"route_id": "glitch", "master_account": "Sim101"}]}
+
+    state = DIRECT.active_trade_state(packet, scenario, glitch_data, exchange)
+    trade = state["trades"][0]
+
+    assert trade["entry_decision_utc"] == native_entry_utc
+    assert trade["trade_age_seconds"] is not None and trade["trade_age_seconds"] < 10
+    assert trade["working_orders"][0]["stop_price"] == 29569.75
+    assert trade["working_orders"][1]["limit_price"] == 29459.75
+
+
 def test_llm_activation_is_closed_during_cme_maintenance_and_weekend() -> None:
     # 17:30 ET Wednesday: daily maintenance.
     assert DIRECT.llm_maintenance_reason(

@@ -21,7 +21,10 @@ Return one JSON object and no Markdown or prose.
   `protection_updates` entries shaped `{leg_id,stop_loss}`.
 - `MOVE_TP` contains only core fields plus non-empty `protection_updates`
   entries shaped `{leg_id,take_profit}` with optional `stop_loss`.
-- `HOLD`, `EXIT`, and `NOTHING` omit entry and management fields.
+- `HOLD`, `EXIT`, and `NOTHING` omit entry and management fields. For a
+  positioned book, HOLD is a live management decision and must follow an
+  explicit comparison with MOVE_STOP, MOVE_TP, and EXIT; it is not a default
+  placeholder because the original direction still has room.
 - Never target followers, reverse through entry, emit limit prices, invent leg
   IDs, or return incomplete JSON.
 

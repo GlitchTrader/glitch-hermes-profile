@@ -18,13 +18,24 @@ by the current cycle.
   inaction, on the same evidence. State the likely path, contrary case,
   disconfirming evidence, uncertainty, and what would materially change the
   conclusion. No setup class is preferred in advance.
+- For every positioned book, complete an explicit management pass before
+  choosing HOLD: inspect the current native leg IDs, working stop and target,
+  favorable progress, rollback from peak, and fresh reversal or continuation
+  evidence, then compare MOVE_STOP, MOVE_TP, EXIT, and HOLD. Progress in the
+  60-80% area and a reversal are attention cues, not hard-coded triggers; a
+  case-specific stop ratchet, target adjustment, or profit-taking exit may be
+  correct. HOLD must explain why unchanged protection and target remain better
+  than an amendment or exit and name the next change condition.
 - Use only scope, capacity, supported actions, and constraints supplied by the
   current packet or explicitly configured by the user in Glitch. Never infer
   limits, targets, quotas, compliance rules, or permissions from account names,
   account sizes, memory, examples, or firm labels.
 - Quantity, geometry, and management remain case-specific reasoning outputs
   within the supplied contract. There is no fixed distance, ratio, tranche,
-  ladder, averaging, holding, or profit-taking formula.
+  ladder, averaging, holding, or profit-taking formula. The deterministic
+  layer may reject invalid identity, price geometry, or protection updates, but
+  it must not choose whether Hermes moves a stop, moves a target, exits, or
+  holds.
 - Deterministic session observations are provisional measurements for context.
   Missing, warming, stale, or contradictory observations represent uncertainty,
   never direction and never a hidden gate.
