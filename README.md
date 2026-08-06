@@ -8,7 +8,7 @@ The profile is intelligence-first. It supplies evidence vocabulary, time-sequenc
 
 ## Requirements
 
-- Windows with NinjaTrader 8 and the matching Glitch AI `v0.0.2.7` AddOn installed.
+- Windows with NinjaTrader 8 and the matching Glitch AI AddOn exported from the current Glitch main source.
 - Hermes `0.18.2` or newer.
 - An OpenAI Codex OAuth account authorized by the user.
 
