@@ -103,7 +103,10 @@ $profileBackupTargets = @(
 )
 $backendTargets = @(
     'intents',
-    'hermes\exchange',
+    # Glitch continuously publishes native packets under exchange\glitch.
+    # Epoch reset owns only Hermes-produced state; deleting the shared root races
+    # the NinjaTrader publisher and can leave the reset incomplete.
+    'hermes\exchange\hermes',
     'snapshots',
     'selfcheck',
     'hermes-archives',

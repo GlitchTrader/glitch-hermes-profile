@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,18 @@ from win_subprocess import detach_flags, resolve_python_invocation
 
 
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
+
+
+def write_json_atomic(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, separators=(",", ":"))
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def worker_command(args) -> list[str]:
@@ -35,6 +48,10 @@ def launch(args) -> dict[str, object]:
     exchange = args.glitch_data.resolve() / "hermes" / "exchange"
     events = exchange / "hermes" / "events"
     events.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(exchange / "hermes" / "direct-cycle-request.json", {
+        "schema_version": "glitch.hermes.direct_cycle_request.v1",
+        "requested_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    })
     log_path = events / "direct-worker.log"
     _, env_overlay = resolve_python_invocation()
     env = os.environ.copy()

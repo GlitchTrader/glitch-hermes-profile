@@ -209,6 +209,211 @@ def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometr
     assert trade["working_orders"][1]["limit_price"] == 29459.75
 
 
+def test_active_trade_state_starts_fresh_after_native_flat_boundary(tmp_path: Path) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    exchange = tmp_path / "exchange"
+    (glitch_data / "intents").mkdir(parents=True)
+    supervisor = exchange / "hermes" / "supervisor"
+    supervisor.mkdir(parents=True)
+    old_entry = {
+        "intent_id": "11111111-1111-4111-8111-111111111111",
+        "created_utc": "2026-08-06T10:30:00Z",
+        "action": "ENTER_LONG",
+        "account": "Sim101",
+        "quantity": 1,
+        "stop_loss": 29400,
+        "take_profit_1": 29600,
+    }
+    new_entry = {
+        "intent_id": "22222222-2222-4222-8222-222222222222",
+        "created_utc": "2026-08-07T00:45:54Z",
+        "action": "ENTER_LONG",
+        "account": "Sim101",
+        "quantity": 1,
+        "stop_loss": 29485.25,
+        "take_profit_1": 29593,
+    }
+    old_hold = {
+        "intent_id": "33333333-3333-4333-8333-333333333333",
+        "created_utc": "2026-08-06T10:31:00Z",
+        "action": "HOLD",
+        "account": "Sim101",
+    }
+    new_hold = {
+        "intent_id": "44444444-4444-4444-8444-444444444444",
+        "created_utc": "2026-08-07T00:47:00Z",
+        "action": "HOLD",
+        "account": "Sim101",
+    }
+    future_exit = {
+        "intent_id": "55555555-5555-4555-8555-555555555555",
+        "created_utc": "2026-08-07T00:48:00Z",
+        "action": "EXIT",
+        "account": "Sim101",
+    }
+    (glitch_data / "intents" / "decisions.jsonl").write_text(
+        "".join(json.dumps({"intent": row}) + "\n" for row in (old_entry, old_hold, new_entry, new_hold, future_exit)),
+        encoding="utf-8",
+    )
+    (glitch_data / "intents" / "executions.jsonl").write_text(
+        "".join(json.dumps({
+            "intent_id": row["intent_id"],
+            "code": "master_entry_submitted",
+            "recorded_utc": row["created_utc"],
+        }) + "\n" for row in (old_entry, new_entry)),
+        encoding="utf-8",
+    )
+    (glitch_data / "intents" / "hermes-trade-outcomes.jsonl").write_text(
+        json.dumps({
+            "intent_id": new_entry["intent_id"],
+            "recorded_utc": "2026-08-07T00:48:00Z",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (supervisor / "active-trades.json").write_text(json.dumps({
+        "schema_version": "glitch.hermes.active_trade_state.v1",
+        "recorded_utc": "2026-08-06T10:32:00Z",
+        "trades": [{
+            "master_account": "Sim101",
+            "side": "long",
+            "entry_decision_utc": old_entry["created_utc"],
+            "entry_intent_ids": [old_entry["intent_id"]],
+            "peak_unrealized_pnl_usd": 500,
+            "trough_unrealized_pnl_usd": -100,
+            "working_orders": [{"leg_id": "OLD-LEG"}],
+        }],
+    }), encoding="utf-8")
+    account = {
+        "account": "Sim101",
+        "positions": [{
+            "instrument_root": "MNQ",
+            "market_position": "Long",
+            "quantity": 1,
+            "average_price": 29537.25,
+            "unrealized_pnl": -54,
+        }],
+        "working_order_details": [{
+            "instrument_root": "MNQ",
+            "name": "GL1-new-HS0-NEW-LEG",
+            "order_type": "StopMarket",
+            "order_state": "Accepted",
+            "quantity": 1,
+            "filled": 0,
+            "stop_price": 29485.25,
+            "limit_price": 0,
+            "leg_id": "NEW-LEG",
+        }],
+    }
+    early_account = {
+        **account,
+        "positions": [{**account["positions"][0], "unrealized_pnl": 25}],
+    }
+    packet = {"frames": [
+        {
+            "created_utc": "2026-08-07T00:45:00Z",
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101", "positions": []}]},
+        },
+        {
+            "created_utc": "2026-08-07T00:46:00Z",
+            "portfolio_snapshot": {"accounts": [early_account]},
+        },
+        {
+            "created_utc": "2026-08-07T00:47:00Z",
+            "portfolio_snapshot": {"accounts": [account]},
+        },
+    ]}
+    scenario = {"books": [{"route_id": "glitch", "master_account": "Sim101"}]}
+
+    trade = DIRECT.active_trade_state(packet, scenario, glitch_data, exchange)["trades"][0]
+
+    assert trade["entry_intent_ids"] == [new_entry["intent_id"]]
+    assert trade["entry_plans"] == [{
+        "intent_id": new_entry["intent_id"],
+        "quantity": 1,
+        "planned_stop": 29485.25,
+        "planned_targets": [29593],
+        "reason": None,
+    }]
+    assert trade["entry_decision_utc"] == new_entry["created_utc"]
+    assert trade["trade_age_seconds"] == 66
+    assert trade["peak_unrealized_pnl_usd"] == 25
+    assert trade["trough_unrealized_pnl_usd"] == -54
+    assert [row["intent_id"] for row in trade["recent_management"]] == [new_hold["intent_id"]]
+
+
+def test_active_trade_state_preserves_zero_peak_for_continuing_native_leg(tmp_path: Path) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    exchange = tmp_path / "exchange"
+    (glitch_data / "intents").mkdir(parents=True)
+    supervisor = exchange / "hermes" / "supervisor"
+    supervisor.mkdir(parents=True)
+    entry = {
+        "intent_id": "11111111-1111-4111-8111-111111111111",
+        "created_utc": "2026-08-07T00:00:00Z",
+        "action": "ENTER_LONG",
+        "account": "Sim101",
+        "quantity": 1,
+        "stop_loss": 29490,
+        "take_profit_1": 29590,
+    }
+    (glitch_data / "intents" / "decisions.jsonl").write_text(
+        json.dumps({"intent": entry}) + "\n", encoding="utf-8"
+    )
+    (glitch_data / "intents" / "executions.jsonl").write_text(
+        json.dumps({
+            "intent_id": entry["intent_id"],
+            "code": "master_entry_submitted",
+            "recorded_utc": entry["created_utc"],
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (supervisor / "active-trades.json").write_text(json.dumps({
+        "schema_version": "glitch.hermes.active_trade_state.v1",
+        "recorded_utc": "2026-08-07T00:10:00Z",
+        "trades": [{
+            "master_account": "Sim101",
+            "side": "long",
+            "entry_decision_utc": entry["created_utc"],
+            "entry_intent_ids": [entry["intent_id"]],
+            "peak_unrealized_pnl_usd": 0,
+            "trough_unrealized_pnl_usd": -10,
+            "working_orders": [{"leg_id": "SAME-LEG"}],
+        }],
+    }), encoding="utf-8")
+    account = {
+        "account": "Sim101",
+        "positions": [{
+            "instrument_root": "MNQ",
+            "market_position": "Long",
+            "quantity": 1,
+            "average_price": 29550,
+            "unrealized_pnl": -5,
+        }],
+        "working_order_details": [{
+            "instrument_root": "MNQ",
+            "name": "GL1-same-HS0-SAME-LEG",
+            "order_type": "StopMarket",
+            "order_state": "Accepted",
+            "quantity": 1,
+            "filled": 0,
+            "stop_price": 29490,
+            "limit_price": 0,
+            "leg_id": "SAME-LEG",
+        }],
+    }
+    packet = {"frames": [{
+        "created_utc": "2026-08-07T00:11:00Z",
+        "portfolio_snapshot": {"accounts": [account]},
+    }]}
+    scenario = {"books": [{"route_id": "glitch", "master_account": "Sim101"}]}
+
+    trade = DIRECT.active_trade_state(packet, scenario, glitch_data, exchange)["trades"][0]
+
+    assert trade["entry_intent_ids"] == [entry["intent_id"]]
+    assert trade["peak_unrealized_pnl_usd"] == 0
+    assert trade["trough_unrealized_pnl_usd"] == -10
+
+
 def test_llm_activation_is_closed_during_cme_maintenance_and_weekend() -> None:
     # 17:30 ET Wednesday: daily maintenance.
     assert DIRECT.llm_maintenance_reason(

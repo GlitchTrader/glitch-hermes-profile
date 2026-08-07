@@ -150,7 +150,14 @@ def message_fields(message):
     return fields
 
 
-def _remember_intent(intents, row, evidence, cycle_id=None, source_kind="unknown"):
+def _remember_intent(
+    intents,
+    row,
+    evidence,
+    cycle_id=None,
+    source_kind="unknown",
+    account_groups_tsv=None,
+):
     if not isinstance(row, dict):
         return
     intent_id = str(row.get("intent_id") or "")
@@ -163,6 +170,8 @@ def _remember_intent(intents, row, evidence, cycle_id=None, source_kind="unknown
     if not isinstance(existing, dict):
         value["_cycle_id"] = incoming_cycle
         value["_lineage_source"] = source_kind
+        if source_kind == "outbox" and isinstance(account_groups_tsv, str):
+            value["_account_groups_tsv"] = account_groups_tsv
         intents[intent_id] = value
         return
 
@@ -183,6 +192,8 @@ def _remember_intent(intents, row, evidence, cycle_id=None, source_kind="unknown
     if source_kind == "outbox" and incoming_cycle:
         existing["_cycle_id"] = incoming_cycle
         existing["_lineage_source"] = source_kind
+        if isinstance(account_groups_tsv, str):
+            existing["_account_groups_tsv"] = account_groups_tsv
     elif not existing_cycle and incoming_cycle:
         existing["_cycle_id"] = incoming_cycle
         existing["_lineage_source"] = source_kind
@@ -214,8 +225,16 @@ def find_intents(evidence_root=None, decision_root=None, decision_log=None):
             if not isinstance(batch, dict):
                 continue
             cycle_id = batch.get("cycle_id")
+            account_groups_tsv = batch.get("account_groups_tsv")
             for row in batch.get("decisions", []):
-                _remember_intent(intents, row, path, cycle_id, "outbox")
+                _remember_intent(
+                    intents,
+                    row,
+                    path,
+                    cycle_id,
+                    "outbox",
+                    account_groups_tsv,
+                )
     if decision_log and decision_log.exists():
         for row in read_jsonl(decision_log):
             # Glitch's durable decision log wraps the Hermes intent inside an
@@ -226,11 +245,9 @@ def find_intents(evidence_root=None, decision_root=None, decision_log=None):
     return intents
 
 
-def parse_group_accounts(path, master_account):
+def parse_group_accounts_tsv(account_groups_tsv, master_account):
     groups = {}
-    if not path.exists():
-        return [master_account]
-    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+    for raw in str(account_groups_tsv or "").splitlines():
         fields = raw.strip().split("\t")
         if not fields or fields[0].startswith("#"):
             continue
@@ -241,7 +258,7 @@ def parse_group_accounts(path, master_account):
     for group in groups.values():
         if group["master"].lower() == master_account.lower():
             return [group["master"]] + group["followers"]
-    return [master_account]
+    return []
 
 
 def portfolio_snapshots(glitch_data):
@@ -1032,7 +1049,13 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
         submit_fields = message_fields(submitted.get("message"))
         expected_accounts = [value for value in submit_fields.get("expected_accounts", "").split(",") if value]
         if not expected_accounts:
-            expected_accounts = parse_group_accounts(glitch_data / "AccountGroups.tsv", master)
+            expected_accounts = parse_group_accounts_tsv(
+                intent.get("_account_groups_tsv"), master
+            )
+        # Reconciliation must never pull a historical trade into a group that
+        # the operator configured after that intent was sent.
+        if not expected_accounts:
+            continue
         bracket_by_account = {}
         for row in brackets:
             fields = message_fields(row.get("message"))

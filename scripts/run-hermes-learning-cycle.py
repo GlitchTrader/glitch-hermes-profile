@@ -1327,7 +1327,7 @@ def run_once(args) -> dict[str, Any]:
     # One bounded model loop per scheduler invocation. Each successful branch
     # checkpoints immediately, preventing a later due loop from replaying work
     # or extending this process's ownership of the shared Hermes profile.
-    if feed_fresh and new_outcomes and args.force_loop in {None, "debrief"}:
+    if new_outcomes and args.force_loop in {None, "debrief"}:
         ids = [stable_id("episode", str(row["intent_id"])) for row in new_outcomes]
         if not args.dry_run:
             factual_evidence = debrief_evidence(glitch_data, new_outcomes)
@@ -1377,8 +1377,7 @@ def run_once(args) -> dict[str, Any]:
         if args.force_loop == "hourly" and not unreviewed:
             unreviewed = all_evidence[-MAX_HOURLY_EVIDENCE:]
         if (
-            feed_fresh
-            and (hourly_due or args.force_loop == "hourly")
+            (hourly_due or args.force_loop == "hourly")
             and args.force_loop in {None, "hourly"}
         ):
             batch = unreviewed[:MAX_HOURLY_EVIDENCE]
@@ -1432,8 +1431,7 @@ def run_once(args) -> dict[str, Any]:
             if args.force_loop == "planning" and not unplanned_reviews:
                 unplanned_reviews = reviews[-MAX_PLANNING_REVIEWS:]
             if (
-                feed_fresh
-                and (planning_due or args.force_loop == "planning")
+                (planning_due or args.force_loop == "planning")
                 and args.force_loop in {None, "planning"}
             ):
                 review_batch = unplanned_reviews[:MAX_PLANNING_REVIEWS]

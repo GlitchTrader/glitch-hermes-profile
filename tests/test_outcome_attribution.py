@@ -103,7 +103,7 @@ def build_reconciliation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
             "intent_id": intent_id,
             "code": "group_entries_submitted",
             "message": (
-                "expected_accounts=Master,FollowerA,FollowerB|correlation=corr1234|"
+                "correlation=corr1234|"
                 "contract=MNQ 09-26|point_value_usd=2|tick_size=0.25"
             ),
         },
@@ -120,6 +120,11 @@ def build_reconciliation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     decision_root.mkdir(parents=True)
     (decision_root / "cycle-1.json").write_text(json.dumps({
         "cycle_id": "cycle-1",
+        "account_groups_tsv": (
+            "G\tgroup-a\tMaster\t1\n"
+            "M\tgroup-a\tFollowerA\t2\t2\t1\t1\n"
+            "M\tgroup-a\tFollowerB\t3\t3\t1\t1\n"
+        ),
         "decisions": [{
             "intent_id": intent_id,
             "action": "ENTER_LONG",
@@ -172,6 +177,22 @@ def build_reconciliation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
     return glitch_data, decision_root, output_path
+
+
+def test_reconcile_uses_immutable_outbox_group_manifest(tmp_path: Path) -> None:
+    glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
+    (glitch_data / "AccountGroups.tsv").write_text(
+        "G\tcurrent\tMaster\t1\nM\tcurrent\tWrongFollower\t1\t1\t1\t1\n",
+        encoding="utf-8",
+    )
+
+    outcomes = RECONCILER.reconcile(
+        glitch_data, None, output_path, decision_root=decision_root
+    )
+
+    assert {row["account"] for row in outcomes[0]["account_outcomes"]} == {
+        "Master", "FollowerA", "FollowerB"
+    }
 
 
 def test_native_log_requires_matching_account_correlation_and_oco_pair(tmp_path: Path) -> None:

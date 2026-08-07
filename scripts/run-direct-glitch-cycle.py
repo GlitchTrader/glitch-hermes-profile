@@ -151,13 +151,28 @@ def canonical_intent_created_utc(value: Any) -> str:
     return f"{utc_value:%Y-%m-%dT%H:%M:%S}.{fraction}Z"
 
 
-def read_json(path: Path) -> dict[str, Any]:
-    # Windows PowerShell 5 writes a BOM for -Encoding UTF8. Exchange JSON is
-    # still valid UTF-8 and must not stop the native trading loop.
-    value = json.loads(path.read_text(encoding="utf-8-sig"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected_object:{path}")
-    return value
+def read_json(path: Path, attempts: int = 4) -> dict[str, Any]:
+    """Read an exchange object across a concurrent Windows pointer replacement.
+
+    NinjaTrader publishes replaceable ``latest-*.json`` pointers with
+    ``File.Replace``. A reader can legitimately arrive while the old handle is
+    closing. Retry that transient only; malformed completed data remains an
+    error and is never silently substituted.
+    """
+    failure: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            # Windows PowerShell 5 writes a BOM for -Encoding UTF8. Exchange
+            # JSON is still valid UTF-8 and must not stop the native loop.
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(value, dict):
+                raise ValueError(f"expected_object:{path}")
+            return value
+        except (OSError, json.JSONDecodeError) as error:
+            failure = error
+            if attempt + 1 < max(1, attempts):
+                time.sleep(0.025 * (attempt + 1))
+    raise failure if failure is not None else RuntimeError(f"read_failed:{path}")
 
 
 def trading_runtime_enabled(glitch_data: Path) -> bool:
@@ -207,6 +222,27 @@ def append_event(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
+def consume_direct_cycle_request(exchange: Path) -> dict[str, Any] | None:
+    """Consume the latest coalesced scheduler request, if one exists.
+
+    The minute launcher is the sole producer. The locked worker consumes one
+    marker before each pass, so latency coalesces to the newest packet instead
+    of dropping every minute that arrived during an LLM call.
+    """
+    path = exchange / "hermes" / "direct-cycle-request.json"
+    if not path.is_file():
+        return None
+    try:
+        request = read_json(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return None
+    return request
 
 
 def parse_groups(tsv: str, policy: dict[str, Any]) -> list[dict[str, Any]]:
@@ -805,6 +841,51 @@ def _native_entry_times(executions: list[dict[str, Any]]) -> dict[str, list[str]
     return values
 
 
+def _utc_datetime(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _at_or_before(value: Any, as_of: datetime | None) -> bool:
+    if as_of is None:
+        return True
+    observed = _utc_datetime(value)
+    return observed is not None and observed <= as_of
+
+
+def _intent_entry_utc(intent: dict[str, Any], native_entry_times: dict[str, list[str]]) -> str:
+    native_times = native_entry_times.get(str(intent.get("intent_id") or ""), [])
+    candidates = [value for value in native_times if _utc_datetime(value) is not None]
+    if candidates:
+        return min(candidates, key=lambda value: _utc_datetime(value) or datetime.max.replace(tzinfo=timezone.utc))
+    created = str(intent.get("created_utc") or "")
+    return created if _utc_datetime(created) is not None else ""
+
+
+def _latest_native_position_boundary(frames: list[Any], master: str, side: str) -> str:
+    boundary = ""
+    for frame in frames[:-1]:
+        if not isinstance(frame, dict):
+            continue
+        portfolio = frame.get("portfolio_snapshot")
+        accounts = portfolio.get("accounts") if isinstance(portfolio, dict) else []
+        account = next((
+            row for row in accounts
+            if isinstance(row, dict) and str(row.get("account")) == master
+        ), {})
+        net = _account_mnq_quantity(account)
+        frame_side = "long" if net > 0 else "short" if net < 0 else "flat"
+        if frame_side not in {side}:
+            candidate = str(frame.get("created_utc") or (
+                portfolio.get("created_utc") if isinstance(portfolio, dict) else ""
+            ) or "")
+            if _utc_datetime(candidate) is not None:
+                boundary = candidate
+    return boundary
+
+
 def active_trade_state(
     packet: dict[str, Any],
     scenario: dict[str, Any],
@@ -816,14 +897,29 @@ def active_trade_state(
     latest = frames[-1] if isinstance(frames, list) and frames and isinstance(frames[-1], dict) else {}
     portfolio = latest.get("portfolio_snapshot")
     accounts = portfolio.get("accounts") if isinstance(portfolio, dict) else []
+    as_of = _utc_datetime(latest.get("created_utc") or (
+        portfolio.get("created_utc") if isinstance(portfolio, dict) else None
+    ))
     by_name = {
         str(account.get("account")): account
         for account in accounts if isinstance(account, dict) and account.get("account")
     }
-    decisions = _jsonl_objects(glitch_data / "intents" / "decisions.jsonl")
-    executions = _jsonl_objects(glitch_data / "intents" / "executions.jsonl")
+    decisions = [
+        row for row in _jsonl_objects(glitch_data / "intents" / "decisions.jsonl")
+        if _at_or_before(
+            (row.get("intent") if isinstance(row.get("intent"), dict) else row).get("created_utc"),
+            as_of,
+        )
+    ]
+    executions = [
+        row for row in _jsonl_objects(glitch_data / "intents" / "executions.jsonl")
+        if _at_or_before(row.get("recorded_utc"), as_of)
+    ]
     native_entry_times = _native_entry_times(executions)
-    outcomes = _jsonl_objects(glitch_data / "intents" / "hermes-trade-outcomes.jsonl")
+    outcomes = [
+        row for row in _jsonl_objects(glitch_data / "intents" / "hermes-trade-outcomes.jsonl")
+        if _at_or_before(row.get("recorded_utc"), as_of)
+    ]
     closed_entries = {str(row.get("intent_id")) for row in outcomes if row.get("intent_id")}
     submitted_entries = {
         str(row.get("intent_id")) for row in executions
@@ -835,7 +931,7 @@ def active_trade_state(
         str(row.get("master_account")): row
         for row in previous.get("trades", []) if isinstance(row, dict)
     }
-    now = datetime.now(timezone.utc)
+    now = as_of or datetime.now(timezone.utc)
     trades = []
     for book in scenario.get("books", []):
         master = str(book.get("master_account") or "")
@@ -849,7 +945,7 @@ def active_trade_state(
             if isinstance(row, dict)
             and str(row.get("instrument_root") or "").upper() == "MNQ"
         ), {})
-        open_entries = []
+        candidate_entries = []
         management = []
         for row in decisions:
             intent = row.get("intent") if isinstance(row.get("intent"), dict) else {}
@@ -859,26 +955,91 @@ def active_trade_state(
             intent_id = str(intent.get("intent_id") or "")
             if action in {"ENTER_LONG", "ENTER_SHORT"} and intent_id in submitted_entries and intent_id not in closed_entries:
                 if (action == "ENTER_LONG") == (side == "long"):
-                    open_entries.append(intent)
+                    candidate_entries.append(intent)
             elif action in {"HOLD", "MOVE_STOP", "MOVE_TP", "EXIT"}:
                 management.append(intent)
-        entry_ids = [str(row.get("intent_id")) for row in open_entries]
         prior = previous_by_account.get(master, {})
-        same_trade = prior.get("entry_intent_ids") == entry_ids and prior.get("side") == side
+        boundary_utc = _latest_native_position_boundary(frames, master, side)
+        current_leg_ids = {
+            str(order.get("leg_id") or _glitch_leg_id(order, role))
+            for order in account.get("working_order_details", [])
+            if isinstance(order, dict)
+            and (role := _native_order_role(order))
+            and (order.get("leg_id") or _glitch_leg_id(order, role))
+        }
+        prior_leg_ids = {
+            str(order.get("leg_id"))
+            for order in prior.get("working_orders", [])
+            if isinstance(order, dict) and order.get("leg_id")
+        }
+        same_trade = prior.get("side") == side and not boundary_utc
+        if current_leg_ids and prior_leg_ids and current_leg_ids.isdisjoint(prior_leg_ids):
+            same_trade = False
+        candidate_entries.sort(
+            key=lambda row: _utc_datetime(_intent_entry_utc(row, native_entry_times))
+            or datetime.min.replace(tzinfo=timezone.utc)
+        )
+        episode_start = boundary_utc or (str(prior.get("entry_decision_utc") or "") if same_trade else "")
+        episode_start_dt = _utc_datetime(episode_start)
+        if episode_start_dt is not None:
+            open_entries = [
+                row for row in candidate_entries
+                if (
+                    (_utc_datetime(_intent_entry_utc(row, native_entry_times)) or datetime.min.replace(tzinfo=timezone.utc))
+                    > episode_start_dt
+                    if boundary_utc else
+                    (_utc_datetime(_intent_entry_utc(row, native_entry_times)) or datetime.min.replace(tzinfo=timezone.utc))
+                    >= episode_start_dt
+                )
+            ]
+        else:
+            open_entries = candidate_entries[-1:]
+        entry_ids = [str(row.get("intent_id")) for row in open_entries]
         unrealized = float(position.get("unrealized_pnl", 0) or 0)
-        peak = max(float(prior.get("peak_unrealized_pnl_usd", unrealized) or unrealized), unrealized) if same_trade else unrealized
-        trough = min(float(prior.get("trough_unrealized_pnl_usd", unrealized) or unrealized), unrealized) if same_trade else unrealized
-        entry_candidates = []
-        for row in open_entries:
-            intent_id = str(row.get("intent_id") or "")
-            native_times = native_entry_times.get(intent_id, [])
-            if native_times:
-                entry_candidates.append(min(native_times))
-            elif row.get("created_utc"):
-                entry_candidates.append(str(row.get("created_utc")))
-        entry_utc = min(entry_candidates) if entry_candidates else str(prior.get("entry_decision_utc") or "")
-        if entry_utc:
-            management = [row for row in management if str(row.get("created_utc") or "") >= entry_utc]
+        observed_unrealized = [unrealized]
+        for frame in frames:
+            if not isinstance(frame, dict):
+                continue
+            frame_portfolio = frame.get("portfolio_snapshot")
+            frame_accounts = frame_portfolio.get("accounts") if isinstance(frame_portfolio, dict) else []
+            frame_account = next((
+                row for row in frame_accounts
+                if isinstance(row, dict) and str(row.get("account")) == master
+            ), {})
+            frame_net = _account_mnq_quantity(frame_account)
+            if (frame_net > 0) != (side == "long") or frame_net == 0:
+                continue
+            frame_utc = _utc_datetime(frame.get("created_utc") or (
+                frame_portfolio.get("created_utc") if isinstance(frame_portfolio, dict) else None
+            ))
+            if episode_start_dt is not None and frame_utc is not None and frame_utc <= episode_start_dt:
+                continue
+            frame_position = _mnq_position(frame_account)
+            try:
+                observed_unrealized.append(float(frame_position.get("unrealized_pnl", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        peak = max(observed_unrealized)
+        trough = min(observed_unrealized)
+        if same_trade:
+            try:
+                peak = max(float(prior.get("peak_unrealized_pnl_usd")), peak)
+                trough = min(float(prior.get("trough_unrealized_pnl_usd")), trough)
+            except (TypeError, ValueError):
+                pass
+        entry_candidates = [_intent_entry_utc(row, native_entry_times) for row in open_entries]
+        entry_candidates = [value for value in entry_candidates if value]
+        entry_utc = min(
+            entry_candidates,
+            key=lambda value: _utc_datetime(value) or datetime.max.replace(tzinfo=timezone.utc),
+        ) if entry_candidates else (str(prior.get("entry_decision_utc") or "") if same_trade else "")
+        management_start = _utc_datetime(entry_utc or boundary_utc)
+        if management_start is not None:
+            management = [
+                row for row in management
+                if (_utc_datetime(row.get("created_utc")) or datetime.min.replace(tzinfo=timezone.utc))
+                >= management_start
+            ]
         try:
             age_seconds = max(0, int((now - datetime.fromisoformat(entry_utc.replace("Z", "+00:00"))).total_seconds()))
         except (TypeError, ValueError):
@@ -1170,6 +1331,7 @@ def persist_outbox(
     packet_id: str,
     batch: dict[str, Any],
     directive: dict[str, Any] | None,
+    packet: dict[str, Any],
 ) -> None:
     if directive is not None:
         write_json_atomic(outbox_context_path(exchange, packet_id), {
@@ -1177,7 +1339,12 @@ def persist_outbox(
             "cycle_id": packet_id,
             "directive_id": directive.get("directive_id"),
         })
-    write_json_atomic(outbox_path, batch)
+    # Account groups are execution scope, not mutable reconciliation input.
+    # Preserve the exact packet manifest beside the decisions so a later
+    # outcome cannot be reclassified against today's AccountGroups.tsv.
+    persisted = dict(batch)
+    persisted["account_groups_tsv"] = str(packet.get("account_groups_tsv") or "")
+    write_json_atomic(outbox_path, persisted)
 
 
 def consume_outbox_directive(exchange: Path, packet_id: str) -> bool:
@@ -1365,12 +1532,14 @@ def validate_batch(
         else set()
     )
     unknown_batch_fields = set(batch).difference(
-        {"schema_version", "cycle_id", "next_review_seconds", "decisions"}
+        {"schema_version", "cycle_id", "next_review_seconds", "decisions", "account_groups_tsv"}
     )
     if unknown_batch_fields:
         raise ValueError("batch_unknown_fields:" + ",".join(sorted(unknown_batch_fields)))
     if batch.get("schema_version") != "glitch.intent.batch.v1":
         raise ValueError("batch_schema_version_invalid")
+    if "account_groups_tsv" in batch and not isinstance(batch["account_groups_tsv"], str):
+        raise ValueError("account_groups_manifest_invalid")
     if batch.get("cycle_id") != scenario["cycle_id"]:
         raise ValueError("cycle_id_mismatch")
     if batch.get("next_review_seconds", 300) not in {60, 300}:
@@ -2479,7 +2648,7 @@ def run_once(
             args.profile, prompt, scenario, directive, args.timeout_seconds
         )
         persist_wake_triggers(exchange, batch, packet_id)
-        persist_outbox(exchange, outbox_path, packet_id, batch, directive)
+        persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)
         write_json_atomic(attempt_path, {
             "schema_version": "glitch.hermes.model_attempt.v1",
             "cycle_id": packet_id,
@@ -2642,7 +2811,25 @@ def main() -> int:
     if not acquire_owner_lock(lock_path):
         return 0
     try:
-        return run_once(args, glitch_data, exchange)
+        # Consume the launch that acquired this ownership. Requests written
+        # while a model call is in flight are then drained one at a time using
+        # the latest native packet; there is still exactly one worker and no
+        # concurrent model call or duplicate intent replay.
+        consume_direct_cycle_request(exchange)
+        result = 0
+        while True:
+            result = run_once(args, glitch_data, exchange)
+            if result != 0:
+                return result
+            request = consume_direct_cycle_request(exchange)
+            if request is None:
+                return result
+            append_event(exchange / "hermes" / "events" / "cycles.jsonl", {
+                "schema_version": "glitch.hermes.cycle_event.v1",
+                "event": "direct_cycle_coalesced",
+                "recorded_utc": utc_now(),
+                "requested_utc": request.get("requested_utc"),
+            })
     finally:
         lock_path.unlink(missing_ok=True)
 

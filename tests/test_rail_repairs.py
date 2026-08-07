@@ -120,7 +120,7 @@ class RailRepairTests(unittest.TestCase):
         self.assertNotIn("intent_discarded_stale_packet", source)
         self.assertNotIn("stale_packet_discarded", source)
         self.assertIn(
-            "persist_outbox(exchange, outbox_path, packet_id, batch, directive)",
+            "persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)",
             source,
         )
 
