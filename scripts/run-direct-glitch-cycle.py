@@ -234,15 +234,22 @@ def consume_direct_cycle_request(exchange: Path) -> dict[str, Any] | None:
     path = exchange / "hermes" / "direct-cycle-request.json"
     if not path.is_file():
         return None
+    # Claim the marker before reading it.  Reading and then deleting the source
+    # path loses a newer launcher request if File.Replace lands between those
+    # operations.  Renaming is atomic on the exchange volume: a concurrent
+    # launcher either replaces the source before this claim (and is consumed),
+    # or creates a new source after it (and is drained by the next pass).
+    claimed = path.with_name(path.name + ".claim-" + uuid.uuid4().hex)
     try:
-        request = read_json(path)
+        os.replace(path, claimed)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        return read_json(claimed)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return None
-    return request
+    finally:
+        claimed.unlink(missing_ok=True)
 
 
 def parse_groups(tsv: str, policy: dict[str, Any]) -> list[dict[str, Any]]:

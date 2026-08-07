@@ -457,6 +457,35 @@ def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
     assert DIRECT.packet_fingerprint(first) == DIRECT.packet_fingerprint(second)
 
 
+def test_coalesced_request_claim_preserves_newer_launcher_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exchange = tmp_path / "exchange"
+    marker = exchange / "hermes" / "direct-cycle-request.json"
+    DIRECT.write_json_atomic(marker, {
+        "schema_version": "glitch.hermes.direct_cycle_request.v1",
+        "requested_utc": "2026-08-07T12:00:00Z",
+    })
+    original_read = DIRECT.read_json
+
+    def read_and_publish_newer(path: Path, *args, **kwargs):
+        value = original_read(path, *args, **kwargs)
+        if ".claim-" in path.name:
+            DIRECT.write_json_atomic(marker, {
+                "schema_version": "glitch.hermes.direct_cycle_request.v1",
+                "requested_utc": "2026-08-07T12:01:00Z",
+            })
+        return value
+
+    monkeypatch.setattr(DIRECT, "read_json", read_and_publish_newer)
+
+    claimed = DIRECT.consume_direct_cycle_request(exchange)
+
+    assert claimed["requested_utc"] == "2026-08-07T12:00:00Z"
+    assert original_read(marker)["requested_utc"] == "2026-08-07T12:01:00Z"
+
+
 def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
