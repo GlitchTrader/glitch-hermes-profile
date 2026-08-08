@@ -138,6 +138,13 @@ class RailRepairTests(unittest.TestCase):
         rail = next(item for item in ledger["items"] if item["id"] == "GHP-003")
         self.assertIn(version, "\n".join(rail.get("evidence") or []))
 
+    def test_epoch_reset_clears_derived_peak_state_only(self):
+        reset = (ROOT / "scripts" / "reset-hermes-trading-epoch.ps1").read_text(encoding="utf-8")
+        backend_targets = reset.split("$backendTargets = @(", 1)[1].split(")", 1)[0]
+        self.assertIn("'AccountPeaks.tsv'", backend_targets)
+        self.assertNotIn("'Journal.tsv'", backend_targets)
+        self.assertIn("Reload the Glitch AddOn before re-enabling AI", reset)
+
 
 if __name__ == "__main__":
     unittest.main()

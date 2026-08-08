@@ -112,6 +112,7 @@ $backendTargets = @(
     'hermes-archives',
     'replay',
     'Telemetry',
+    'AccountPeaks.tsv',
     'hermes\control-commands.jsonl',
     'hermes\cycles.jsonl',
     'hermes\epoch.json'
@@ -129,7 +130,7 @@ $preview = [ordered]@{
         'Hermes authentication and profile configuration',
         'distributed SOUL, skills, plugin, scripts, and setup',
         'Glitch AI policy, account groups, ratios, runtime policy, licensing, and UI settings',
-        'Glitch Journal, TradeLedger, CriticalWarnings, RiskLocks, AccountPeaks, and AnalyticsBridgeCache',
+        'Glitch Journal, TradeLedger, CriticalWarnings, RiskLocks, and AnalyticsBridgeCache',
         'NinjaTrader native accounts, positions, orders, and credentials'
     )
     destroyed = @(
@@ -251,12 +252,12 @@ if ($memoryFiles.Count -gt 0 -or $requestDumps.Count -gt 0) {
         'TradeLedger.tsv',
         'CriticalWarnings.tsv',
         'RiskLocks.tsv',
-        'AccountPeaks.tsv',
         'AnalyticsBridgeCache.json',
         'NinjaTrader accounts, positions, and orders'
     )
     operator_handoff = @(
         'Reset the intended NinjaTrader accounts.',
-        'Use Glitch Reset Data to clear Journal and Summary statistics.'
+        'Use Glitch Reset Data to clear Journal and Summary statistics.',
+        'Reload the Glitch AddOn before re-enabling AI so risk state is rebuilt from the clean peak store.'
     )
 } | ConvertTo-Json -Depth 5
