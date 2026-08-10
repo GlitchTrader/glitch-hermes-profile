@@ -1,40 +1,17 @@
 ---
 name: glitch-learn
-description: Debrief, supervise, plan, and maintain compact evidence-linked Glitch trading guidance without rewriting authoritative facts.
+description: Learn compact, attributable multi-instrument guidance from completed Glitch evidence.
 ---
-
 # Learn From Glitch
 
-NinjaTrader/Glitch facts outrank memory. Attribute trading cognition and PnL
-to the master; follower outcomes diagnose replication only. Never fabricate a
-fill, counterfactual PnL, outcome ordering, or resolved discrepancy.
+Current native Glitch facts outrank derived state, guidance, memory, labels, and inference. Learn only from completed master outcomes. Correlated Sim101/Sim301 or route copies are one market idea unless independence is established; follower results diagnose replication, not strategy quality.
 
-For each completed master outcome reconstruct the pre-decision regime,
-structure, order flow, Mag7/news context, intended and fill-anchored geometry,
-quantity architecture, management sequence, duration, MAE/MFE, and actual exit
-cause. Judge whether the stop sat beyond genuine invalidation and expected MNQ
-noise, whether targets matched remaining regime opportunity, and whether
-management preserved or destroyed the original edge.
+Separate market interpretation, instrument selection, entry geometry, position management, execution/replication, data availability, policy rejection, and infrastructure. Never turn an infrastructure failure into a trading lesson.
 
-Supervision looks for repeated, attributable, regime-conditioned patterns:
-directional versus rotational expectancy; geometry relative to ATR, pivots,
-liquidity and drift; premature exits; churn and nearby re-entry; staged versus
-immediate exposure; quantity; and decision-to-fill degradation. Flat decisions
-may reveal disciplined abstention or missed participation, but never realized
-counterfactual PnL. Infrastructure failures are code evidence, not strategy
-lessons.
+For each episode preserve the instrument, regime, current setup, next setup, transition evidence, order-flow evidence, entry geometry, management sequence, MFE/MAE, rollback, native receipts, and actual outcome. Do not invent counterfactual PnL or probability fields absent from the packet.
 
-Plans and guidance are advisory. Keep them compact, falsifiable, and reversible.
-One outcome remains episodic. Promote durable guidance only from repeated
-comparable completed master evidence with explicit contradiction review,
-evaluation criteria, and rollback conditions. Preserve conflicting evidence
-instead of averaging it away.
+Evaluate ex ante forecasts when present: continuation, reversal, target-before-stop, next 5–10-candle path, regime, and setup transition. Track calibration and sample eligibility separately from realized PnL.
 
-Evaluate progress against approximately 0.4%-2% of master account size per day
-over a meaningful sample, including drawdown, expectancy, duration, and churn.
-This objective is never a quota, fixed per-trade risk, or pressure to enter.
+Promote only repeated comparable evidence with contrary-evidence review, one conditional adjustment, an evaluation metric, and rollback condition. Guidance must be compact, falsifiable, reversible, and subordinate to current evidence. Never promote fixed quantity, stop distance, ATR multiple, automatic breakeven, forced session recipe, daily quota, martingale, grid, or blind averaging-down rule.
 
-When authoritative records disagree, append the old claim, current evidence,
-correction, uncertainty, and UTC time. Never erase history, reset an account or
-baseline, edit Glitch truth, loosen risk, place a bookkeeping trade, or call
-execution/control tools.
+A cognitive overlay may change only the designated learned clause and must preserve authority, scope, action, identity, JSON, protection, execution, and risk text. Logging, debriefing, generated plans, and status changes are not proof of cognition improvement.

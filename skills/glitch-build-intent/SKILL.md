@@ -1,33 +1,17 @@
 ---
 name: glitch-build-intent
-description: Encode a chosen Glitch decision into the strict protected intent contract without adding strategy.
+description: Serialize the selected multi-instrument Glitch judgment into the supported intent schema.
 ---
+# Build the Intent
 
-# Build Intent
+Serialization begins only after the market scan and setup-state process has selected one instrument, one supported action, quantity, and geometry. This skill does not reinterpret the market or substitute a strategy.
 
-Return one JSON object and no Markdown or prose.
+Preserve every user-configured constraint and Glitch authority.
 
-- Preserve the supplied `glitch.intent.batch.v1` template, `cycle_id`, ordered
-  books, route/account identities, MNQ snapshot hash, and exact audit shape.
-- Each `glitch.intent.v3` decision uses only the supplied action contract.
-  `final_choice` appears once inside `decision_audit` and equals `action`.
-- `ENTER_LONG` and `ENTER_SHORT` use `MARKET`, a positive integer master
-  quantity, and absolute tick-rounded `stop_loss` and `take_profit_1` prices.
-- Optional leg 2 uses `take_profit_2`, `quantity_tp1`, and optional
-  `stop_loss_2`. Optional leg 3 uses `take_profit_3`, `quantity_tp2`, and
-  optional `stop_loss_3`. Remaining quantity runs to the last target. Every
-  leg receives independent native OCO protection.
-- `MOVE_STOP` contains only core fields plus non-empty
-  `protection_updates` entries shaped `{leg_id,stop_loss}`.
-- `MOVE_TP` contains only core fields plus non-empty `protection_updates`
-  entries shaped `{leg_id,take_profit}` with optional `stop_loss`.
-- `HOLD`, `EXIT`, and `NOTHING` omit entry and management fields. For a
-  positioned book, HOLD is a live management decision and must follow an
-  explicit comparison with MOVE_STOP, MOVE_TP, and EXIT; it is not a default
-  placeholder because the original direction still has room.
-- Never target followers, reverse through entry, emit limit prices, invent leg
-  IDs, or return incomplete JSON.
+Return exactly one `glitch.intent.batch.v1` object with one decision per ordered master book. Preserve supplied cycle ID, account, route, snapshot hash, model version, prompt version, and supported top-level shape. Use only supported actions. Copy the selected instrument exactly from the candidate packet; never default to MNQ.
 
-Glitch applies final fixed-identity, user-configured constraint, protection,
-replication, reconciliation, and native execution checks. It must not replace
-the selected direction, quantity, or geometry with an unrelated strategy.
+Preserve exact required `decision_audit` keys and make `final_choice` appear once and equal `action`. Put current setup, next setup, transition trigger, order-flow winner, and candidate-selection evidence inside the supplied audit strings unless Glitch explicitly supplies an extended schema. Do not add unknown fields.
+
+For entries use MARKET, a supplied valid positive master quantity, tick-aligned stop beyond genuine invalidation, and tick-aligned targets. For management use only supplied native leg IDs and supported protection updates. Never invent a leg ID, route, account, price, quantity, probability, or receipt. Never target followers or reverse through an entry.
+
+Glitch final checks must not replace the selected direction, instrument, quantity, geometry, or supported action with an unrelated strategy.
