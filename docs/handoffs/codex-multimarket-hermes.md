@@ -35,31 +35,11 @@ Latest live packet:
 - current flow includes cumulative delta, delta change, delta velocity, delta acceleration, aggression balance, price-flow divergence, and classified volume
 - timeframe bars are supplied for 1m/5m/15m/60m
 - latest packet does not contain native positions for the observed accounts
-- policy has no explicit `exploration_permission` field
+- policy scope is represented by the UI-enabled master books and instrument allowlist; there is no separate manual exploration permission
 
 ## Required Codex work
 
-### 1. Explicit exploration permission
-
-Add an authoritative policy field, for example:
-
-```json
-"exploration_permission": {
-  "enabled": true,
-  "scope": ["Sim101", "Sim301"],
-  "instruments": ["MNQ", "MES", "M2K"],
-  "expires_utc": "..."
-}
-```
-
-Requirements:
-
-- Hermes must not infer permission from `mode`, account names, or simulated labels.
-- Permission must be validated per ordered master account and instrument.
-- Omitted, stale, contradictory, or partial permission must mean survival posture.
-- Include the field in the immutable packet and policy validation trail.
-
-### 2. Validate multi-instrument intent acceptance
+### 1. Validate multi-instrument intent acceptance
 
 Add integration tests and, if required, executor changes proving that a valid intent can select `MES` or `M2K` when those instruments are in the authoritative allowlist.
 
@@ -161,11 +141,11 @@ Do not add synthetic counterfactual PnL.
 
 1. A live packet containing MNQ, MES, and M2K reaches Hermes unchanged.
 2. Hermes can select any allowlisted instrument in a valid intent.
-3. Glitch accepts and executes a selected MES/M2K intent in an explicitly permitted simulated scope.
+3. Glitch accepts and executes a selected MES/M2K intent within the UI-enabled simulated master scope.
 4. Glitch rejects an intent for a non-allowlisted instrument with an authoritative receipt.
 5. Native protection and quantity validation use the selected instrument's metadata.
 6. No follower receives an independent decision.
-7. Exploration permission is explicit, scoped, and expiry-aware.
+7. The UI-enabled master scope remains the sole authority for active simulated trade scope; no parallel manual permission gate exists.
 8. Per-candle order-flow fields remain null/unknown when unavailable and never become fabricated directional evidence.
 9. Existing MNQ behavior and all current contract tests remain valid.
 10. Reconciliation records instrument, scope, selected setup metadata where available, and native receipts.

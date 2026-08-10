@@ -34,7 +34,7 @@ ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", 
 ACTION_ALIASES = {"NO_ACTION": "NOTHING"}
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_VERSION = "direct-v11-multi-instrument-setup-state"
+DIRECT_PROMPT_VERSION = "direct-v12-mandatory-candidate-comparison"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -53,6 +53,19 @@ DECISION_AUDIT_FIELDS = {
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
     "decisive_evidence", "disconfirming_evidence", "change_condition", "final_choice",
 }
+# The existing Glitch contract keeps decision_audit as strings.  We use the
+# decisive_evidence string as a strict Hermes-owned comparison ledger so the
+# multi-instrument cognition is mandatory without changing the wire schema.
+CANDIDATE_COMPARISON_MARKER = "INSTRUMENT_COMPARISON_V1"
+CANDIDATE_COMPARISON_FIELDS = (
+    "REGIME", "LOCATION", "EVIDENCE", "BULLISH_SETUP", "BEARISH_SETUP",
+    "CURRENT_SETUP", "NEXT_SETUP", "SETUP_PHASE", "TRANSITION_TRIGGER",
+    "OBJECTIVE", "INVALIDATION", "ROOM", "DELTA_PRICE_RESPONSE",
+    "ORDER_FLOW_WINNER", "CONTINUATION_PROBABILITY", "REVERSAL_PROBABILITY",
+    "TARGET_BEFORE_STOP_PROBABILITY", "RISK_GEOMETRY", "DATA_QUALITY",
+    "EXECUTION_UNCERTAINTY", "EXPOSURE_CORRELATION", "ASYMMETRY", "RANK",
+    "STATUS", "REJECTION_REASON",
+)
 FORECAST_FIELDS = {"event", "probability", "method", "confidence"}
 ALLOWED_DECISION_FIELDS = ALLOWED_DECISION_FIELDS | {"forecast"}
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
@@ -1595,6 +1608,78 @@ def selected_instrument_context(book: dict[str, Any], instrument: str) -> dict[s
     return fallback if isinstance(fallback, dict) else {}
 
 
+def candidate_comparison_template(candidates: list[dict[str, Any]]) -> str:
+    lines = [CANDIDATE_COMPARISON_MARKER]
+    for candidate in candidates:
+        root = instrument_root(candidate.get("instrument") or candidate.get("instrument_root"))
+        if not root:
+            continue
+        lines.append(f"INSTRUMENT {root}:")
+        for field in CANDIDATE_COMPARISON_FIELDS:
+            lines.append(f"{field}=REPLACE_WITH_CURRENT_PACKET_EVIDENCE")
+    lines.extend([
+        "RANKING=REPLACE_WITH_ALL_CANDIDATES_IN_ORDER",
+        "SELECTION_INSTRUMENT=REPLACE_WITH_TOP_SUPPORTED_CANDIDATE_OR_REFERENCE_CANDIDATE",
+        "SELECTION_ACTION=REPLACE_WITH_ACTION",
+        "SELECTION_REASON=REPLACE_WITH_COMPARATIVE_REASON",
+    ])
+    return "\n".join(lines)
+
+
+def validate_candidate_comparison(
+    text: str,
+    candidates: list[str] | set[str],
+    selected_instrument: str,
+    action: str,
+    index: int,
+) -> None:
+    """Require a complete, symmetric setup ledger before any intent is valid."""
+    if not isinstance(text, str) or CANDIDATE_COMPARISON_MARKER not in text:
+        raise ValueError(f"candidate_comparison_missing:{index}")
+    expected = {instrument_root(value) for value in candidates if instrument_root(value)}
+    sections: dict[str, str] = {}
+    current: str | None = None
+    body: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^INSTRUMENT\s+([A-Za-z0-9._-]+)\s*:\s*$", line)
+        if match:
+            if current is not None:
+                sections[current] = "\n".join(body)
+            current = instrument_root(match.group(1))
+            body = []
+            continue
+        if current is not None:
+            body.append(line)
+    if current is not None:
+        sections[current] = "\n".join(body)
+    if set(sections) != expected:
+        missing = sorted(expected - set(sections))
+        extra = sorted(set(sections) - expected)
+        raise ValueError(f"candidate_comparison_instruments:{index}:missing={','.join(missing)}:extra={','.join(extra)}")
+    for root, section in sections.items():
+        for field in CANDIDATE_COMPARISON_FIELDS:
+            match = re.search(rf"(?mi)^(?:[-*]\s*)?{re.escape(field)}\s*=\s*(.+?)\s*$", section)
+            if not match or not match.group(1).strip():
+                raise ValueError(f"candidate_comparison_field_missing:{index}:{root}:{field}")
+            value = match.group(1).strip()
+            if value.upper().startswith("REPLACE_WITH_") or value in {"...", "?"}:
+                raise ValueError(f"candidate_comparison_field_placeholder:{index}:{root}:{field}")
+    ranking = re.search(r"(?mi)^RANKING\s*=\s*(.+?)\s*$", text)
+    selection = re.search(r"(?mi)^SELECTION_INSTRUMENT\s*=\s*([A-Za-z0-9._-]+)\s*$", text)
+    selection_action = re.search(r"(?mi)^SELECTION_ACTION\s*=\s*([A-Za-z_]+)\s*$", text)
+    selection_reason = re.search(r"(?mi)^SELECTION_REASON\s*=\s*(.+?)\s*$", text)
+    if not ranking or not ranking.group(1).strip() or not selection or not selection_action or not selection_reason:
+        raise ValueError(f"candidate_comparison_selection_incomplete:{index}")
+    ranked_text = ranking.group(1).upper()
+    if any(root not in ranked_text for root in expected):
+        raise ValueError(f"candidate_comparison_ranking_incomplete:{index}")
+    if instrument_root(selection.group(1)) != instrument_root(selected_instrument):
+        raise ValueError(f"candidate_comparison_selection_instrument_mismatch:{index}")
+    if selection_action.group(1).upper() != action:
+        raise ValueError(f"candidate_comparison_selection_action_mismatch:{index}")
+
+
 def validate_batch(
     batch: dict[str, Any],
     scenario: dict[str, Any],
@@ -1673,6 +1758,14 @@ def validate_batch(
             raise ValueError(f"action_invalid:{index}")
         if audit["final_choice"] != action:
             raise ValueError(f"decision_audit_choice_mismatch:{index}")
+        if candidate_roots:
+            validate_candidate_comparison(
+                audit["decisive_evidence"],
+                candidate_roots,
+                selected_instrument,
+                action,
+                index,
+            )
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
             if "protection_updates" in intent:
                 raise ValueError(f"entry_contains_protection_updates:{index}")
@@ -2219,6 +2312,7 @@ def build_prompt(
     directive: dict[str, Any] | None = None,
 ) -> str:
     decisions = []
+    comparison_template = candidate_comparison_template(scenario["market"].get("candidates", []))
     for book in scenario["books"]:
         exposure = book.get("exposure")
         master = exposure[0] if isinstance(exposure, list) and exposure else {}
@@ -2243,7 +2337,7 @@ def build_prompt(
                 "flat_case": "Replace with compact neutral evidence.",
                 "aggressive_case": "Replace with the aggressive alternative.",
                 "conservative_case": "Replace with the conservative alternative.",
-                "decisive_evidence": "Replace with the most likely near-term path.",
+                "decisive_evidence": comparison_template,
                 "disconfirming_evidence": "Replace with evidence against that path.",
                 "change_condition": "Replace with the concrete reassessment trigger.",
                 "final_choice": action,
@@ -2269,9 +2363,12 @@ def build_prompt(
         "CURRENT_CYCLE.execution_scope is authoritative for ordered master books, route/account identities, snapshot hash, valid master quantities, current exposure, native protection context, supplied instrument candidates, and constraints. "
         "CURRENT_CYCLE.recent_glitch_ledger is bounded context; latest native facts outrank its derived active_trade_state, and outcome-backed plan/guidance remain advisory. "
         "Followers are replication context only and never receive independent decisions. "
-        "Scan every supplied instrument symmetrically. Use the five supplied one-minute frames as an ordered path; use 5m for local timing and 15m/60m for regime context. Live or in-progress rows are observations, not completed-candle confirmation. "
+        "Do not form a thesis for one instrument and then glance at the others. First complete a symmetric candidate ledger for every supplied instrument, then rank candidates, then choose the action. Use the five supplied one-minute frames as an ordered path; use 5m for local timing and 15m/60m for regime context. Live or in-progress rows are observations, not completed-candle confirmation. "
+        "For EACH instrument, explicitly compare both paths: BULLISH_SETUP is the evidence-supported long path and its trigger, objective, invalidation, room, and status; BEARISH_SETUP is the evidence-supported short path and its trigger, objective, invalidation, room, and status. Also state REGIME, LOCATION, EVIDENCE, CURRENT_SETUP, NEXT_SETUP, SETUP_PHASE, TRANSITION_TRIGGER, DELTA_PRICE_RESPONSE, ORDER_FLOW_WINNER, CONTINUATION_PROBABILITY, REVERSAL_PROBABILITY, TARGET_BEFORE_STOP_PROBABILITY, RISK_GEOMETRY, DATA_QUALITY, EXECUTION_UNCERTAINTY, EXPOSURE_CORRELATION, ASYMMETRY, RANK, STATUS, and REJECTION_REASON. A bullish or bearish setup may be absent, weak, mature, exhausted, or invalid; do not manufacture one. If a numeric probability is unsupported, use UNKNOWN with the limitation rather than fabricate precision. "
+        "Only after all instrument blocks are complete, rank every candidate and select the best supported instrument/setup or choose NOTHING. NOTHING is a global conclusion only after comparing all supplied instruments; it is not shorthand for declining the primary instrument. "
+        "Write the complete comparison in decision_audit.decisive_evidence using exactly the supplied INSTRUMENT_COMPARISON_V1 template. Keep one block for every candidate, replace every placeholder, include every candidate in RANKING, and make SELECTION_INSTRUMENT and SELECTION_ACTION agree with instrument and action. Do not return an incomplete single-instrument audit. "
         "When flat compare ENTER_LONG, ENTER_SHORT, and NOTHING symmetrically. When positioned compare HOLD, MOVE_STOP, MOVE_TP, EXIT, and any independently justified same-direction protected addition. "
-        "Use only current contract fields and supported actions. Treat stale depth, low volume, weak ADX/tradeability, mixed flow, and incomplete acceptance as uncertainty rather than vetoes. Do not use unconfirmed or not confirmed as a standalone reason for NOTHING. Use the supplied operator hypothesis library as evidence to test, not as fixed rules: inspect cheap exhaustion pivots, sweep/reclaim behavior, five-to-ten-candle directional odds, regime and ATR, session phase, and remaining asymmetry. When every ordered master book is explicitly simulated in the current packet and policy permits exploration, use a lower-hesitation training posture: prefer a small bounded anticipatory entry over NOTHING when location, credible room beyond ordinary noise, structural invalidation beyond noise, and positive survival-adjusted asymmetry exist despite imperfect confirmation. Long idle periods are an audit cue, not an instruction to trade; never force a side or use a slash command to create activity. If any ordered book is not explicitly simulated, revert to survival posture. "
+        "Use only current contract fields and supported actions. Treat stale depth, low volume, weak ADX/tradeability, mixed flow, and incomplete acceptance as uncertainty rather than vetoes. Do not use unconfirmed or not confirmed as a standalone reason for NOTHING. Use the supplied operator hypothesis library as evidence to test, not as fixed rules: inspect cheap exhaustion pivots, sweep/reclaim behavior, five-to-ten-candle directional odds, regime and ATR, session phase, and remaining asymmetry. When every ordered master book is explicitly simulated in the current packet, use a lower-hesitation training posture: prefer a small bounded anticipatory entry over NOTHING when location, credible room beyond ordinary noise, structural invalidation beyond noise, and positive survival-adjusted asymmetry exist despite imperfect confirmation. The UI-enabled trade scope is authoritative; do not require or invent a separate manual exploration permission. Long idle periods are an audit cue, not an instruction to trade; never force a side or use a slash command to create activity. If any ordered book is not explicitly simulated, revert to survival posture. "
 
         "For positioned books, distinguish normal adverse excursion, thesis deterioration, and thesis invalidation. Before intervention ask what changed besides price moving against me. Read supplied active_trade_state when present: peak favorable excursion and rollback from peak are current management evidence and must not be reset to entry/current-price analysis. If a trade had positive peak PnL and then rolls through breakeven or gives back a material portion of that peak, explicitly compare MOVE_STOP above breakeven, MOVE_TP, EXIT, and HOLD; a still-bearish thesis does not by itself justify surrendering realized-protection opportunity. "
         "When favorable progress is near the credible objective, explicitly compare protection above breakeven, early realization, MOVE_TP, and HOLD; roughly ninety percent of the path is an attention cue, not an automatic trigger. Protect earned asymmetry when reversal or sweep evidence rises, but do not claim a native change without an authoritative receipt. A HOLD rationale is incomplete after substantial favorable progress unless it names why no valid above-breakeven protection and no early MOVE_TP or EXIT is superior; do not dismiss protection with a generic inside-noise statement without identifying the case-specific structural/noise level. "
@@ -2689,8 +2786,9 @@ def run_once(
         batch, output_repair_count = invoke_validated_batch(
             args.profile, prompt, scenario, directive, args.timeout_seconds
         )
-        persist_wake_triggers(exchange, batch, packet_id)
-        persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)
+        if not args.dry_run:
+            persist_wake_triggers(exchange, batch, packet_id)
+            persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)
         write_json_atomic(attempt_path, {
             "schema_version": "glitch.hermes.model_attempt.v1",
             "cycle_id": packet_id,
