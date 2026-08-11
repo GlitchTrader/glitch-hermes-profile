@@ -1259,6 +1259,29 @@ def require_explicit_wake_triggers(audit: dict[str, Any], triggers: list[dict[st
         raise ValueError(f"wake_triggers_missing_for_change_condition:{index}:{missing}")
 
 
+def normalize_wake_triggers(intent: dict[str, Any]) -> None:
+    """Repair the model's wake-trigger presentation before strict validation."""
+    audit = intent.get("decision_audit")
+    condition = str(audit.get("change_condition", "")) if isinstance(audit, dict) else ""
+    canonical: set[tuple[str, float]] = set()
+    raw = intent.get("wake_triggers")
+    candidates = raw if isinstance(raw, list) else ([] if raw is None else [raw])
+    for trigger in candidates:
+        if isinstance(trigger, dict):
+            direction = str(trigger.get("direction", "")).upper()
+            raw_price = trigger.get("price")
+            if direction in {"ABOVE", "BELOW"} and isinstance(raw_price, (int, float)) \
+                    and not isinstance(raw_price, bool) and math.isfinite(float(raw_price)):
+                canonical.add((direction, float(raw_price)))
+        elif isinstance(trigger, str):
+            canonical.update(explicit_price_crosses(trigger))
+    canonical.update(explicit_price_crosses(condition))
+    intent["wake_triggers"] = [
+        {"type": "PRICE_CROSS", "direction": direction, "price": price}
+        for direction, price in sorted(canonical)
+    ]
+
+
 def packet_current_price(packet: dict[str, Any]) -> float | None:
     frames = packet.get("frames")
     if not isinstance(frames, list) or not frames:
@@ -1852,6 +1875,7 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
             if "wake_triggers" not in intent and "wake_trigger" in intent:
                 legacy = intent.pop("wake_trigger")
                 intent["wake_triggers"] = [] if legacy is None else [legacy]
+            normalize_wake_triggers(intent)
             try:
                 uuid.UUID(str(intent.get("intent_id", "")))
             except (ValueError, TypeError, AttributeError):
