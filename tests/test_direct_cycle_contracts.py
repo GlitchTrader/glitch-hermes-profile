@@ -957,9 +957,9 @@ def test_prompt_mirrors_change_condition_prices_into_wake_triggers() -> None:
 
     prompt = DIRECT.build_prompt(packet, scenario, {"outcomes": []})
 
-    assert "Mirror explicit above/below prices in change_condition" in prompt
+    assert "Keep wake_triggers empty" in prompt
+    assert "mirrors explicit instrument-labeled above/below prices from change_condition" in prompt
     assert "a crossing wakes one immediate reassessment" in prompt
-    assert "Keep wake_triggers empty" not in prompt
 
 
 def test_fired_trigger_wakes_one_flat_review_between_scheduled_scans(tmp_path: Path, monkeypatch) -> None:

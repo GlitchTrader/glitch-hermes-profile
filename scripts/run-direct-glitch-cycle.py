@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v18-bounded-wake-triggers"
+DIRECT_PROMPT_REVISION = "direct-v18-derived-wake-triggers"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -3477,7 +3477,7 @@ def build_prompt(
         common
         + instructions
         + "Preserve required_output_template, cycle, route, account, instrument, snapshot hash, model version, prompt version, and every strict decision_audit key. final_choice must equal action. "
-        + "Mirror explicit above/below prices in change_condition into instrument-aware wake_triggers shaped exactly as {\"type\":\"PRICE_CROSS\",\"instrument\":\"MNQ\",\"direction\":\"ABOVE\",\"price\":0.0}; between scheduled scans a crossing wakes one immediate reassessment. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
+        + "Keep wake_triggers empty; the runtime mirrors explicit instrument-labeled above/below prices from change_condition into wake triggers, and a crossing wakes one immediate reassessment between scheduled reviews, so write change_condition as concrete instrument-labeled above/below price levels. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
     )
     return apply_cognitive_overlay(prompt, journals.get("active_cognitive_overlay"))
