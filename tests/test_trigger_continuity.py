@@ -290,6 +290,23 @@ def test_trigger_review_contract_requires_explicit_prior_status() -> None:
         raise AssertionError("an unknown prior trigger status was accepted")
 
 
+def test_trigger_review_accepts_instrument_labeled_prior_statuses() -> None:
+    lines = [DIRECT.TRIGGER_REVIEW_MARKER]
+    for field in DIRECT.TRIGGER_REVIEW_FIELDS:
+        value = "current evidence"
+        if field == "PRIOR_TRIGGER_REVIEW":
+            value = "M2K=FAILED; MES=HELD; MNQ=HELD. Evidence follows."
+        elif field == "SELECTION_INSTRUMENT":
+            value = "MNQ"
+        elif field == "SELECTION_ACTION":
+            value = "NOTHING"
+        lines.append(f"{field}={value}")
+
+    DIRECT.validate_trigger_review(
+        "\n".join(lines), {"M2K", "MES", "MNQ"}, "MNQ", "NOTHING", 0
+    )
+
+
 def test_trigger_review_rejects_deferring_setup_derivation_to_packet() -> None:
     lines = [DIRECT.TRIGGER_REVIEW_MARKER]
     for field in DIRECT.TRIGGER_REVIEW_FIELDS:

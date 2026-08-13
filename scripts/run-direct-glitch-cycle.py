@@ -2221,9 +2221,22 @@ def validate_trigger_review(
         raise ValueError(f"trigger_review_selection_instrument_mismatch:{index}")
     if values["SELECTION_ACTION"].upper() != action:
         raise ValueError(f"trigger_review_selection_action_mismatch:{index}")
-    status = values["PRIOR_TRIGGER_REVIEW"].split(maxsplit=1)[0].rstrip(":.,;").upper()
-    if status not in {"HELD", "FAILED", "EXPIRED"}:
-        raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
+    status_value = values["PRIOR_TRIGGER_REVIEW"]
+    allowed_statuses = {"HELD", "FAILED", "EXPIRED"}
+    status = status_value.split(maxsplit=1)[0].rstrip(":.,;").upper()
+    if status not in allowed_statuses:
+        labeled_statuses = re.findall(
+            r"\b([A-Za-z0-9._-]+)\s*=\s*([A-Za-z]+)\b", status_value
+        )
+        if (
+            not labeled_statuses
+            or any(
+                instrument_root(instrument) not in expected
+                or labeled_status.upper() not in allowed_statuses
+                for instrument, labeled_status in labeled_statuses
+            )
+        ):
+            raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
     validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
