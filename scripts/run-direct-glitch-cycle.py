@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v15-completed-bar-cadence"
+DIRECT_PROMPT_REVISION = "direct-v16-bounded-single-call"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -2422,6 +2422,9 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
                         intent[canonical] = intent.pop(alias)
                     elif intent[canonical] == intent[alias]:
                         intent.pop(alias)
+                forecast = intent.get("forecast")
+                if isinstance(forecast, dict) and isinstance(forecast.get("method"), str):
+                    forecast["method"] = forecast["method"].strip()[:128]
             if action in {"MOVE_STOP", "MOVE_TP"}:
                 for field in ENTRY_FIELDS | ENTRY_RANGE_FIELDS:
                     intent.pop(field, None)
@@ -2478,13 +2481,61 @@ def _attach_observation_layers(instrument: dict[str, Any]) -> None:
     instrument["heuristic_projections"] = projections
 
 
-def _compact_model_bar(bar: dict[str, Any]) -> dict[str, Any]:
+def _compact_model_bar(bar: dict[str, Any], *, latest_frame: bool) -> dict[str, Any]:
     """Remove observation aliases while preserving native facts and analytics."""
     value = dict(bar)
     value.pop("native_observations", None)
     value.pop("heuristic_projections", None)
     if not value.get("descriptive_state"):
         value.pop("descriptive_state", None)
+    if latest_frame:
+        return value
+    indicators = value.get("indicators")
+    if isinstance(indicators, dict):
+        value["indicators"] = {
+            key: indicators.get(key) for key in (
+                "atr", "adx", "rsi", "z_score", "di_plus", "di_minus",
+                "macd_histogram", "order_flow_cumulative_delta",
+                "order_flow_delta_change", "order_flow_vwap_deviation",
+                "order_flow_aggression_balance", "order_flow_depth_imbalance",
+            ) if key in indicators
+        }
+    analytics = value.get("derived_analytics")
+    if isinstance(analytics, dict):
+        value["derived_analytics"] = {
+            key: analytics.get(key) for key in (
+                "directional_score", "tradeability_score", "order_flow_score",
+                "order_flow_confidence", "order_flow_reliability",
+            ) if key in analytics
+        }
+    descriptive = value.get("descriptive_state")
+    state = descriptive.get("descriptive_state") if isinstance(descriptive, dict) else None
+    if isinstance(state, dict):
+        flow = state.get("flow") if isinstance(state.get("flow"), dict) else {}
+        liquidity = state.get("liquidity") if isinstance(state.get("liquidity"), dict) else {}
+        quality = state.get("quality") if isinstance(state.get("quality"), dict) else {}
+        value["descriptive_state"] = {
+            "path": state.get("path"),
+            "flow": {
+                key: flow.get(key) for key in (
+                    "cumulative_delta", "delta_change", "delta_velocity",
+                    "delta_acceleration", "price_velocity_points",
+                    "price_flow_divergence", "aggression_balance",
+                    "classification_coverage",
+                ) if key in flow
+            },
+            "liquidity": {
+                key: liquidity.get(key) for key in (
+                    "spread_points", "spread_ticks", "quality",
+                    "last_quote_age_seconds", "last_depth_age_seconds",
+                ) if key in liquidity
+            },
+            "quality": {
+                key: quality.get(key) for key in (
+                    "as_of_utc", "bar_completeness", "order_flow_status", "depth_status",
+                ) if key in quality
+            },
+        }
     return value
 
 
@@ -2503,7 +2554,7 @@ def _compact_model_instrument(
     value.pop("heuristic_projections", None)
     retained_minutes = {1, 5, 15, 60} if latest_frame else {1}
     value["timeframe_bars"] = [
-        _compact_model_bar(bar)
+        _compact_model_bar(bar, latest_frame=latest_frame)
         for bar in value.get("timeframe_bars", [])
         if isinstance(bar, dict) and bar.get("minutes") in retained_minutes
     ]
@@ -2729,6 +2780,7 @@ def invoke_hermes(
         "--source", TRADING_SOURCE,
         "--model", CORE_MODEL,
         "--provider", CORE_PROVIDER,
+        "--reasoning", "low",
         "--max-turns", "1",
         "--skills", (
             "glitch-setup-state,glitch-order-flow,glitch-position-management,glitch-build-intent"
@@ -3244,7 +3296,7 @@ def build_prompt(
             "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
-            "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, a short evidence method grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
+            "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, an evidence method of at most 128 characters grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "
             "Use the supplied recent ledger and learning context; do not retrieve or write memory in the hot path. "
         )

@@ -661,6 +661,24 @@ def test_packet_preserves_economics_and_removes_duplicate_observation_aliases() 
     assert "heuristic_projections" not in bar
 
 
+def test_forecast_method_is_bounded_without_a_second_model_call() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    intent = batch["decisions"][0]
+    intent.update({
+        "action": "ENTER_LONG",
+        "forecast": {
+            "event": "STOP_BEFORE_PRIMARY_TARGET",
+            "probability": 0.4,
+            "method": "evidence " * 40,
+            "confidence": 0.6,
+        },
+    })
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert len(intent["forecast"]["method"]) == 128
+
+
 def test_flat_invocation_uses_exact_completed_five_minute_boundaries(tmp_path: Path) -> None:
     scenario = {"books": [{"master_account": "Sim101"}]}
 
