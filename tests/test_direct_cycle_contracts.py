@@ -937,3 +937,92 @@ def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     assert prompt.count('"operator_profile"') == 1
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
+
+
+def test_prompt_mirrors_change_condition_prices_into_wake_triggers() -> None:
+    scenario = multibook_flat_scenario()
+    for book in scenario["books"]:
+        book["followers"] = []
+        book["exposure"] = []
+        book["position_building_context"] = {"instrument": "MNQ"}
+    packet = {
+        "packet_id": "cycle-9",
+        "window_close_utc": "2026-08-13T10:05:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101"}, {"account": "Sim301"}]},
+        }],
+    }
+
+    prompt = DIRECT.build_prompt(packet, scenario, {"outcomes": []})
+
+    assert "Mirror explicit above/below prices in change_condition" in prompt
+    assert "a crossing wakes one immediate reassessment" in prompt
+    assert "Keep wake_triggers empty" not in prompt
+
+
+def test_fired_trigger_wakes_one_flat_review_between_scheduled_scans(tmp_path: Path, monkeypatch) -> None:
+    scenario = {"books": [{"master_account": "Sim101"}]}
+
+    def packet_at(minute: int, quantity: int = 0) -> dict:
+        return {
+            "packet_id": f"20260813T12{minute:02d}Z",
+            "window_close_utc": f"2026-08-13T12:{minute:02d}:00Z",
+            "frames": [{"portfolio_snapshot": {"accounts": [{
+                "account": "Sim101",
+                "positions": [] if quantity == 0 else [{
+                    "instrument_root": "MNQ",
+                    "market_position": "Long",
+                    "quantity": quantity,
+                }],
+            }]}}],
+        }
+
+    fired = [{"type": "PRICE_CROSS", "instrument": "MNQ", "direction": "ABOVE", "price": 100.0}]
+    monkeypatch.setattr(DIRECT, "fired_wake_triggers", lambda *_args: fired)
+
+    assert DIRECT.invocation_reason(packet_at(6), scenario, tmp_path, None) == "condition_change"
+    # A scheduled boundary scan supersedes the fired trigger with a full review.
+    assert DIRECT.invocation_reason(packet_at(5), scenario, tmp_path, None) == "scheduled"
+    # Positioned books never dispatch a flat trigger review.
+    assert DIRECT.invocation_reason(packet_at(6, 1), scenario, tmp_path, None) == "positioned"
+
+
+def test_shared_flat_trigger_review_requests_one_shared_decision() -> None:
+    scenario = multibook_flat_scenario()
+    for book in scenario["books"]:
+        book["followers"] = []
+        book["exposure"] = []
+        book["position_building_context"] = {"instrument": "MNQ"}
+    packet = {
+        "packet_id": "cycle-9",
+        "window_close_utc": "2026-08-13T10:06:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101"}, {"account": "Sim301"}]},
+        }],
+    }
+    context = {
+        "reason": "condition_change",
+        "fired_triggers": [{
+            "source_cycle_id": "source",
+            "instrument": "MNQ",
+            "direction": "ABOVE",
+            "price": 100.0,
+        }],
+    }
+
+    prompt = DIRECT.build_prompt(
+        packet,
+        scenario,
+        {"outcomes": []},
+        invocation_reason="condition_change",
+        invocation_context=context,
+    )
+
+    assert '"decision_mode":"trigger_review"' in prompt
+    assert prompt.count('"operator_profile"') == 1
+    assert "return exactly one decision object" in prompt
+    assert "binds the identical decision to every ordered master book" in prompt

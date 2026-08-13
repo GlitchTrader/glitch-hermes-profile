@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v17-shared-flat-decision"
+DIRECT_PROMPT_REVISION = "direct-v18-bounded-wake-triggers"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -3363,7 +3363,10 @@ def build_prompt(
         else "trigger_review" if trigger_review_only
         else "flat_scan"
     )
-    shared_flat = decision_mode == "flat_scan" and shared_flat_decision_scope(scenario)
+    shared_flat = (
+        decision_mode in {"flat_scan", "trigger_review"}
+        and shared_flat_decision_scope(scenario)
+    )
     decisions = []
     comparison_template = candidate_comparison_template(scenario["market"].get("candidates", []))
     template_books = scenario["books"][:1] if shared_flat else scenario["books"]
@@ -3466,15 +3469,15 @@ def build_prompt(
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "
             "Use the supplied recent ledger and learning context; do not retrieve or write memory in the hot path. "
         )
-        if shared_flat:
-            instructions += (
-                "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
-            )
+    if shared_flat:
+        instructions += (
+            "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
+        )
     prompt = (
         common
         + instructions
         + "Preserve required_output_template, cycle, route, account, instrument, snapshot hash, model version, prompt version, and every strict decision_audit key. final_choice must equal action. "
-        + "Keep wake_triggers empty; reassessment is driven by completed bars. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
+        + "Mirror explicit above/below prices in change_condition into instrument-aware wake_triggers shaped exactly as {\"type\":\"PRICE_CROSS\",\"instrument\":\"MNQ\",\"direction\":\"ABOVE\",\"price\":0.0}; between scheduled scans a crossing wakes one immediate reassessment. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
     )
     return apply_cognitive_overlay(prompt, journals.get("active_cognitive_overlay"))
@@ -3664,6 +3667,10 @@ def invocation_reason(
         return "positioned"
     if window.minute % 5 == 0:
         return "scheduled"
+    if fired_triggers is None:
+        fired_triggers = fired_wake_triggers(exchange, packet, scenario)
+    if fired_triggers:
+        return "condition_change"
     return None
 
 
@@ -3854,9 +3861,13 @@ def run_once(
     reason = invocation_reason(packet, scenario, exchange, directive)
     if reason is None:
         return 0
-    invocation_context = None
+    invocation_context = (
+        trigger_invocation_context(exchange, fired_wake_triggers(exchange, packet, scenario))
+        if reason == "condition_change" else None
+    )
     decision_mode = (
         "position_management" if all_scoped_books_positioned(scenario)
+        else "trigger_review" if invocation_context is not None
         else "flat_scan"
     )
     attempt_path = model_attempt_path(exchange, packet_id)
@@ -3899,6 +3910,7 @@ def run_once(
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
         if not args.dry_run:
+            persist_wake_triggers(exchange, batch, packet_id)
             persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)
         write_json_atomic(attempt_path, {
             "schema_version": "glitch.hermes.model_attempt.v1",
