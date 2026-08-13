@@ -30,7 +30,10 @@ PLUGIN_SPEC.loader.exec_module(PLUGIN)
 def scenario(cycle_id: str, *bindings: tuple[str, str]) -> dict:
     return {
         "cycle_id": cycle_id,
-        "market": {"snapshot_hash": "snapshot-1"},
+        "market": {
+            "snapshot_hash": "snapshot-1",
+            "candidates": [{"instrument": "MNQ", "current_price": 105}],
+        },
         "books": [
             {"route_id": route, "master_account": account}
             for route, account in bindings
@@ -239,6 +242,17 @@ def test_explicit_all_and_exact_route_are_persisted_and_reported(
 
 
 def valid_decision(route: str, account: str, action: str) -> dict:
+    comparison = [DIRECT.CANDIDATE_COMPARISON_MARKER, "INSTRUMENT MNQ:"]
+    comparison.extend(
+        f"{field}=supported MNQ evidence"
+        for field in DIRECT.CANDIDATE_COMPARISON_FIELDS
+    )
+    comparison.extend([
+        "RANKING=MNQ",
+        "SELECTION_INSTRUMENT=MNQ",
+        f"SELECTION_ACTION={action}",
+        "SELECTION_REASON=scoped fixture",
+    ])
     decision = {
         "schema_version": "glitch.intent.v3",
         "intent_id": f"intent-{route}",
@@ -258,7 +272,7 @@ def valid_decision(route: str, account: str, action: str) -> dict:
             "flat_case": "Flat case.",
             "aggressive_case": "Aggressive case.",
             "conservative_case": "Conservative case.",
-            "decisive_evidence": "Decisive evidence.",
+            "decisive_evidence": "\n".join(comparison),
             "disconfirming_evidence": "Disconfirming evidence.",
             "change_condition": "Review next packet.",
             "final_choice": action,
@@ -269,8 +283,16 @@ def valid_decision(route: str, account: str, action: str) -> dict:
         decision.update({
             "quantity": 1,
             "order_type": "MARKET",
-            "stop_loss": 100,
-            "take_profit_1": 110,
+            "stop_loss": 100 if action == "ENTER_LONG" else 110,
+            "take_profit_1": 110 if action == "ENTER_LONG" else 100,
+            "entry_range_low": 104,
+            "entry_range_high": 106,
+            "forecast": {
+                "event": "STOP_BEFORE_PRIMARY_TARGET",
+                "probability": 0.4,
+                "method": "fixture",
+                "confidence": 0.6,
+            },
         })
     return decision
 

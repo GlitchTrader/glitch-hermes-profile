@@ -179,6 +179,7 @@ def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometr
         "intent_id": "11111111-1111-4111-8111-111111111111",
         "created_utc": "2000-01-01T00:00:00Z",
         "action": "ENTER_SHORT",
+        "instrument": "MNQ",
         "account": "Sim101",
         "quantity": 1,
         "stop_loss": 29569.75,
@@ -253,6 +254,7 @@ def test_active_trade_state_starts_fresh_after_native_flat_boundary(tmp_path: Pa
         "intent_id": "11111111-1111-4111-8111-111111111111",
         "created_utc": "2026-08-06T10:30:00Z",
         "action": "ENTER_LONG",
+        "instrument": "MNQ",
         "account": "Sim101",
         "quantity": 1,
         "stop_loss": 29400,
@@ -262,6 +264,7 @@ def test_active_trade_state_starts_fresh_after_native_flat_boundary(tmp_path: Pa
         "intent_id": "22222222-2222-4222-8222-222222222222",
         "created_utc": "2026-08-07T00:45:54Z",
         "action": "ENTER_LONG",
+        "instrument": "MNQ",
         "account": "Sim101",
         "quantity": 1,
         "stop_loss": 29485.25,
@@ -271,18 +274,21 @@ def test_active_trade_state_starts_fresh_after_native_flat_boundary(tmp_path: Pa
         "intent_id": "33333333-3333-4333-8333-333333333333",
         "created_utc": "2026-08-06T10:31:00Z",
         "action": "HOLD",
+        "instrument": "MNQ",
         "account": "Sim101",
     }
     new_hold = {
         "intent_id": "44444444-4444-4444-8444-444444444444",
         "created_utc": "2026-08-07T00:47:00Z",
         "action": "HOLD",
+        "instrument": "MNQ",
         "account": "Sim101",
     }
     future_exit = {
         "intent_id": "55555555-5555-4555-8555-555555555555",
         "created_utc": "2026-08-07T00:48:00Z",
         "action": "EXIT",
+        "instrument": "MNQ",
         "account": "Sim101",
     }
     (glitch_data / "intents" / "decisions.jsonl").write_text(
@@ -385,6 +391,7 @@ def test_active_trade_state_preserves_zero_peak_for_continuing_native_leg(tmp_pa
         "intent_id": "11111111-1111-4111-8111-111111111111",
         "created_utc": "2026-08-07T00:00:00Z",
         "action": "ENTER_LONG",
+        "instrument": "MNQ",
         "account": "Sim101",
         "quantity": 1,
         "stop_loss": 29490,

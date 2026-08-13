@@ -20,11 +20,11 @@ Do not begin with the first instrument, the most familiar instrument, or a globa
 6. Identify the current auction winner and whether price is accepting that side's effort.
 7. Compare bullish and bearish path probabilities, target-before-stop probability, room, invalidation quality, maturity, and survival-adjusted asymmetry.
 8. Rank all instruments only after their complete records exist.
-9. Select the best supported instrument/setup or choose global `NOTHING`.
+9. Select the best supported instrument/setup or choose global `NOTHING` only if no valid setup is found.
 
 A bullish setup is not synonymous with an uptrend. A bearish setup is not synonymous with a downtrend. A current trend can be too extended to offer a good continuation, while a countertrend reversal can remain only a next setup until its transition trigger occurs. Do not turn the comparison into a forced long/short vote.
 
-The direct operator's `decision_audit.decisive_evidence` must contain the complete `INSTRUMENT_COMPARISON_V1` ledger for every supplied candidate. A single-instrument bull/bear debate is invalid even when the final action is `NOTHING`.
+When flat, the direct operator's `decision_audit.decisive_evidence` must contain the complete `INSTRUMENT_COMPARISON_V1` ledger for every supplied candidate. A single-instrument bull/bear debate is invalid even when the final action is `NOTHING`. When positioned, use `POSITION_MANAGEMENT_V1` instead.
 
 ## Setup and path state
 
@@ -41,7 +41,7 @@ Maintain competing hypotheses as an evolving path model for each candidate:
 - room and execution uncertainty;
 - why the candidate outranks or loses to each alternative.
 
-A microstructure break changes the setup state. It does not automatically require an opposite trade. Reassess location, room, invalidation, and asymmetry before acting.
+A microstructure break changes the setup state. It does not automatically require an opposite trade. Reassess location, room, invalidation, and asymmetry before acting. At a session extreme or stated first objective, distinguish continuation through the level from reversal at it: a single delta change, aggression reading, or one-minute bounce does not promote the opposing path without accepted price response through its named transition; until then it remains `NEXT` or conditional. Do not count a farther hypothetical level as current room until price has accepted through the nearer named objective or transition. When a continuation is locally late near opposing structure and the current response is not extending, treat the lack of fresh accepted movement as material execution uncertainty and reduce its asymmetry; it does not by itself veto an anticipatory entry when location, pivot-based invalidation, room beyond ordinary noise, and effort/price response still support it.
 
 ## Order flow
 
@@ -51,31 +51,31 @@ State who is winning the auction, whether their effort is accepted, what evidenc
 
 ## Instrument selection
 
-When flat, scan every eligible instrument before choosing an action. Compare candidates by bullish path, bearish path, current setup, next setup, transition clarity, path probability, target-before-stop probability, room, invalidation quality, setup maturity, order-flow agreement, execution uncertainty, account survival, current exposure, and correlation. The best candidate is not necessarily the instrument with the strongest raw directional score.
+When flat, scan every eligible instrument before choosing an action. Every instrument always has a current auction/path, even when that path is low-quality, late, conflicted, or not tradeable. Compare candidates by bullish path, bearish path, current setup, next setup, transition clarity, path quality, target-before-stop geometry, room, invalidation quality, setup maturity, order-flow agreement, execution uncertainty, account survival, current exposure, and correlation. The best candidate is not necessarily the instrument with the strongest raw directional score.
 
-`NOTHING` is valid only after the complete comparison. It means no candidate currently has supported bounded positive asymmetry, not merely that the primary candidate is inconvenient.
+`NOTHING` is valid only after the complete comparison and only when no candidate has sufficiently supported bounded positive asymmetry. UNKNOWN probabilities, incomplete flow, or an in-progress candle are not automatic vetoes, but if the resulting uncertainty consumes practical room or weakens target-before-stop quality, it can make `NOTHING` the best supported action. Uncertainty must be assessed and priced, not eliminated.
 
-When positioned, manage each native position by its actual instrument while still observing the other candidates for portfolio and correlation context. Do not let a thesis or position in one instrument suppress valid evidence in another, and do not reverse or cross instruments without supported intent and scope.
+When positioned, use the compact `POSITION_MANAGEMENT_V1` pass for each native position's actual instrument. Other instruments are correlation context only; do not spend the one-minute management pass rescanning for new exposure. Require an explicit `EXIT` and fresh authoritative native-flat confirmation before a later opposite-side entry.
 
 ## Position management
 
 For every positioned native book reconstruct the entry setup, current setup, next setup, current structure, native protection, peak favorable excursion, trough, rollback, movement through breakeven, and remaining objective.
 
-After material favorable excursion or rollback explicitly compare `HOLD`, `MOVE_STOP`, `MOVE_TP`, `EXIT`, and any independently justified protected addition. A still-valid higher-timeframe thesis is not sufficient reason to surrender substantial favorable excursion. Percentage cues are review prompts, never automatic rules. Stops remain beyond genuine structural invalidation or another supported valid level; never widen a stop to avoid a loss.
+After material favorable excursion or rollback explicitly compare `HOLD`, `MOVE_STOP`, `MOVE_TP`, `EXIT`, and any independently justified protected addition. Rebase that comparison on current price, accepted response, and remaining objective rather than the original entry thesis: an unbroken original invalidation or still-reachable target does not by itself make `HOLD` superior. When price is near the native target, a stated objective, or an opposing structural extreme and current response, delta-price agreement, or rollback weakens, state why each profit-preserving alternative loses to `HOLD`. A lack of a tighter structural stop, or an ordinary-noise objection to one proposed stop level, does not by itself reject `MOVE_TP` or `EXIT`. Percentage cues are review prompts, never automatic rules. A profit-protecting stop is at or above entry for a long and at or below entry for a short, subject to a supported valid level. Stops remain beyond genuine structural invalidation or another supported valid level; never widen a stop to avoid a loss or move mechanically to breakeven.
 
 Additions are not justified merely because price moved against an entry. A supported addition requires a distinct setup, independent trigger, objective, invalidation, bounded total exposure, and complete existing protection. Do not create grids or martingale behavior.
 
 ## Simulation and survival
 
-When the UI-enabled ordered master books are explicitly simulated, lower hesitation and prefer a small bounded anticipatory entry over `NOTHING` when location, room, structural invalidation, and positive survival-adjusted asymmetry exist. The UI trade-scope selection is the authority for which master books and instruments are active; do not invent a second manual exploration permission or infer scope from labels.
+When an ordered master book is explicitly simulated, permit an anticipatory entry when location, genuine pivot invalidation, practical stop/target scale for the instrument's current behavior, execution delay, and survival-adjusted asymmetry support it. Do not let a nominal ratio or a technically valid noise-sized bracket create positive asymmetry, but do not require perfect confirmation: incomplete flow, an in-progress candle, or late continuation is a reduction in confidence and room, not an automatic veto. Enter when the remaining practical edge survives that uncertainty; choose `NOTHING` when it does not. A quiet or unusually precise setup may justify smaller geometry only when current evidence supports it. Evaluate simulation posture independently for each ordered master book. The UI trade-scope selection is the authority for which books and instruments are active; do not invent a second manual exploration permission or infer scope from labels.
 
 Long idle periods are an audit cue, not a trade trigger. Do not force a side, use a quota, manufacture activity, or use unsupported commands.
 
 ## Learning
 
-Learn only from attributable completed master outcomes. Separate market cognition, entry geometry, management, execution/replication, data quality, policy rejection, and infrastructure. Group correlated routes and books as one market idea unless independence is established.
+Learn only from AI-origin attributable completed master outcomes. Manual trades are external context unless explicitly tagged for imitation. Separate market cognition, entry geometry, management, execution/replication, data quality, policy rejection, and infrastructure. Group correlated routes and books as one market idea unless independence is established.
 
-Parse the persisted `INSTRUMENT_COMPARISON_V1` ledger to evaluate per-instrument bullish/bearish setup calibration, ranking quality, transition forecasts, and whether the selected candidate actually had the best realized path. Logging, debriefing, or generated guidance is not proof of cognition improvement.
+For flat episodes, parse the persisted `INSTRUMENT_COMPARISON_V1` ledger to evaluate per-instrument bullish/bearish setup calibration, ranking quality, transition forecasts, and whether the selected candidate actually had the best realized path. Logging, debriefing, or generated guidance is not proof of cognition improvement.
 
 Record ex ante forecasts only from supplied evidence: continuation, reversal, target-before-stop, next 5–10-candle path, regime, and setup transition. Promote guidance only when repeated comparable evidence supports one compact conditional change with an evaluation metric, contradiction review, and rollback condition.
 

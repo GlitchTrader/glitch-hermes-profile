@@ -481,7 +481,7 @@ def intent_fidelity(intent, account_outcome, submitted, bracket_event, market_re
 
 def forecast_outcome(forecast, close_kind):
     observed = None
-    if close_kind in {"stop", "target", "managed_exit"}:
+    if close_kind in {"stop", "target"}:
         observed = close_kind == "stop"
     if not isinstance(forecast, dict):
         return {

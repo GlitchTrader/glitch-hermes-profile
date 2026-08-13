@@ -1,17 +1,63 @@
 ---
 name: glitch-build-intent
-description: Serialize the selected multi-instrument Glitch judgment into the supported intent schema.
+description: Serialize a fully compared multi-instrument Glitch judgment into the supported intent schema.
 ---
 # Build the Intent
 
-Serialization begins only after the market scan and setup-state process has selected one instrument, one supported action, quantity, and geometry. This skill does not reinterpret the market or substitute a strategy.
-
-Preserve every user-configured constraint and Glitch authority.
+When flat, serialization begins only after every eligible instrument has a complete `INSTRUMENT_COMPARISON_V1` ledger. When positioned, serialize the compact `POSITION_MANAGEMENT_V1` record for the active native instrument. Do not reinterpret the market during serialization or default to the first instrument.
 
 Return exactly one `glitch.intent.batch.v1` object with one decision per ordered master book. Preserve supplied cycle ID, account, route, snapshot hash, model version, prompt version, and supported top-level shape. Use only supported actions. Copy the selected instrument exactly from the candidate packet; never default to MNQ.
 
-Preserve exact required `decision_audit` keys and make `final_choice` appear once and equal `action`. Put current setup, next setup, transition trigger, order-flow winner, and candidate-selection evidence inside the supplied audit strings unless Glitch explicitly supplies an extended schema. Do not add unknown fields.
+Preserve the exact required `decision_audit` keys and make `final_choice` appear once and equal `action`. When flat, put the complete symmetric comparison in `decision_audit.decisive_evidence` using:
 
-For entries use MARKET, a supplied valid positive master quantity, tick-aligned stop beyond genuine invalidation, and tick-aligned targets. For management use only supplied native leg IDs and supported protection updates. Never invent a leg ID, route, account, price, quantity, probability, or receipt. Never target followers or reverse through an entry.
+```text
+INSTRUMENT_COMPARISON_V1
+INSTRUMENT MNQ:
+REGIME_LOCATION=...
+CURRENT_AUCTION=...
+BULLISH_PATH=...
+BEARISH_PATH=...
+NEXT_TRANSITION=...
+FIVE_TO_TEN_BAR_FORECAST=...
+DELTA_PRICE_RESPONSE=...
+OBJECTIVE_INVALIDATION=...
+ENTRY_RANGE=...
+NOISE_AND_GEOMETRY=...
+DATA_QUALITY=...
+EXECUTION_UNCERTAINTY=...
+ASYMMETRY=...
+RANK_STATUS_REJECTION=...
+...
+RANKING=...
+SELECTION_INSTRUMENT=...
+SELECTION_ACTION=...
+SELECTION_REASON=...
+```
 
-Glitch final checks must not replace the selected direction, instrument, quantity, geometry, or supported action with an unrelated strategy.
+Use one block for every supplied candidate, including candidates rejected for entry. `NOTHING` is allowed only after all blocks are complete. `SELECTION_INSTRUMENT` must equal the intent instrument even when `SELECTION_ACTION=NOTHING`; it identifies the top/reference candidate, not an order.
+
+For `ENTER_LONG` or `ENTER_SHORT`, use the exact entry contract:
+
+```json
+{
+  "action": "ENTER_LONG",
+  "quantity": 1,
+  "order_type": "MARKET",
+  "stop_loss": 0.0,
+  "take_profit_1": 0.0,
+  "entry_range_low": 0.0,
+  "entry_range_high": 0.0,
+  "forecast": {
+    "event": "STOP_BEFORE_PRIMARY_TARGET",
+    "probability": 0.0,
+    "method": "next five-to-ten one-minute bars from supplied evidence",
+    "confidence": 0.0
+  }
+}
+```
+
+The entry range must contain the current decision price and remain strictly between the structural stop and primary target. It expresses acceptable execution location, not a limit order. `probability` is the ex-ante chance that the native stop occurs before the primary target; it is calibration metadata, not a deterministic gate. Optional scale fields remain `take_profit_2`, `stop_loss_2`, `quantity_tp1`, `take_profit_3`, `stop_loss_3`, and `quantity_tp2`. Never emit `stop_price`, `target_price`, `entry_price`, an orders array, or `protection_updates` on a new entry.
+
+For positioned decisions use the exact `MOVE_STOP` and `MOVE_TP` examples in the position-management skill. For `NOTHING`, `HOLD`, `EXIT`, `MOVE_STOP`, and `MOVE_TP`, omit every entry and entry-range field. Never invent a leg ID, route, account, price, quantity, probability, or receipt. Never target followers or reverse through an entry.
+
+Preserve every user-configured constraint and Glitch authority. Glitch final checks must not replace the selected direction, instrument, quantity, geometry, or supported action with an unrelated strategy.

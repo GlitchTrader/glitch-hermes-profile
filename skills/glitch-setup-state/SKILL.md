@@ -1,18 +1,30 @@
 ---
 name: glitch-setup-state
-description: Maintain current and next setup states and transition them from supplied microstructure evidence.
+description: Maintain bullish, bearish, current, and next setup states for every candidate.
 ---
-# Current and Next Setup
+# Current, Directional, and Next Setup State
 
-Treat the market as an evolving path rather than a static bull/bear argument. Maintain:
+Treat each instrument as an evolving auction, not a static bull/bear label. Every instrument always has a current auction/path, even when it is low-quality or not tradeable. For every instrument maintain four separate concepts:
 
-- current setup and phase;
-- next plausible setup;
-- objective and invalidation for both;
-- current probabilistic winner;
+- **current setup:** the path currently active at this location;
+- **bullish setup:** the evidence-supported long path, including its trigger, objective, invalidation, and status;
+- **bearish setup:** the evidence-supported short path, including its trigger, objective, invalidation, and status;
+- **next setup:** the path that could become active after a defined transition.
+
+A bullish or bearish setup may be absent, conditional, mature, exhausted, failed, or invalid. Do not force one direction merely to fill a field. “Trend up” or “trend down” is context; it is not sufficient setup geometry.
+
+For each state record:
+
+- setup type and phase;
+- anchor/location;
+- accepted evidence;
+- missing evidence and uncertainty;
+- objective and genuine structural invalidation;
+- room beyond ordinary noise;
 - transition trigger;
-- evidence already accepted and evidence still missing.
+- order-flow winner and price response;
+- what would disconfirm the path.
 
-Use impulse, correction, continuation, exhaustion, sweep/reclaim, failed acceptance, displacement, absorption, and microstructure breaks as descriptive states, not fixed entry rules.
+A sweep/reclaim, failed acceptance, displacement, absorption, exhaustion, or microstructure break can transition the state. A break weakens or invalidates the affected path and may promote the next setup for reassessment; it does not force a reverse. At a session extreme or stated first objective, one delta change or one-minute bounce does not promote the opposing path without accepted price response through its named transition. A farther objective belongs to the next continuation setup until the nearer objective or transition is accepted. Preserve anticipatory entries when location is favorable, invalidation is genuine, the entry range and stop can survive current noise, credible room remains, and probability-weighted asymmetry after latency is positive. Do not require a closed candle, complete flow, or false numeric precision solely to eliminate uncertainty.
 
-A structural break invalidates or weakens the relevant setup and promotes the next setup for reassessment. It does not force a reverse. Preserve anticipatory entries when location, room, invalidation, and asymmetry are supported. Do not require closed-candle confirmation merely to avoid uncertainty.
+The candidate ledger is incomplete until current, bullish, bearish, and next setup fields exist for every packet-eligible instrument. Rank only after this ledger is complete.
