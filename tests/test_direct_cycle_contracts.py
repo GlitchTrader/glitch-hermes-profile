@@ -1026,3 +1026,196 @@ def test_shared_flat_trigger_review_requests_one_shared_decision() -> None:
     assert prompt.count('"operator_profile"') == 1
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
+
+
+def test_latest_prior_cognition_uses_one_canonical_decision_from_latest_prior_cycle(
+    tmp_path: Path,
+) -> None:
+    outbox = tmp_path / "hermes" / "outbox"
+    outbox.mkdir(parents=True)
+
+    def write_batch(cycle_id: str, instrument: str, evidence: str) -> None:
+        decisions = []
+        for account, route in (("Sim101", "glitch"), ("Sim301", "glitch-2")):
+            decisions.append({
+                "intent_id": f"{cycle_id}-{route}",
+                "instrument": instrument,
+                "account": account,
+                "operator_profile": route,
+                "action": "NOTHING",
+                "confidence": 0.81,
+                "prompt_version": "prior-prompt",
+                "reason": f"{instrument} prior path remains conditional.",
+                "decision_audit": {
+                    "decisive_evidence": evidence,
+                    "change_condition": f"{instrument} above 101.0 or below 99.0",
+                    "final_choice": "NOTHING",
+                },
+            })
+        (outbox / f"{cycle_id}.json").write_text(json.dumps({
+            "schema_version": "glitch.intent.batch.v1",
+            "cycle_id": cycle_id,
+            "decisions": decisions,
+        }), encoding="utf-8")
+
+    write_batch("20260813T1430Z", "MNQ", "OLDER_LEDGER")
+    write_batch("20260813T1435Z", "MES", "INSTRUMENT_COMPARISON_V1\nLATEST_LEDGER")
+    write_batch("20260813T1440Z", "M2K", "CURRENT_CYCLE_MUST_NOT_BE_READ")
+
+    prior = DIRECT.latest_prior_cognition(tmp_path, "20260813T1440Z")
+
+    assert prior == {
+        "schema_version": "glitch.hermes.prior_cognition.v1",
+        "source_cycle_id": "20260813T1435Z",
+        "source_prompt_version": "prior-prompt",
+        "selected_instrument": "MES",
+        "action": "NOTHING",
+        "confidence": 0.81,
+        "reason": "MES prior path remains conditional.",
+        "decisive_evidence": "INSTRUMENT_COMPARISON_V1\nLATEST_LEDGER",
+        "change_condition": "MES above 101.0 or below 99.0",
+        "final_choice": "NOTHING",
+    }
+
+
+def test_latest_trigger_review_keeps_the_prior_full_comparison_baseline(
+    tmp_path: Path,
+) -> None:
+    outbox = tmp_path / "hermes" / "outbox"
+    outbox.mkdir(parents=True)
+
+    def write_batch(cycle_id: str, evidence: str) -> None:
+        (outbox / f"{cycle_id}.json").write_text(json.dumps({
+            "schema_version": "glitch.intent.batch.v1",
+            "cycle_id": cycle_id,
+            "decisions": [{
+                "instrument": "MES",
+                "action": "NOTHING",
+                "confidence": 0.8,
+                "prompt_version": "prior-prompt",
+                "reason": "Prior market reasoning.",
+                "decision_audit": {
+                    "decisive_evidence": evidence,
+                    "change_condition": "MES above 101.0",
+                    "final_choice": "NOTHING",
+                },
+            }],
+        }), encoding="utf-8")
+
+    write_batch("20260813T1430Z", "INSTRUMENT_COMPARISON_V1\nFULL_BASELINE")
+    write_batch("20260813T1431Z", "TRIGGER_REVIEW_V1\nLATEST_REVIEW")
+
+    prior = DIRECT.latest_prior_cognition(tmp_path, "20260813T1435Z")
+
+    assert prior is not None
+    assert prior["source_cycle_id"] == "20260813T1431Z"
+    assert prior["decisive_evidence"] == "TRIGGER_REVIEW_V1\nLATEST_REVIEW"
+    assert prior["baseline_comparison"]["source_cycle_id"] == "20260813T1430Z"
+    assert (
+        prior["baseline_comparison"]["decisive_evidence"]
+        == "INSTRUMENT_COMPARISON_V1\nFULL_BASELINE"
+    )
+
+
+def test_flat_prompt_injects_prior_cognition_and_requires_reconciliation() -> None:
+    scenario = multibook_flat_scenario()
+    for book in scenario["books"]:
+        book["followers"] = []
+        book["exposure"] = []
+        book["position_building_context"] = {"instrument": "MNQ"}
+    packet = {
+        "packet_id": "cycle-9",
+        "window_close_utc": "2026-08-13T10:05:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101"}, {"account": "Sim301"}]},
+        }],
+    }
+    prior = {
+        "schema_version": "glitch.hermes.prior_cognition.v1",
+        "source_cycle_id": "cycle-8",
+        "selected_instrument": "MNQ",
+        "action": "NOTHING",
+        "decisive_evidence": "INSTRUMENT_COMPARISON_V1\nPRIOR_PATH_STATE",
+        "change_condition": "MNQ above 101.0 or below 99.0",
+    }
+
+    prompt = DIRECT.build_prompt(
+        packet,
+        scenario,
+        {"outcomes": []},
+        prior_cognition=prior,
+    )
+
+    assert '"prior_cognition":{"schema_version":"glitch.hermes.prior_cognition.v1"' in prompt
+    assert "PRIOR_PATH_STATE" in prompt
+    assert "Reconcile every supplied prior path as HELD, FAILED, or EXPIRED" in prompt
+    assert "NOT_APPLICABLE only when no prior path exists" in prompt
+
+
+def test_journal_tail_deduplicates_shared_decisions_and_preserves_instrument(
+    tmp_path: Path,
+) -> None:
+    intents = tmp_path / "intents"
+    intents.mkdir()
+    rows = []
+    for account, route in (("Sim101", "glitch"), ("Sim301", "glitch-2")):
+        rows.append({
+            "schema_version": "glitch.hermes.decision_record.v1",
+            "cycle_id": "20260813T1435Z",
+            "recorded_utc": "2026-08-13T14:36:00Z",
+            "status": "accepted",
+            "intent": {
+                "intent_id": f"intent-{route}",
+                "created_utc": "2026-08-13T14:35:45Z",
+                "instrument": "MES",
+                "account": account,
+                "operator_profile": route,
+                "action": "NOTHING",
+                "confidence": 0.82,
+                "prompt_version": DIRECT.DIRECT_PROMPT_VERSION,
+                "reason": "Shared market cognition.",
+                "decision_audit": {
+                    "change_condition": "MES above 101.0",
+                    "final_choice": "NOTHING",
+                },
+            },
+        })
+    (intents / "decisions.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    result = DIRECT.journal_tail(tmp_path)
+
+    assert len(result["decisions"]) == 1
+    assert result["decisions"][0]["cycle_id"] == "20260813T1435Z"
+    assert result["decisions"][0]["instrument"] == "MES"
+
+
+def test_cognitive_bundle_hash_excludes_runner_plumbing() -> None:
+    assert "SOUL.md" in DIRECT.COGNITIVE_BUNDLE_RELATIVE_PATHS
+    assert all(
+        "run-direct-glitch-cycle.py" not in path
+        for path in DIRECT.COGNITIVE_BUNDLE_RELATIVE_PATHS
+    )
+
+
+def test_prior_cognition_disables_not_applicable_backfill() -> None:
+    batch, _ = valid_batch("2026-08-13T14:35:45Z")
+    evidence = "\n".join([
+        DIRECT.CANDIDATE_COMPARISON_MARKER,
+        "INSTRUMENT MNQ:",
+        "CURRENT_AUCTION=accepted above prior transition",
+    ])
+    batch["decisions"][0]["decision_audit"]["decisive_evidence"] = evidence
+
+    DIRECT.backfill_constant_comparison_fields(
+        batch,
+        allow_not_applicable=False,
+    )
+
+    assert "PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE" not in (
+        batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+    )

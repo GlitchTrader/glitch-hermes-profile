@@ -40,7 +40,16 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v18-derived-wake-triggers"
+DIRECT_PROMPT_REVISION = "direct-v19-bounded-cognition-state"
+COGNITIVE_BUNDLE_RELATIVE_PATHS = (
+    "SOUL.md",
+    "skills/glitch-market-scan/SKILL.md",
+    "skills/glitch-setup-state/SKILL.md",
+    "skills/glitch-order-flow/SKILL.md",
+    "skills/glitch-position-management/SKILL.md",
+    "skills/glitch-build-intent/SKILL.md",
+)
+MAX_PRIOR_COGNITION_CHARS = 20_000
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -118,20 +127,12 @@ COMPLETED_RECEIPT_CLASSIFICATIONS = {"successful", "superseded_no_op"}
 
 
 def cognitive_bundle_hash() -> str:
-    """Version the exact hot-path cognition that produced each decision."""
+    """Version cognition assets without coupling state to runner plumbing."""
     profile_root = Path(__file__).resolve().parent.parent
-    paths = [
-        Path(__file__).resolve(),
-        profile_root / "SOUL.md",
-        profile_root / "skills" / "glitch-market-scan" / "SKILL.md",
-        profile_root / "skills" / "glitch-setup-state" / "SKILL.md",
-        profile_root / "skills" / "glitch-order-flow" / "SKILL.md",
-        profile_root / "skills" / "glitch-position-management" / "SKILL.md",
-        profile_root / "skills" / "glitch-build-intent" / "SKILL.md",
-    ]
     digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.name.encode("utf-8"))
+    for relative_path in COGNITIVE_BUNDLE_RELATIVE_PATHS:
+        path = profile_root / relative_path
+        digest.update(relative_path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
@@ -768,12 +769,12 @@ def _compact_decision(row: dict[str, Any]) -> dict[str, Any]:
     audit = intent.get("decision_audit") if isinstance(intent.get("decision_audit"), dict) else {}
     value = {
         key: row.get(key) for key in (
-            "recorded_utc", "status", "failed_check_code", "failed_check_message",
+            "cycle_id", "recorded_utc", "status", "failed_check_code", "failed_check_message",
         ) if row.get(key) is not None
     }
     value.update({
         key: intent.get(key) for key in (
-            "intent_id", "created_utc", "action", "confidence", "reason",
+            "intent_id", "created_utc", "instrument", "action", "confidence", "reason",
         ) if intent.get(key) is not None
     })
     if audit:
@@ -856,9 +857,18 @@ def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[dict[s
             row.get("intent") if isinstance(row.get("intent"), dict) else row
         ).get("prompt_version") == DIRECT_PROMPT_VERSION
     ]
-    result["decisions"] = [
-        _compact_decision(row) for row in recent_decisions[-max_lines:]
-    ]
+    unique_decisions: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in recent_decisions:
+        compact = _compact_decision(row)
+        key = (
+            str(compact.get("cycle_id") or compact.get("created_utc") or compact.get("intent_id") or ""),
+            instrument_root(compact.get("instrument")),
+            str(compact.get("action") or ""),
+            str(compact.get("reason") or ""),
+            str(compact.get("change_condition") or ""),
+        )
+        unique_decisions[key] = compact
+    result["decisions"] = list(unique_decisions.values())[-max_lines:]
     eligible = [
         row for row in _jsonl_tail(intents / "hermes-trade-outcomes.jsonl", max_lines * 20)
         if row.get("master_learning_eligible", row.get("learning_eligible", True)) is not False
@@ -1652,6 +1662,67 @@ def persist_wake_triggers(exchange: Path, batch: dict[str, Any], packet_id: str)
     })
 
 
+def latest_prior_cognition(
+    exchange: Path,
+    current_cycle_id: str,
+) -> dict[str, Any] | None:
+    """Return the latest review plus its canonical full-comparison baseline."""
+    outbox = exchange / "hermes" / "outbox"
+    if not outbox.is_dir():
+        return None
+    latest: dict[str, Any] | None = None
+    for path in sorted(outbox.glob("*.json"), reverse=True):
+        if path.stem >= current_cycle_id:
+            continue
+        try:
+            batch = read_json(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        event: dict[str, Any] | None = None
+        for decision in batch.get("decisions", []):
+            if not isinstance(decision, dict):
+                continue
+            audit = decision.get("decision_audit")
+            if not isinstance(audit, dict):
+                continue
+            evidence = str(audit.get("decisive_evidence") or "")
+            if (
+                CANDIDATE_COMPARISON_MARKER not in evidence
+                and TRIGGER_REVIEW_MARKER not in evidence
+            ):
+                continue
+            if len(evidence) > MAX_PRIOR_COGNITION_CHARS:
+                evidence = (
+                    evidence[:MAX_PRIOR_COGNITION_CHARS - 4_000]
+                    + "\n...[prior cognition bounded]...\n"
+                    + evidence[-4_000:]
+                )
+            event = {
+                "schema_version": "glitch.hermes.prior_cognition.v1",
+                "source_cycle_id": str(batch.get("cycle_id") or path.stem),
+                "source_prompt_version": str(decision.get("prompt_version") or ""),
+                "selected_instrument": instrument_root(decision.get("instrument")),
+                "action": str(decision.get("action") or ""),
+                "confidence": decision.get("confidence"),
+                "reason": str(decision.get("reason") or ""),
+                "decisive_evidence": evidence,
+                "change_condition": str(audit.get("change_condition") or ""),
+                "final_choice": str(audit.get("final_choice") or ""),
+            }
+            break
+        if event is None:
+            continue
+        if latest is None:
+            latest = event
+            if CANDIDATE_COMPARISON_MARKER in event["decisive_evidence"]:
+                return latest
+            continue
+        if CANDIDATE_COMPARISON_MARKER in event["decisive_evidence"]:
+            latest["baseline_comparison"] = event
+            return latest
+    return latest
+
+
 def persist_outbox(
     exchange: Path,
     outbox_path: Path,
@@ -2039,13 +2110,19 @@ def expand_shared_flat_decision(
     return batch
 
 
-def backfill_constant_comparison_fields(batch: dict[str, Any]) -> None:
+def backfill_constant_comparison_fields(
+    batch: dict[str, Any],
+    *,
+    allow_not_applicable: bool = True,
+) -> None:
     """Repair an omitted constant comparison label without another model call.
 
     In a flat scan PRIOR_TRIGGER_REVIEW is prescribed as the literal
     NOT_APPLICABLE, so restoring it is deterministic formatting repair, not
     cognition. Semantically loaded fields are never backfilled.
     """
+    if not allow_not_applicable:
+        return
     header = re.compile(r"^INSTRUMENT\s+[A-Za-z0-9._-]+\s*:\s*$")
     field = re.compile(r"(?i)^(?:[-*]\s*)?PRIOR_TRIGGER_REVIEW\s*=")
     for intent in batch.get("decisions") or []:
@@ -2996,6 +3073,7 @@ def invoke_validated_batch(
     directive: dict[str, Any] | None,
     timeout_seconds: int,
     decision_mode: str = "flat_scan",
+    prior_cognition: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int, int]:
     """Make one bounded Luna call and validate it without a second review call.
 
@@ -3028,7 +3106,10 @@ def invoke_validated_batch(
             scenario,
         )
     )
-    backfill_constant_comparison_fields(batch)
+    backfill_constant_comparison_fields(
+        batch,
+        allow_not_applicable=prior_cognition is None,
+    )
     validate_batch(
         batch,
         scenario,
@@ -3363,6 +3444,7 @@ def build_prompt(
     directive: dict[str, Any] | None = None,
     invocation_reason: str | None = None,
     invocation_context: dict[str, Any] | None = None,
+    prior_cognition: dict[str, Any] | None = None,
 ) -> str:
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = (
@@ -3428,6 +3510,7 @@ def build_prompt(
     envelope = {
         "decision_mode": decision_mode,
         "invocation_context": invocation_context,
+        "prior_cognition": prior_cognition if decision_mode == "flat_scan" else None,
         "decision_packet": packet_for_model(packet, scenario, positioned_only=positioned_only),
         "execution_scope": scenario_for_model(scenario, positioned_only),
         "recent_glitch_ledger": (
@@ -3473,7 +3556,7 @@ def build_prompt(
     else:
         instructions = (
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
-            "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
+            "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW classified as HELD, FAILED, EXPIRED, or NOT_APPLICABLE only when no prior path exists, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
             "Each row's bar_observation states its observed coverage; a row with bar_window_closed=true is a completed candle observed moments before its close, not missing confirmation. Treat observed coverage as ordinary sampling detail, never as an automatic veto. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto either. "
             "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
@@ -3482,6 +3565,12 @@ def build_prompt(
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "
             "Use the supplied recent ledger and learning context; do not retrieve or write memory in the hot path. "
         )
+        if prior_cognition:
+            instructions += (
+                "Reconcile every supplied prior path as HELD, FAILED, or EXPIRED against the current packet before replacing or advancing it. "
+                "Carry forward its objective, invalidation, transition, and unresolved uncertainty unless current evidence changes them. "
+                "Use NOT_APPLICABLE only when no prior path exists for that candidate; a scheduled boundary never erases prior cognition by itself. "
+            )
     if shared_flat:
         instructions += (
             "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
@@ -3883,6 +3972,10 @@ def run_once(
         else "trigger_review" if invocation_context is not None
         else "flat_scan"
     )
+    prior_cognition = (
+        latest_prior_cognition(exchange, packet_id)
+        if decision_mode == "flat_scan" else None
+    )
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
         return 0
@@ -3897,6 +3990,7 @@ def run_once(
         directive,
         invocation_reason=reason,
         invocation_context=invocation_context,
+        prior_cognition=prior_cognition,
     )
     write_json_atomic(attempt_path, {
         "schema_version": "glitch.hermes.model_attempt.v1",
@@ -3908,6 +4002,9 @@ def run_once(
         "prompt_version": DIRECT_PROMPT_VERSION,
         "cognitive_bundle_hash": DIRECT_PROMPT_VERSION.rsplit("-", 1)[-1],
         "decision_mode": decision_mode,
+        "prior_cognition_source_cycle_id": (
+            prior_cognition.get("source_cycle_id") if prior_cognition else None
+        ),
         "hermes_session_source": TRADING_SOURCE,
         "hermes_session_mode": "isolated",
     })
@@ -3919,6 +4016,7 @@ def run_once(
             directive,
             args.timeout_seconds,
             decision_mode,
+            prior_cognition,
         )
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
@@ -3936,6 +4034,9 @@ def run_once(
             "prompt_version": DIRECT_PROMPT_VERSION,
             "cognitive_bundle_hash": DIRECT_PROMPT_VERSION.rsplit("-", 1)[-1],
             "decision_mode": decision_mode,
+            "prior_cognition_source_cycle_id": (
+                prior_cognition.get("source_cycle_id") if prior_cognition else None
+            ),
             "hermes_session_source": TRADING_SOURCE,
             "hermes_session_mode": "isolated",
             "output_repair_count": output_repair_count,
