@@ -210,6 +210,7 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert "Do not require the same class of confirmation again at a newer extreme" in prompt
     assert "HELD preserves the hypothesis but supplies no extra directional evidence" in prompt
     assert "multiple one-minute packets during model and transport delay" in prompt
+    assert "stop-distance points times the packet point_value_usd" in prompt
     assert '"recent_glitch_ledger":{}' in prompt
 
 
