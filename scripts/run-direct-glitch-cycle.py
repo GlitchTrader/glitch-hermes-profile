@@ -2142,12 +2142,19 @@ def validate_trigger_review(
     status = values["PRIOR_TRIGGER_REVIEW"].split(maxsplit=1)[0].rstrip(":").upper()
     if status not in {"HELD", "FAILED", "EXPIRED"}:
         raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
+    validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
             values["ENTRY_RANGE_NOISE_GEOMETRY"],
             index,
             "trigger_review",
         )
+
+
+def validate_setup_derivation(value: str, index: int, source: str) -> None:
+    """Prevent Hermes from deferring market interpretation back to the packet."""
+    if re.search(r"(?i)\b(?:not supplied|unsupplied|not provided|no authoritative|must be supplied)\b", value):
+        raise ValueError(f"setup_derivation_deferred:{index}:{source}")
 
 
 def validate_batch(
@@ -3182,7 +3189,8 @@ def build_prompt(
             "A crossing is a reassessment event, not an automatic order, but it promotes the prior conditional path to active review. Do not require the same class of confirmation again at a newer extreme. "
             "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. HELD preserves the hypothesis but supplies no extra directional evidence and does not lower the entry standard. "
             "Enter only when current response, remaining room, genuine invalidation, execution location, and survival-adjusted asymmetry independently support it; otherwise choose NOTHING and identify the missing edge. "
-            "Check the other supplied candidates compactly only to determine whether one has clearly overtaken the fired path; do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
+            "Hermes must derive the current objective, genuine invalidation, and executable zone from supplied market structure, volatility, auction response, and flow; never defer because these interpretations were not prewritten or labeled authoritative. UNKNOWN is valid only when the underlying evidence is unusable. A confirmation transition is not automatically the primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
+            "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
             "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
             "A valid tiny bracket is not proof of edge. In ENTRY_RANGE_NOISE_GEOMETRY state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. Reject a shallow pivot that cannot survive the intended five-to-ten-bar path; improve entry location, use a deeper genuine invalidation, or choose NOTHING. "
@@ -3194,6 +3202,7 @@ def build_prompt(
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
             "Live in-progress rows are valid anticipatory evidence; completed candles are stronger evidence, not a universal prerequisite. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
             "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
+            "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, a short evidence method grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "

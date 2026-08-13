@@ -211,6 +211,9 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert "HELD preserves the hypothesis but supplies no extra directional evidence" in prompt
     assert "multiple one-minute packets during model and transport delay" in prompt
     assert "stop-distance points times the packet point_value_usd" in prompt
+    assert "never defer because these interpretations were not prewritten" in prompt
+    assert "confirmation transition is not automatically the primary profit objective" in prompt
+    assert "construct the strongest fresh compact setup" in prompt
     assert '"recent_glitch_ledger":{}' in prompt
 
 
@@ -270,6 +273,28 @@ def test_trigger_review_contract_requires_explicit_prior_status() -> None:
         lines.append(f"{field}={value}")
 
     DIRECT.validate_trigger_review("\n".join(lines), {"MNQ", "MES"}, "MNQ", "NOTHING", 0)
+
+
+def test_trigger_review_rejects_deferring_setup_derivation_to_packet() -> None:
+    lines = [DIRECT.TRIGGER_REVIEW_MARKER]
+    for field in DIRECT.TRIGGER_REVIEW_FIELDS:
+        value = "current evidence"
+        if field == "PRIOR_TRIGGER_REVIEW":
+            value = "HELD: accepted below the frozen trigger"
+        elif field == "REMAINING_OBJECTIVE_INVALIDATION":
+            value = "No authoritative primary objective and invalidation pair was supplied"
+        elif field == "SELECTION_INSTRUMENT":
+            value = "MNQ"
+        elif field == "SELECTION_ACTION":
+            value = "NOTHING"
+        lines.append(f"{field}={value}")
+
+    try:
+        DIRECT.validate_trigger_review("\n".join(lines), {"MNQ", "MES"}, "MNQ", "NOTHING", 0)
+    except ValueError as error:
+        assert str(error) == "setup_derivation_deferred:0:trigger_review"
+    else:
+        raise AssertionError("trigger review deferred setup interpretation back to the packet")
 
 
 def test_trigger_entry_requires_explicit_horizon_and_economic_geometry() -> None:
