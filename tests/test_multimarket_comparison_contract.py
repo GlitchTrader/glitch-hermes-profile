@@ -63,9 +63,6 @@ def test_template_contains_every_supplied_instrument_and_required_states():
 
 def test_dry_run_does_not_persist_executable_outbox():
     source = (ROOT / "scripts" / "run-direct-glitch-cycle.py").read_text(encoding="utf-8")
-    guarded = (
-        "if not args.dry_run:\n"
-        "            persist_wake_triggers(exchange, batch, packet_id)\n"
-        "            persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)"
-    )
-    assert guarded in source
+    assert "if not args.dry_run:\n        clear_wake_triggers(exchange, packet_id)" in source
+    assert "if decision_mode == \"flat_scan\":\n                persist_wake_triggers" in source
+    assert "persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)" in source

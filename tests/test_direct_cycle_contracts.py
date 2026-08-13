@@ -883,7 +883,7 @@ def test_empty_model_stdout_is_retried_exactly_once(monkeypatch: pytest.MonkeyPa
     assert len(calls) == 2
 
 
-def test_compacted_bars_state_observed_coverage_and_window_closure() -> None:
+def test_compacted_bars_preserve_native_completed_bar_without_relabeling_current_bar() -> None:
     packet = {
         "packet_id": "20260813T1009Z",
         "window_close_utc": "2026-08-13T10:09:00.0000000Z",
@@ -897,6 +897,22 @@ def test_compacted_bars_state_observed_coverage_and_window_closure() -> None:
                         "minutes": 1,
                         "utc_time": "2026-08-13T10:08:49.4000000Z",
                         "open": 1, "high": 2, "low": 0, "close": 1,
+                        "descriptive_state": {
+                            "native_observations": {
+                                "last_completed_bar": {
+                                    "utc_time": "2026-08-13T10:07:00Z",
+                                    "closed_utc": "2026-08-13T10:08:00Z",
+                                    "open": 10,
+                                    "high": 12,
+                                    "low": 9,
+                                    "close": 11,
+                                    "volume": 100,
+                                    "completeness": "complete",
+                                    "source": "ninjatrader_bars_ago_1",
+                                },
+                            },
+                            "descriptive_state": {"path": {"state": "up"}},
+                        },
                     }],
                 }],
                 "coverage": [],
@@ -909,10 +925,12 @@ def test_compacted_bars_state_observed_coverage_and_window_closure() -> None:
     result = DIRECT.packet_for_model(packet, scenario)
 
     bar = result["frames"][0]["market_snapshot"]["instruments"][0]["timeframe_bars"][0]
-    assert bar["bar_observation"]["observed_seconds_of_bar"] == 49.4
-    assert bar["bar_observation"]["bar_length_seconds"] == 60
-    assert bar["bar_observation"]["bar_window_closed"] is True
-    assert "bar_observation" in result["observation_contract"]
+    assert "bar_observation" not in bar
+    assert bar["open"] == 1
+    completed = bar["descriptive_state"]["native_observations"]["last_completed_bar"]
+    assert completed["close"] == 11
+    assert completed["completeness"] == "complete"
+    assert "prior fully closed NinjaTrader candle" in result["observation_contract"]["last_completed_bar"]
 
 
 def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
@@ -959,7 +977,7 @@ def test_prompt_mirrors_change_condition_prices_into_wake_triggers() -> None:
 
     assert "Keep wake_triggers empty" in prompt
     assert "mirrors explicit instrument-labeled above/below prices from change_condition" in prompt
-    assert "a crossing wakes one immediate reassessment" in prompt
+    assert "the first crossing wakes one immediate reassessment" in prompt
 
 
 def test_fired_trigger_wakes_one_flat_review_between_scheduled_scans(tmp_path: Path, monkeypatch) -> None:
@@ -1194,12 +1212,9 @@ def test_journal_tail_deduplicates_shared_decisions_and_preserves_instrument(
     assert result["decisions"][0]["instrument"] == "MES"
 
 
-def test_cognitive_bundle_hash_excludes_runner_plumbing() -> None:
+def test_cognitive_bundle_hash_includes_hot_path_runner_contract() -> None:
     assert "SOUL.md" in DIRECT.COGNITIVE_BUNDLE_RELATIVE_PATHS
-    assert all(
-        "run-direct-glitch-cycle.py" not in path
-        for path in DIRECT.COGNITIVE_BUNDLE_RELATIVE_PATHS
-    )
+    assert "scripts/run-direct-glitch-cycle.py" in DIRECT.COGNITIVE_BUNDLE_RELATIVE_PATHS
 
 
 def test_prior_cognition_disables_not_applicable_backfill() -> None:

@@ -22,7 +22,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.40"
+        "distribution.yaml version 0.0.2.41"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."
@@ -61,7 +61,7 @@
       ],
       "depends_on": ["GHP-001", "GHP-003"],
       "evidence": [
-        "Current profile main HEAD is recorded in extensions.source_authority.",
+        "Current profile main is identified by its canonical branch in extensions.source_authority.",
         "distribution.yaml declares the current version.",
         "Current Glitch source authority is D:/ab/worktrees/glitch-nt-rebuild on main.",
         "scripts/setup.ps1 and SHA256SUMS define the profile export integrity boundary."
@@ -75,14 +75,13 @@
       "profile": {
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
-        "head": "5e018bff10e5a2b0e332034eefa45a2d5dc37d2b",
-        "head_note": "parent of the 0.0.2.40 change; see git main for current HEAD",
-        "distribution_version": "0.0.2.40"
+        "authority_ref": "refs/heads/main",
+        "distribution_version": "0.0.2.41"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",
         "branch": "main",
-        "head": "2e829e732c00cdcc56e4dd9123e07c8404929668"
+        "authority_ref": "refs/heads/main"
       }
     },
     "canonical_rule": "Current source canon is the current main branch of each repository. Export and download catalog state is separate until a new pair is exported."

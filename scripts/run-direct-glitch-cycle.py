@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, time as datetime_time, timedelta, timezone
+from datetime import datetime, time as datetime_time, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -40,8 +40,9 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v19-bounded-cognition-state"
+DIRECT_PROMPT_REVISION = "direct-v20-truthful-completed-bars"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
+    "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
     "skills/glitch-market-scan/SKILL.md",
     "skills/glitch-setup-state/SKILL.md",
@@ -127,7 +128,7 @@ COMPLETED_RECEIPT_CLASSIFICATIONS = {"successful", "superseded_no_op"}
 
 
 def cognitive_bundle_hash() -> str:
-    """Version cognition assets without coupling state to runner plumbing."""
+    """Version the exact hot-path cognition and its runner contract."""
     profile_root = Path(__file__).resolve().parent.parent
     digest = hashlib.sha256()
     for relative_path in COGNITIVE_BUNDLE_RELATIVE_PATHS:
@@ -1662,6 +1663,16 @@ def persist_wake_triggers(exchange: Path, batch: dict[str, Any], packet_id: str)
     })
 
 
+def clear_wake_triggers(exchange: Path, packet_id: str) -> None:
+    """Consume the current wake set before one bounded review."""
+    write_json_atomic(wake_trigger_path(exchange), {
+        "schema_version": "glitch.hermes.wake_triggers.v2",
+        "cycle_id": packet_id,
+        "triggers": [],
+        "updated_utc": utc_now(),
+    })
+
+
 def latest_prior_cognition(
     exchange: Path,
     current_cycle_id: str,
@@ -2653,49 +2664,10 @@ def _attach_observation_layers(instrument: dict[str, Any]) -> None:
     instrument["heuristic_projections"] = projections
 
 
-def _bar_observation_annotation(
-    bar: dict[str, Any],
-    window_close: datetime | None,
-) -> dict[str, Any] | None:
-    """State how much of the observed bar's window the row covers.
-
-    Rows are captured moments before their bar closes, so `in_progress` labels
-    describe capture timing rather than defective data. Making the coverage
-    explicit prevents the model from treating near-complete just-closed bars
-    as missing confirmation.
-    """
-    minutes = bar.get("minutes")
-    raw_time = str(bar.get("utc_time") or "")
-    if not isinstance(minutes, int) or minutes < 1 or not raw_time:
-        return None
-    try:
-        observed = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=timezone.utc)
-    observed = observed.astimezone(timezone.utc)
-    duration = minutes * 60
-    seconds_into_day = (
-        observed.hour * 3600 + observed.minute * 60
-        + observed.second + observed.microsecond / 1_000_000
-    )
-    observed_seconds = seconds_into_day % duration
-    annotation: dict[str, Any] = {
-        "observed_seconds_of_bar": round(observed_seconds, 1),
-        "bar_length_seconds": duration,
-    }
-    if window_close is not None:
-        bar_close = observed + timedelta(seconds=duration - observed_seconds)
-        annotation["bar_window_closed"] = bar_close <= window_close
-    return annotation
-
-
 def _compact_model_bar(
     bar: dict[str, Any],
     *,
     latest_frame: bool,
-    window_close: datetime | None = None,
 ) -> dict[str, Any]:
     """Remove observation aliases while preserving native facts and analytics."""
     value = dict(bar)
@@ -2703,9 +2675,6 @@ def _compact_model_bar(
     value.pop("heuristic_projections", None)
     if not value.get("descriptive_state"):
         value.pop("descriptive_state", None)
-    annotation = _bar_observation_annotation(value, window_close)
-    if annotation:
-        value["bar_observation"] = annotation
     if latest_frame:
         return value
     indicators = value.get("indicators")
@@ -2727,12 +2696,18 @@ def _compact_model_bar(
             ) if key in analytics
         }
     descriptive = value.get("descriptive_state")
+    native = descriptive.get("native_observations") if isinstance(descriptive, dict) else None
     state = descriptive.get("descriptive_state") if isinstance(descriptive, dict) else None
     if isinstance(state, dict):
         flow = state.get("flow") if isinstance(state.get("flow"), dict) else {}
         liquidity = state.get("liquidity") if isinstance(state.get("liquidity"), dict) else {}
         quality = state.get("quality") if isinstance(state.get("quality"), dict) else {}
         value["descriptive_state"] = {
+            "native_observations": {
+                "last_completed_bar": (
+                    native.get("last_completed_bar") if isinstance(native, dict) else None
+                ),
+            },
             "path": state.get("path"),
             "flow": {
                 key: flow.get(key) for key in (
@@ -2761,7 +2736,6 @@ def _compact_model_instrument(
     instrument: dict[str, Any],
     *,
     latest_frame: bool,
-    window_close: datetime | None = None,
 ) -> dict[str, Any]:
     """Keep the five-minute path and one current higher-timeframe context."""
     value = dict(instrument)
@@ -2773,7 +2747,7 @@ def _compact_model_instrument(
     value.pop("heuristic_projections", None)
     retained_minutes = {1, 5, 15, 60} if latest_frame else {1}
     value["timeframe_bars"] = [
-        _compact_model_bar(bar, latest_frame=latest_frame, window_close=window_close)
+        _compact_model_bar(bar, latest_frame=latest_frame)
         for bar in value.get("timeframe_bars", [])
         if isinstance(bar, dict) and bar.get("minutes") in retained_minutes
     ]
@@ -2788,10 +2762,6 @@ def packet_for_model(
 ) -> dict[str, Any]:
     """Expose only current routes, truthful observation semantics, and Glitch limits."""
     model_packet = json.loads(json.dumps(packet))
-    try:
-        window_close = packet_window_utc(model_packet)
-    except (TypeError, ValueError):
-        window_close = None
     policy = model_packet.get("policy")
     if not isinstance(policy, dict):
         policy = {}
@@ -2839,7 +2809,6 @@ def packet_for_model(
                 _compact_model_instrument(
                     instrument,
                     latest_frame=latest_frame,
-                    window_close=window_close,
                 )
                 for instrument in instruments
             ]
@@ -2871,14 +2840,12 @@ def packet_for_model(
         ]
         portfolio["account_count"] = len(portfolio["accounts"])
     model_packet["observation_contract"] = {
-        "timeframe_rows": "live_in_progress_observations",
+        "timeframe_rows": "live current-bar observations",
         "utc_time": "observation_time_not_bar_close_time",
-        "bar_observation": (
-            "Each row is an observation of the bar active at its utc_time, captured shortly "
-            "before that bar closes. bar_observation states the observed coverage in seconds and "
-            "whether the observed bar's window has already closed by this packet's window_close. "
-            "A row with high coverage and bar_window_closed=true is effectively a completed "
-            "candle; the in_progress label describes capture timing, not defective data."
+        "last_completed_bar": (
+            "The one-minute descriptive native_observations.last_completed_bar is the prior "
+            "fully closed NinjaTrader candle from bars-ago 1. Current OHLCV remains partial "
+            "live evidence and must never be relabeled as completed."
         ),
         "timeframe_roles": {
             "1m": "primary_new_exposure_timing_and_noise",
@@ -3557,7 +3524,7 @@ def build_prompt(
         instructions = (
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW classified as HELD, FAILED, EXPIRED, or NOT_APPLICABLE only when no prior path exists, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
-            "Each row's bar_observation states its observed coverage; a row with bar_window_closed=true is a completed candle observed moments before its close, not missing confirmation. Treat observed coverage as ordinary sampling detail, never as an automatic veto. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto either. "
+            "Use each one-minute row's native_observations.last_completed_bar as the authoritative completed candle. Current OHLCV is live partial evidence and must remain labeled partial. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
             "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
@@ -3575,11 +3542,17 @@ def build_prompt(
         instructions += (
             "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
         )
+    wake_instruction = (
+        "Keep wake_triggers empty. This condition-change wake is consumed once; the next scheduled five-minute scan may arm new instrument-labeled above/below levels. "
+        if trigger_review_only else
+        "Keep wake_triggers empty; the runtime mirrors explicit instrument-labeled above/below prices from change_condition into wake triggers, and the first crossing wakes one immediate reassessment before the next scheduled review, so write change_condition as concrete instrument-labeled above/below price levels. "
+    )
     prompt = (
         common
         + instructions
         + "Preserve required_output_template, cycle, route, account, instrument, snapshot hash, model version, prompt version, and every strict decision_audit key. final_choice must equal action. "
-        + "Keep wake_triggers empty; the runtime mirrors explicit instrument-labeled above/below prices from change_condition into wake triggers, and a crossing wakes one immediate reassessment between scheduled reviews, so write change_condition as concrete instrument-labeled above/below price levels. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
+        + wake_instruction
+        + "Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
     )
     return apply_cognitive_overlay(prompt, journals.get("active_cognitive_overlay"))
@@ -3979,6 +3952,8 @@ def run_once(
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
         return 0
+    if not args.dry_run:
+        clear_wake_triggers(exchange, packet_id)
     remember_packet_activation(exchange, packet)
     journals = journal_tail(glitch_data)
     journals.update(learning_context(exchange))
@@ -4021,7 +3996,8 @@ def run_once(
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
         if not args.dry_run:
-            persist_wake_triggers(exchange, batch, packet_id)
+            if decision_mode == "flat_scan":
+                persist_wake_triggers(exchange, batch, packet_id)
             persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)
         write_json_atomic(attempt_path, {
             "schema_version": "glitch.hermes.model_attempt.v1",

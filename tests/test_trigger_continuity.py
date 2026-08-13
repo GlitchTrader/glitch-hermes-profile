@@ -64,6 +64,28 @@ def test_persisted_triggers_are_frozen_instrument_aware_and_deduplicated(tmp_pat
     }]
 
 
+def test_clear_wake_triggers_consumes_the_set_once(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    supervisor = exchange / "hermes" / "supervisor"
+    supervisor.mkdir(parents=True)
+    (supervisor / "active-wake-triggers.json").write_text(json.dumps({
+        "schema_version": "glitch.hermes.wake_triggers.v2",
+        "cycle_id": "source",
+        "triggers": [{
+            "type": "PRICE_CROSS",
+            "instrument": "MNQ",
+            "direction": "BELOW",
+            "price": 100.0,
+        }],
+    }))
+
+    DIRECT.clear_wake_triggers(exchange, "review")
+
+    state = json.loads((supervisor / "active-wake-triggers.json").read_text())
+    assert state["cycle_id"] == "review"
+    assert state["triggers"] == []
+
+
 def test_only_the_instrument_that_crossed_its_own_level_fires(tmp_path: Path, monkeypatch) -> None:
     exchange = tmp_path / "exchange"
     supervisor = exchange / "hermes" / "supervisor"
@@ -214,6 +236,7 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert "never defer because these interpretations were not prewritten" in prompt
     assert "confirmation transition is not automatically the primary profit objective" in prompt
     assert "construct the strongest fresh compact setup" in prompt
+    assert "condition-change wake is consumed once" in prompt
     assert '"recent_glitch_ledger":{}' in prompt
 
 
