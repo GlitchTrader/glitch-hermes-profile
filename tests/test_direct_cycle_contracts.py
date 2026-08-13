@@ -739,3 +739,201 @@ def test_real_failure_takes_precedence_over_superseded_no_op() -> None:
 
     assert DIRECT.receipt_classification(receipt) == "terminal_rejection"
     assert DIRECT.receipt_requires_new_packet_retry(receipt) is True
+
+
+def multibook_flat_scenario() -> dict:
+    return {
+        "cycle_id": "cycle-9",
+        "market": {"snapshot_hash": "snapshot-9", "candidates": [{"instrument": "MNQ", "current_price": 105.0}]},
+        "books": [
+            {
+                "route_id": "glitch",
+                "master_account": "Sim101",
+                "instrument_contexts": {"MNQ": {"current_signed_quantity": 0}},
+            },
+            {
+                "route_id": "glitch-2",
+                "master_account": "Sim301",
+                "instrument_contexts": {"MNQ": {"current_signed_quantity": 0}},
+            },
+        ],
+    }
+
+
+def test_shared_flat_decision_expands_to_every_ordered_book() -> None:
+    scenario = multibook_flat_scenario()
+    batch, _ = valid_batch("2026-08-13T10:00:00Z")
+    batch["cycle_id"] = "cycle-9"
+    batch["decisions"][0]["snapshot_hash"] = "snapshot-9"
+
+    expanded = DIRECT.expand_shared_flat_decision(batch, scenario)
+
+    assert len(expanded["decisions"]) == 2
+    assert [d["operator_profile"] for d in expanded["decisions"]] == ["glitch", "glitch-2"]
+    assert [d["account"] for d in expanded["decisions"]] == ["Sim101", "Sim301"]
+    assert len({d["intent_id"] for d in expanded["decisions"]}) == 2
+    assert all(d["action"] == "NOTHING" for d in expanded["decisions"])
+    assert (
+        expanded["decisions"][0]["decision_audit"]
+        == expanded["decisions"][1]["decision_audit"]
+    )
+
+
+def test_shared_flat_decision_expansion_requires_all_books_flat() -> None:
+    scenario = multibook_flat_scenario()
+    scenario["books"][1]["instrument_contexts"]["MNQ"]["current_signed_quantity"] = 1
+    batch, _ = valid_batch("2026-08-13T10:00:00Z")
+
+    assert len(DIRECT.expand_shared_flat_decision(batch, scenario)["decisions"]) == 1
+
+
+def test_shared_flat_decision_expansion_ignores_multi_decision_output() -> None:
+    scenario = multibook_flat_scenario()
+    batch, _ = valid_batch("2026-08-13T10:00:00Z")
+    batch["decisions"].append(dict(batch["decisions"][0]))
+
+    assert len(DIRECT.expand_shared_flat_decision(batch, scenario)["decisions"]) == 2
+    assert batch["decisions"][0]["account"] == "Sim101"
+
+
+def comparison_ledger(sections: dict[str, list[str]]) -> str:
+    lines = [DIRECT.CANDIDATE_COMPARISON_MARKER]
+    for instrument, fields in sections.items():
+        lines.append(f"INSTRUMENT {instrument}:")
+        lines.extend(fields)
+    lines.extend([
+        "RANKING=MNQ > MES",
+        "SELECTION_INSTRUMENT=MNQ",
+        "SELECTION_ACTION=NOTHING",
+        "SELECTION_REASON=no candidate retains practical edge",
+    ])
+    return "\n".join(lines)
+
+
+def test_missing_constant_prior_trigger_review_is_backfilled() -> None:
+    complete = [f"{field}=supported evidence" for field in DIRECT.CANDIDATE_COMPARISON_FIELDS]
+    omitted = [
+        f"{field}=supported evidence"
+        for field in DIRECT.CANDIDATE_COMPARISON_FIELDS
+        if field != "PRIOR_TRIGGER_REVIEW"
+    ]
+    batch, _ = valid_batch("2026-08-13T10:00:00Z")
+    batch["decisions"][0]["decision_audit"]["decisive_evidence"] = comparison_ledger(
+        {"MNQ": complete, "MES": omitted}
+    )
+
+    DIRECT.backfill_constant_comparison_fields(batch)
+
+    evidence = batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+    assert evidence.count("PRIOR_TRIGGER_REVIEW=") == 2
+    assert "PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE" in evidence
+    assert evidence.count("PRIOR_TRIGGER_REVIEW=supported evidence") == 1
+    DIRECT.validate_candidate_comparison(evidence, ["MNQ", "MES"], "MNQ", "NOTHING", 0)
+
+    DIRECT.backfill_constant_comparison_fields(batch)
+    assert evidence == batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+
+
+def test_backfill_never_touches_semantic_fields_or_non_comparison_evidence() -> None:
+    batch, _ = valid_batch("2026-08-13T10:00:00Z")
+    original = batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+
+    DIRECT.backfill_constant_comparison_fields(batch)
+
+    assert batch["decisions"][0]["decision_audit"]["decisive_evidence"] == original
+
+
+def test_empty_model_stdout_is_retried_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            raise DIRECT.EmptyModelResponseError("hermes_stdout_empty")
+        batch, _ = valid_batch("2026-08-13T10:00:00Z")
+        return batch
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    scenario = {
+        "cycle_id": "cycle-1",
+        "market": {"snapshot_hash": "snapshot-1"},
+        "books": [{"route_id": "glitch", "master_account": "Sim101"}],
+    }
+
+    batch, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
+        "glitch", "PROMPT", scenario, None, 30, decision_mode="flat_scan"
+    )
+
+    assert calls == ["PROMPT", "PROMPT"]
+    assert output_repair_count == 0
+    assert transport_retry_count == 1
+    assert batch["decisions"][0]["action"] == "NOTHING"
+
+    calls.clear()
+
+    def always_empty(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        raise DIRECT.EmptyModelResponseError("hermes_stdout_empty")
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", always_empty)
+    with pytest.raises(DIRECT.EmptyModelResponseError):
+        DIRECT.invoke_validated_batch(
+            "glitch", "PROMPT", scenario, None, 30, decision_mode="flat_scan"
+        )
+    assert len(calls) == 2
+
+
+def test_compacted_bars_state_observed_coverage_and_window_closure() -> None:
+    packet = {
+        "packet_id": "20260813T1009Z",
+        "window_close_utc": "2026-08-13T10:09:00.0000000Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {
+                "instruments": [{
+                    "instrument": "MNQ",
+                    "current_price": 20000.0,
+                    "timeframe_bars": [{
+                        "minutes": 1,
+                        "utc_time": "2026-08-13T10:08:49.4000000Z",
+                        "open": 1, "high": 2, "low": 0, "close": 1,
+                    }],
+                }],
+                "coverage": [],
+            },
+            "portfolio_snapshot": {"accounts": []},
+        }],
+    }
+    scenario = {"books": [{"route_id": "glitch", "master_account": "Sim101", "followers": []}]}
+
+    result = DIRECT.packet_for_model(packet, scenario)
+
+    bar = result["frames"][0]["market_snapshot"]["instruments"][0]["timeframe_bars"][0]
+    assert bar["bar_observation"]["observed_seconds_of_bar"] == 49.4
+    assert bar["bar_observation"]["bar_length_seconds"] == 60
+    assert bar["bar_observation"]["bar_window_closed"] is True
+    assert "bar_observation" in result["observation_contract"]
+
+
+def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
+    scenario = multibook_flat_scenario()
+    for book in scenario["books"]:
+        book["followers"] = []
+        book["exposure"] = []
+        book["position_building_context"] = {"instrument": "MNQ"}
+    packet = {
+        "packet_id": "cycle-9",
+        "window_close_utc": "2026-08-13T10:05:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101"}, {"account": "Sim301"}]},
+        }],
+    }
+
+    prompt = DIRECT.build_prompt(packet, scenario, {"outcomes": []})
+
+    assert '"decision_mode":"flat_scan"' in prompt
+    assert prompt.count('"operator_profile"') == 1
+    assert "return exactly one decision object" in prompt
+    assert "binds the identical decision to every ordered master book" in prompt

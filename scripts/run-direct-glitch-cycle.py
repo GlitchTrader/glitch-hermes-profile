@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, time as datetime_time, timezone
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v16-bounded-single-call"
+DIRECT_PROMPT_REVISION = "direct-v17-shared-flat-decision"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -1999,6 +1999,88 @@ def all_scoped_books_positioned(scenario: dict[str, Any]) -> bool:
     return bool(books) and all(len(positioned_instruments(book)) == 1 for book in books)
 
 
+def shared_flat_decision_scope(scenario: dict[str, Any]) -> bool:
+    """True when every ordered master book is flat and can share one decision."""
+    books = scenario.get("books") or []
+    return len(books) > 1 and all(
+        not positioned_instruments(book) for book in books
+    )
+
+
+def expand_shared_flat_decision(
+    batch: dict[str, Any],
+    scenario: dict[str, Any],
+) -> dict[str, Any]:
+    """Deterministically bind one shared flat market decision to every book.
+
+    Flat ordered master books receive identical market cognition, so the model
+    is asked for exactly one decision. Cloning it per book here removes the
+    duplicated multi-kilobyte audit from the model output without changing the
+    per-intent wire contract that Glitch validates and executes.
+    """
+    if not isinstance(batch, dict) or not shared_flat_decision_scope(scenario):
+        return batch
+    decisions = batch.get("decisions")
+    if not isinstance(decisions, list):
+        decisions = batch.get("intents")
+    if not isinstance(decisions, list) or len(decisions) != 1 or not isinstance(decisions[0], dict):
+        return batch
+    cycle = str(batch.get("cycle_id") or scenario["cycle_id"])
+    expanded: list[dict[str, Any]] = []
+    for book in scenario["books"]:
+        clone = json.loads(json.dumps(decisions[0]))
+        route = str(book["route_id"])
+        clone["operator_profile"] = route
+        clone["account"] = str(book["master_account"])
+        clone["intent_id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"glitch:{cycle}:{route}"))
+        expanded.append(clone)
+    batch.pop("intents", None)
+    batch["decisions"] = expanded
+    return batch
+
+
+def backfill_constant_comparison_fields(batch: dict[str, Any]) -> None:
+    """Repair an omitted constant comparison label without another model call.
+
+    In a flat scan PRIOR_TRIGGER_REVIEW is prescribed as the literal
+    NOT_APPLICABLE, so restoring it is deterministic formatting repair, not
+    cognition. Semantically loaded fields are never backfilled.
+    """
+    header = re.compile(r"^INSTRUMENT\s+[A-Za-z0-9._-]+\s*:\s*$")
+    field = re.compile(r"(?i)^(?:[-*]\s*)?PRIOR_TRIGGER_REVIEW\s*=")
+    for intent in batch.get("decisions") or []:
+        if not isinstance(intent, dict):
+            continue
+        audit = intent.get("decision_audit")
+        if not isinstance(audit, dict):
+            continue
+        evidence = audit.get("decisive_evidence")
+        if not isinstance(evidence, str) or CANDIDATE_COMPARISON_MARKER not in evidence:
+            continue
+        repaired: list[str] = []
+        section_start: int | None = None
+        section_has_field = False
+
+        def close_section() -> None:
+            nonlocal section_start, section_has_field
+            if section_start is not None and not section_has_field:
+                repaired.insert(section_start + 1, "PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE")
+            section_start = None
+            section_has_field = False
+
+        for line in evidence.splitlines():
+            if header.match(line.strip()):
+                close_section()
+                repaired.append(line)
+                section_start = len(repaired) - 1
+                continue
+            if section_start is not None and field.match(line.strip()):
+                section_has_field = True
+            repaired.append(line)
+        close_section()
+        audit["decisive_evidence"] = "\n".join(repaired)
+
+
 def position_management_template(book: dict[str, Any]) -> str:
     instruments = positioned_instruments(book)
     instrument = instruments[0] if len(instruments) == 1 else "COPY_ACTIVE_INSTRUMENT"
@@ -2481,13 +2563,59 @@ def _attach_observation_layers(instrument: dict[str, Any]) -> None:
     instrument["heuristic_projections"] = projections
 
 
-def _compact_model_bar(bar: dict[str, Any], *, latest_frame: bool) -> dict[str, Any]:
+def _bar_observation_annotation(
+    bar: dict[str, Any],
+    window_close: datetime | None,
+) -> dict[str, Any] | None:
+    """State how much of the observed bar's window the row covers.
+
+    Rows are captured moments before their bar closes, so `in_progress` labels
+    describe capture timing rather than defective data. Making the coverage
+    explicit prevents the model from treating near-complete just-closed bars
+    as missing confirmation.
+    """
+    minutes = bar.get("minutes")
+    raw_time = str(bar.get("utc_time") or "")
+    if not isinstance(minutes, int) or minutes < 1 or not raw_time:
+        return None
+    try:
+        observed = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    observed = observed.astimezone(timezone.utc)
+    duration = minutes * 60
+    seconds_into_day = (
+        observed.hour * 3600 + observed.minute * 60
+        + observed.second + observed.microsecond / 1_000_000
+    )
+    observed_seconds = seconds_into_day % duration
+    annotation: dict[str, Any] = {
+        "observed_seconds_of_bar": round(observed_seconds, 1),
+        "bar_length_seconds": duration,
+    }
+    if window_close is not None:
+        bar_close = observed + timedelta(seconds=duration - observed_seconds)
+        annotation["bar_window_closed"] = bar_close <= window_close
+    return annotation
+
+
+def _compact_model_bar(
+    bar: dict[str, Any],
+    *,
+    latest_frame: bool,
+    window_close: datetime | None = None,
+) -> dict[str, Any]:
     """Remove observation aliases while preserving native facts and analytics."""
     value = dict(bar)
     value.pop("native_observations", None)
     value.pop("heuristic_projections", None)
     if not value.get("descriptive_state"):
         value.pop("descriptive_state", None)
+    annotation = _bar_observation_annotation(value, window_close)
+    if annotation:
+        value["bar_observation"] = annotation
     if latest_frame:
         return value
     indicators = value.get("indicators")
@@ -2543,6 +2671,7 @@ def _compact_model_instrument(
     instrument: dict[str, Any],
     *,
     latest_frame: bool,
+    window_close: datetime | None = None,
 ) -> dict[str, Any]:
     """Keep the five-minute path and one current higher-timeframe context."""
     value = dict(instrument)
@@ -2554,7 +2683,7 @@ def _compact_model_instrument(
     value.pop("heuristic_projections", None)
     retained_minutes = {1, 5, 15, 60} if latest_frame else {1}
     value["timeframe_bars"] = [
-        _compact_model_bar(bar, latest_frame=latest_frame)
+        _compact_model_bar(bar, latest_frame=latest_frame, window_close=window_close)
         for bar in value.get("timeframe_bars", [])
         if isinstance(bar, dict) and bar.get("minutes") in retained_minutes
     ]
@@ -2569,6 +2698,10 @@ def packet_for_model(
 ) -> dict[str, Any]:
     """Expose only current routes, truthful observation semantics, and Glitch limits."""
     model_packet = json.loads(json.dumps(packet))
+    try:
+        window_close = packet_window_utc(model_packet)
+    except (TypeError, ValueError):
+        window_close = None
     policy = model_packet.get("policy")
     if not isinstance(policy, dict):
         policy = {}
@@ -2616,6 +2749,7 @@ def packet_for_model(
                 _compact_model_instrument(
                     instrument,
                     latest_frame=latest_frame,
+                    window_close=window_close,
                 )
                 for instrument in instruments
             ]
@@ -2649,6 +2783,13 @@ def packet_for_model(
     model_packet["observation_contract"] = {
         "timeframe_rows": "live_in_progress_observations",
         "utc_time": "observation_time_not_bar_close_time",
+        "bar_observation": (
+            "Each row is an observation of the bar active at its utc_time, captured shortly "
+            "before that bar closes. bar_observation states the observed coverage in seconds and "
+            "whether the observed bar's window has already closed by this packet's window_close. "
+            "A row with high coverage and bar_window_closed=true is effectively a completed "
+            "candle; the in_progress label describes capture timing, not defective data."
+        ),
         "timeframe_roles": {
             "1m": "primary_new_exposure_timing_and_noise",
             "5m": "local_setup_and_timing",
@@ -2750,6 +2891,10 @@ def extract_json(stdout: str, expected_schema_version: str | None = None) -> dic
     return value
 
 
+class EmptyModelResponseError(RuntimeError):
+    """The model transport completed but returned no output at all."""
+
+
 def invoke_hermes(
     profile: str,
     prompt: str,
@@ -2826,6 +2971,8 @@ def invoke_hermes(
         )
     # Fresh-session stdout is the sole response; never recover from a globally
     # latest assistant message shared with other chats.
+    if not completed.stdout.strip():
+        raise EmptyModelResponseError("hermes_stdout_empty")
     return extract_json(completed.stdout, "glitch.intent.batch.v1")
 
 
@@ -2836,29 +2983,46 @@ def invoke_validated_batch(
     directive: dict[str, Any] | None,
     timeout_seconds: int,
     decision_mode: str = "flat_scan",
-) -> tuple[dict[str, Any], int]:
-    """Make one bounded Luna call and validate it without a second review call."""
+) -> tuple[dict[str, Any], int, int]:
+    """Make one bounded Luna call and validate it without a second review call.
+
+    An entirely empty transport response is retried once; invalid model output
+    is never retried or repaired by another model call.
+    """
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = decision_mode == "trigger_review"
+    transport_retry_count = 0
+    try:
+        raw = invoke_hermes(
+            profile,
+            prompt,
+            timeout_seconds,
+            positioned_only=positioned_only,
+            trigger_review_only=trigger_review_only,
+        )
+    except EmptyModelResponseError:
+        transport_retry_count = 1
+        raw = invoke_hermes(
+            profile,
+            prompt,
+            timeout_seconds,
+            positioned_only=positioned_only,
+            trigger_review_only=trigger_review_only,
+        )
     batch = stamp_decision_created_utc(
         normalize_batch(
-            invoke_hermes(
-                profile,
-                prompt,
-                timeout_seconds,
-                positioned_only=positioned_only,
-                trigger_review_only=trigger_review_only,
-            ),
+            expand_shared_flat_decision(raw, scenario),
             scenario,
         )
     )
+    backfill_constant_comparison_fields(batch)
     validate_batch(
         batch,
         scenario,
         directive,
         expected_decision_mode=decision_mode,
     )
-    return batch, 0
+    return batch, 0, transport_retry_count
 
 
 def post_intent(intent: dict[str, Any], token: str) -> dict[str, Any]:
@@ -3199,9 +3363,11 @@ def build_prompt(
         else "trigger_review" if trigger_review_only
         else "flat_scan"
     )
+    shared_flat = decision_mode == "flat_scan" and shared_flat_decision_scope(scenario)
     decisions = []
     comparison_template = candidate_comparison_template(scenario["market"].get("candidates", []))
-    for book in scenario["books"]:
+    template_books = scenario["books"][:1] if shared_flat else scenario["books"]
+    for book in template_books:
         active_instruments = positioned_instruments(book)
         action = "HOLD" if len(active_instruments) == 1 else "NOTHING"
         route = str(book["route_id"])
@@ -3292,7 +3458,7 @@ def build_prompt(
         instructions = (
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
-            "Live in-progress rows are valid anticipatory evidence; completed candles are stronger evidence, not a universal prerequisite. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
+            "Each row's bar_observation states its observed coverage; a row with bar_window_closed=true is a completed candle observed moments before its close, not missing confirmation. Treat observed coverage as ordinary sampling detail, never as an automatic veto. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto either. "
             "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
@@ -3300,6 +3466,10 @@ def build_prompt(
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "
             "Use the supplied recent ledger and learning context; do not retrieve or write memory in the hot path. "
         )
+        if shared_flat:
+            instructions += (
+                "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
+            )
     prompt = (
         common
         + instructions
@@ -3718,7 +3888,7 @@ def run_once(
         "hermes_session_mode": "isolated",
     })
     try:
-        batch, output_repair_count = invoke_validated_batch(
+        batch, output_repair_count, transport_retry_count = invoke_validated_batch(
             args.profile,
             prompt,
             scenario,
@@ -3744,6 +3914,7 @@ def run_once(
             "hermes_session_source": TRADING_SOURCE,
             "hermes_session_mode": "isolated",
             "output_repair_count": output_repair_count,
+            "transport_retry_count": transport_retry_count,
             "invocation_reason": reason,
         })
     except Exception as error:

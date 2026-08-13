@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-08-06",
+  "updated": "2026-08-13",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -22,7 +22,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.37"
+        "distribution.yaml version 0.0.2.38"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."
@@ -49,20 +49,20 @@
     },
     {
       "id": "PROFILE-BETA-01",
-      "title": "Export and accept the current Glitch main plus Hermes profile 0.0.2.27 pair",
+      "title": "Export and accept the current Glitch main plus current Hermes profile main pair",
       "status": "backlog",
       "priority": "P0",
       "owner_role": "operator_tests",
       "acceptance": [
-        "The profile export is built from current Hermes profile main at distribution version 0.0.2.27.",
+        "The profile export is built from the current Hermes profile main distribution version.",
         "The exported profile is paired with the current Glitch main AddOn source, not inferred from an older download catalog row.",
         "Install/update, paused-first jobs, status, cognition, delivery, learning, reset, restart continuity, controls, and native receipts pass on the target Windows/NinjaTrader machine.",
         "The operator explicitly promotes the named exported pair."
       ],
       "depends_on": ["GHP-001", "GHP-003"],
       "evidence": [
-        "Current profile main HEAD is 1b4cc51c1d4e1e460595f8df1805277099edd575.",
-        "distribution.yaml declares version 0.0.2.27.",
+        "Current profile main HEAD is recorded in extensions.source_authority.",
+        "distribution.yaml declares the current version.",
         "Current Glitch source authority is D:/ab/worktrees/glitch-nt-rebuild on main.",
         "scripts/setup.ps1 and SHA256SUMS define the profile export integrity boundary."
       ],
@@ -75,8 +75,9 @@
       "profile": {
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
-        "head": "1b4cc51c1d4e1e460595f8df1805277099edd575",
-        "distribution_version": "0.0.2.27"
+        "head": "5e018bff10e5a2b0e332034eefa45a2d5dc37d2b",
+        "head_note": "parent of the 0.0.2.38 change; see git main for current HEAD",
+        "distribution_version": "0.0.2.38"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",
