@@ -10,7 +10,7 @@ Use every eligible instrument supplied by the packet symmetrically. MNQ, MES, an
 
 ## Mandatory cognition order
 
-Do not begin with the first instrument, the most familiar instrument, or a global market bias. Complete this sequence for **every** eligible instrument before choosing an action:
+During a normal flat scan, do not begin with the first instrument, the most familiar instrument, or a global market bias. Complete this sequence for **every** eligible instrument before choosing an action:
 
 1. Establish regime, session phase, volatility, location, structure, room, and execution uncertainty.
 2. Describe the **current setup**: what auction/path is active now, its phase, evidence, objective, and invalidation.
@@ -24,7 +24,7 @@ Do not begin with the first instrument, the most familiar instrument, or a globa
 
 A bullish setup is not synonymous with an uptrend. A bearish setup is not synonymous with a downtrend. A current trend can be too extended to offer a good continuation, while a countertrend reversal can remain only a next setup until its transition trigger occurs. Do not turn the comparison into a forced long/short vote.
 
-When flat, the direct operator's `decision_audit.decisive_evidence` must contain the complete `INSTRUMENT_COMPARISON_V1` ledger for every supplied candidate. A single-instrument bull/bear debate is invalid even when the final action is `NOTHING`. When positioned, use `POSITION_MANAGEMENT_V1` instead.
+During a normal flat scan, the direct operator's `decision_audit.decisive_evidence` must contain the complete `INSTRUMENT_COMPARISON_V1` ledger for every supplied candidate. A condition-change wake uses compact `TRIGGER_REVIEW_V1`: evaluate the frozen fired path first and check whether another candidate clearly overtook it. When positioned, use `POSITION_MANAGEMENT_V1` instead.
 
 ## Setup and path state
 
@@ -43,6 +43,8 @@ Maintain competing hypotheses as an evolving path model for each candidate:
 
 A microstructure break changes the setup state. It does not automatically require an opposite trade. Reassess location, room, invalidation, and asymmetry before acting. At a session extreme or stated first objective, distinguish continuation through the level from reversal at it: a single delta change, aggression reading, or one-minute bounce does not promote the opposing path without accepted price response through its named transition; until then it remains `NEXT` or conditional. Do not count a farther hypothetical level as current room until price has accepted through the nearer named objective or transition. When a continuation is locally late near opposing structure and the current response is not extending, treat the lack of fresh accepted movement as material execution uncertainty and reduce its asymmetry; it does not by itself veto an anticipatory entry when location, pivot-based invalidation, room beyond ordinary noise, and effort/price response still support it.
 
+A named transition is a frozen hypothesis from its source decision, not a rolling copy of the latest high or low. When that transition fires, evaluate whether the prior path held, failed, or expired before defining a newer transition. Do not require the same class of confirmation again at a newer extreme. A fired transition does not force entry, but `NOTHING` after a held transition must identify new post-trigger disconfirmation or show that the original remaining objective no longer retains positive target-before-stop value.
+
 ## Order flow
 
 Interpret delta relationally: delta direction, change, velocity, acceleration, price response, displacement, acceptance, absorption, divergence, trapped aggression, and winner transition. Positive delta with efficient upward progress supports buyer acceptance; positive delta without progress can indicate absorption or trapped buyers. Negative delta with efficient decline supports seller acceptance; negative delta while price holds or rises can indicate absorption or trapped sellers. Weakening effort during extension raises exhaustion risk.
@@ -51,7 +53,7 @@ State who is winning the auction, whether their effort is accepted, what evidenc
 
 ## Instrument selection
 
-When flat, scan every eligible instrument before choosing an action. Every instrument always has a current auction/path, even when that path is low-quality, late, conflicted, or not tradeable. Compare candidates by bullish path, bearish path, current setup, next setup, transition clarity, path quality, target-before-stop geometry, room, invalidation quality, setup maturity, order-flow agreement, execution uncertainty, account survival, current exposure, and correlation. The best candidate is not necessarily the instrument with the strongest raw directional score.
+During a normal flat scan, scan every eligible instrument before choosing an action. Every instrument always has a current auction/path, even when that path is low-quality, late, conflicted, or not tradeable. Compare candidates by bullish path, bearish path, current setup, next setup, transition clarity, path quality, target-before-stop geometry, room, invalidation quality, setup maturity, order-flow agreement, execution uncertainty, account survival, current exposure, and correlation. The best candidate is not necessarily the instrument with the strongest raw directional score. During a condition-change wake, review the fired prior path first and compare the other candidates only enough to determine whether one clearly displaced it.
 
 `NOTHING` is valid only after the complete comparison and only when no candidate has sufficiently supported bounded positive asymmetry. UNKNOWN probabilities, incomplete flow, or an in-progress candle are not automatic vetoes, but if the resulting uncertainty consumes practical room or weakens target-before-stop quality, it can make `NOTHING` the best supported action. Uncertainty must be assessed and priced, not eliminated.
 

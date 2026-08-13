@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v13-fast-management-calibrated"
+DIRECT_PROMPT_REVISION = "direct-v14-frozen-trigger-continuity"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -68,10 +68,17 @@ DECISION_AUDIT_FIELDS = {
 CANDIDATE_COMPARISON_MARKER = "INSTRUMENT_COMPARISON_V1"
 CANDIDATE_COMPARISON_FIELDS = (
     "REGIME_LOCATION", "CURRENT_AUCTION", "BULLISH_PATH", "BEARISH_PATH",
-    "NEXT_TRANSITION", "FIVE_TO_TEN_BAR_FORECAST", "DELTA_PRICE_RESPONSE",
+    "NEXT_TRANSITION", "PRIOR_TRIGGER_REVIEW", "FIVE_TO_TEN_BAR_FORECAST", "DELTA_PRICE_RESPONSE",
     "OBJECTIVE_INVALIDATION", "ENTRY_RANGE", "NOISE_AND_GEOMETRY",
     "DATA_QUALITY", "EXECUTION_UNCERTAINTY", "ASYMMETRY",
     "RANK_STATUS_REJECTION",
+)
+TRIGGER_REVIEW_MARKER = "TRIGGER_REVIEW_V1"
+TRIGGER_REVIEW_FIELDS = (
+    "FIRED_TRIGGER", "PRIOR_PATH", "PRIOR_TRIGGER_REVIEW", "CURRENT_AUCTION",
+    "REMAINING_OBJECTIVE_INVALIDATION", "ENTRY_RANGE_NOISE_GEOMETRY",
+    "ORDER_FLOW_RESPONSE", "ALTERNATIVE_CANDIDATES", "ASYMMETRY",
+    "SELECTION_INSTRUMENT", "SELECTION_ACTION", "SELECTION_REASON",
 )
 POSITION_MANAGEMENT_MARKER = "POSITION_MANAGEMENT_V1"
 POSITION_MANAGEMENT_FIELDS = (
@@ -1324,10 +1331,12 @@ def validate_wake_triggers(triggers: Any, index: int) -> None:
     for trigger_index, trigger in enumerate(triggers):
         if not isinstance(trigger, dict):
             raise ValueError(f"wake_trigger_invalid:{index}:{trigger_index}")
-        if set(trigger) != {"type", "direction", "price"}:
+        if set(trigger) != {"type", "instrument", "direction", "price"}:
             raise ValueError(f"wake_trigger_fields_invalid:{index}:{trigger_index}")
         if trigger.get("type") != "PRICE_CROSS":
             raise ValueError(f"wake_trigger_type_invalid:{index}:{trigger_index}")
+        if not instrument_root(trigger.get("instrument")):
+            raise ValueError(f"wake_trigger_instrument_invalid:{index}:{trigger_index}")
         if trigger.get("direction") not in {"ABOVE", "BELOW"}:
             raise ValueError(f"wake_trigger_direction_invalid:{index}:{trigger_index}")
         price = trigger.get("price")
@@ -1336,65 +1345,93 @@ def validate_wake_triggers(triggers: Any, index: int) -> None:
             raise ValueError(f"wake_trigger_price_invalid:{index}:{trigger_index}")
 
 
-def explicit_price_crosses(condition: str) -> set[tuple[str, float]]:
+def explicit_price_crosses(
+    condition: str,
+    candidate_roots: set[str] | list[str] | tuple[str, ...] = (),
+    default_instrument: str = "",
+) -> set[tuple[str, str, float]]:
     pattern = re.compile(r"\b(above|over|below|under)\s+([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
-    crosses: set[tuple[str, float]] = set()
+    roots = {instrument_root(value) for value in candidate_roots if instrument_root(value)}
+    fallback = instrument_root(default_instrument)
+    crosses: set[tuple[str, str, float]] = set()
     for match in pattern.finditer(condition):
         direction = "ABOVE" if match.group(1).lower() in {"above", "over"} else "BELOW"
-        crosses.add((direction, float(match.group(2))))
+        prefix = condition[:match.start()]
+        preceding: list[tuple[int, str]] = []
+        for root in roots:
+            for token in re.finditer(rf"\b{re.escape(root)}\b", prefix, re.IGNORECASE):
+                preceding.append((token.start(), root))
+        instrument = max(preceding)[1] if preceding else fallback
+        if instrument:
+            crosses.add((instrument, direction, float(match.group(2))))
     return crosses
 
 
-def require_explicit_wake_triggers(audit: dict[str, Any], triggers: list[dict[str, Any]], index: int) -> None:
-    expected = explicit_price_crosses(str(audit.get("change_condition", "")))
-    actual = {(str(trigger.get("direction")), float(trigger.get("price"))) for trigger in triggers}
+def require_explicit_wake_triggers(
+    audit: dict[str, Any],
+    triggers: list[dict[str, Any]],
+    index: int,
+    candidate_roots: set[str] | list[str] | tuple[str, ...] = (),
+    default_instrument: str = "",
+) -> None:
+    expected = explicit_price_crosses(
+        str(audit.get("change_condition", "")), candidate_roots, default_instrument
+    )
+    actual = {
+        (
+            instrument_root(trigger.get("instrument")),
+            str(trigger.get("direction")),
+            float(trigger.get("price")),
+        )
+        for trigger in triggers
+    }
     missing = sorted(expected.difference(actual))
     if missing:
         raise ValueError(f"wake_triggers_missing_for_change_condition:{index}:{missing}")
 
 
-def normalize_wake_triggers(intent: dict[str, Any]) -> None:
+def normalize_wake_triggers(
+    intent: dict[str, Any],
+    candidate_roots: set[str] | list[str] | tuple[str, ...] = (),
+) -> None:
     """Repair the model's wake-trigger presentation before strict validation."""
     audit = intent.get("decision_audit")
     condition = str(audit.get("change_condition", "")) if isinstance(audit, dict) else ""
-    canonical: set[tuple[str, float]] = set()
+    default_instrument = instrument_root(intent.get("instrument"))
+    expected = explicit_price_crosses(condition, candidate_roots, default_instrument)
+    canonical: set[tuple[str, str, float]] = set()
     raw = intent.get("wake_triggers")
     candidates = raw if isinstance(raw, list) else ([] if raw is None else [raw])
     for trigger in candidates:
         if isinstance(trigger, dict):
+            instrument = instrument_root(trigger.get("instrument"))
             direction = str(trigger.get("direction", "")).upper()
             raw_price = trigger.get("price")
             if direction in {"ABOVE", "BELOW"} and isinstance(raw_price, (int, float)) \
                     and not isinstance(raw_price, bool) and math.isfinite(float(raw_price)):
-                canonical.add((direction, float(raw_price)))
+                matching = {
+                    item for item in expected
+                    if item[1] == direction and item[2] == float(raw_price)
+                }
+                if not instrument and len(matching) == 1:
+                    instrument = next(iter(matching))[0]
+                if instrument:
+                    canonical.add((instrument, direction, float(raw_price)))
         elif isinstance(trigger, str):
-            canonical.update(explicit_price_crosses(trigger))
-    canonical.update(explicit_price_crosses(condition))
+            canonical.update(explicit_price_crosses(trigger, candidate_roots, default_instrument))
+    canonical.update(expected)
     intent["wake_triggers"] = [
-        {"type": "PRICE_CROSS", "direction": direction, "price": price}
-        for direction, price in sorted(canonical)
+        {
+            "type": "PRICE_CROSS",
+            "instrument": instrument,
+            "direction": direction,
+            "price": price,
+        }
+        for instrument, direction, price in sorted(canonical)
     ]
 
 
-def packet_current_price(packet: dict[str, Any]) -> float | None:
-    frames = packet.get("frames")
-    if not isinstance(frames, list) or not frames:
-        return None
-    latest = frames[-1]
-    snapshot = latest.get("market_snapshot") if isinstance(latest, dict) else None
-    instruments = snapshot.get("instruments") if isinstance(snapshot, dict) else None
-    if not isinstance(instruments, list) or not instruments:
-        return None
-    for instrument in instruments:
-        if not isinstance(instrument, dict):
-            continue
-        value = instrument.get("current_price")
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
-            return float(value)
-    return None
-
-
-def packet_one_minute_range(packet: dict[str, Any]) -> tuple[float, float] | None:
+def packet_one_minute_range(packet: dict[str, Any], instrument_name: str) -> tuple[float, float] | None:
     """Return the latest one-minute bar range for intrapacket crossings."""
     frames = packet.get("frames")
     if not isinstance(frames, list) or not frames:
@@ -1404,8 +1441,10 @@ def packet_one_minute_range(packet: dict[str, Any]) -> tuple[float, float] | Non
     instruments = snapshot.get("instruments") if isinstance(snapshot, dict) else None
     if not isinstance(instruments, list):
         return None
+    expected_root = instrument_root(instrument_name)
     for instrument in instruments:
-        if not isinstance(instrument, dict):
+        if (not isinstance(instrument, dict)
+                or instrument_root(instrument.get("instrument") or instrument.get("instrument_root")) != expected_root):
             continue
         for bar in instrument.get("timeframe_bars", []):
             if not isinstance(bar, dict) or bar.get("minutes") != 1:
@@ -1419,61 +1458,196 @@ def packet_one_minute_range(packet: dict[str, Any]) -> tuple[float, float] | Non
     return None
 
 
-def prior_packet_price(exchange: Path, packet: dict[str, Any]) -> float | None:
+def prior_packet_price(exchange: Path, packet: dict[str, Any], instrument: str) -> float | None:
     packets = exchange / "glitch" / "decision-packets"
     current_id = str(packet.get("packet_id", ""))
     for path in sorted(packets.glob("*.json"), reverse=True):
         if path.stem >= current_id:
             continue
         try:
-            return packet_current_price(read_json(path))
+            value = candidate_price(read_json(path), instrument)
+            if value is not None:
+                return value
         except (OSError, ValueError, TypeError):
             continue
     return None
 
 
-def wake_trigger_fired(exchange: Path, packet: dict[str, Any], scenario: dict[str, Any]) -> bool:
-    del scenario
+def trigger_path_extremes(
+    exchange: Path,
+    packet: dict[str, Any],
+    instrument: str,
+    source_cycle_id: str,
+) -> tuple[float | None, float, float]:
+    """Preserve crossings that occur while the source Luna call is still running."""
+    current = candidate_price(packet, instrument)
+    if current is None:
+        return None, math.nan, math.nan
+    reference = None
+    lows = [current]
+    highs = [current]
+    packets = exchange / "glitch" / "decision-packets"
+    current_id = str(packet.get("packet_id") or "")
+    if packets.is_dir() and source_cycle_id:
+        for candidate_path in sorted(packets.glob("*.json")):
+            if candidate_path.stem < source_cycle_id or candidate_path.stem > current_id:
+                continue
+            try:
+                candidate_packet = packet if candidate_path.stem == current_id else read_json(candidate_path)
+                price = candidate_price(candidate_packet, instrument)
+                minute_range = packet_one_minute_range(candidate_packet, instrument)
+            except (OSError, ValueError, TypeError):
+                continue
+            if candidate_path.stem == source_cycle_id and price is not None:
+                reference = price
+            if price is not None:
+                lows.append(price)
+                highs.append(price)
+            if minute_range is not None:
+                lows.append(minute_range[0])
+                highs.append(minute_range[1])
+    if reference is None:
+        reference = prior_packet_price(exchange, packet, instrument)
+    current_range = packet_one_minute_range(packet, instrument)
+    if current_range is not None:
+        lows.append(current_range[0])
+        highs.append(current_range[1])
+    return reference, min(lows), max(highs)
+
+
+def _legacy_trigger_instrument(
+    exchange: Path,
+    source_cycle_id: str,
+    trigger: dict[str, Any],
+    scenario: dict[str, Any],
+) -> str:
+    """Recover instrument identity for one pre-v2 persisted trigger."""
+    outbox = exchange / "hermes" / "outbox" / f"{source_cycle_id}.json"
+    if not outbox.is_file():
+        return ""
+    try:
+        batch = read_json(outbox)
+    except (OSError, ValueError, TypeError):
+        return ""
+    roots = {
+        instrument_root(row.get("instrument"))
+        for row in scenario.get("market", {}).get("candidates", [])
+        if isinstance(row, dict) and instrument_root(row.get("instrument"))
+    }
+    direction = str(trigger.get("direction") or "")
+    try:
+        price = float(trigger.get("price"))
+    except (TypeError, ValueError):
+        return ""
+    matches: set[str] = set()
+    for decision in batch.get("decisions", []):
+        if not isinstance(decision, dict):
+            continue
+        audit = decision.get("decision_audit")
+        condition = str(audit.get("change_condition") or "") if isinstance(audit, dict) else ""
+        matches.update(
+            instrument for instrument, parsed_direction, parsed_price
+            in explicit_price_crosses(condition, roots, decision.get("instrument"))
+            if parsed_direction == direction and parsed_price == price
+        )
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def fired_wake_triggers(
+    exchange: Path,
+    packet: dict[str, Any],
+    scenario: dict[str, Any],
+) -> list[dict[str, Any]]:
     path = wake_trigger_path(exchange)
     if not path.is_file():
-        return False
+        return []
     try:
         state = read_json(path)
     except (OSError, ValueError, TypeError):
-        return False
+        return []
     triggers = state.get("triggers")
     if not isinstance(triggers, list):
-        return False
-    previous = prior_packet_price(exchange, packet)
-    current = packet_current_price(packet)
-    current_range = packet_one_minute_range(packet)
-    if previous is None or current is None:
-        return False
-    current_low, current_high = current_range or (current, current)
+        return []
+    source_cycle_id = str(state.get("cycle_id") or "")
+    fired: list[dict[str, Any]] = []
     for trigger in triggers:
         if not isinstance(trigger, dict):
+            continue
+        instrument = instrument_root(trigger.get("instrument")) or _legacy_trigger_instrument(
+            exchange, source_cycle_id, trigger, scenario
+        )
+        if not instrument:
             continue
         try:
             level = float(trigger["price"])
         except (KeyError, TypeError, ValueError):
             continue
+        current = candidate_price(packet, instrument)
+        previous = prior_packet_price(exchange, packet, instrument)
+        reference, observed_low, observed_high = trigger_path_extremes(
+            exchange, packet, instrument, str(trigger.get("source_cycle_id") or source_cycle_id)
+        )
+        if reference is None or current is None:
+            continue
+        current_range = packet_one_minute_range(packet, instrument)
+        current_low, current_high = current_range or (current, current)
         direction = trigger.get("direction")
-        if direction == "ABOVE" and previous <= level < max(current, current_high):
-            return True
-        if direction == "BELOW" and previous >= level > min(current, current_low):
-            return True
-    return False
+        crossed = (
+            direction == "ABOVE" and reference <= level < observed_high
+        ) or (
+            direction == "BELOW" and reference >= level > observed_low
+        )
+        if crossed:
+            fired.append({
+                "type": "PRICE_CROSS",
+                "instrument": instrument,
+                "direction": direction,
+                "price": level,
+                "source_cycle_id": str(trigger.get("source_cycle_id") or source_cycle_id),
+                "source_price": reference,
+                "previous_price": previous,
+                "current_price": current,
+                "current_bar_low": current_low,
+                "current_bar_high": current_high,
+                "observed_low_since_source": observed_low,
+                "observed_high_since_source": observed_high,
+            })
+    unique: dict[tuple[str, str, float], dict[str, Any]] = {}
+    for trigger in fired:
+        unique[(trigger["instrument"], trigger["direction"], trigger["price"])] = trigger
+    return list(unique.values())
+
+
+def wake_trigger_fired(exchange: Path, packet: dict[str, Any], scenario: dict[str, Any]) -> bool:
+    return bool(fired_wake_triggers(exchange, packet, scenario))
 
 
 def persist_wake_triggers(exchange: Path, batch: dict[str, Any], packet_id: str) -> None:
-    triggers = []
+    unique: dict[tuple[str, str, float], dict[str, Any]] = {}
     for decision in batch.get("decisions", []):
         if isinstance(decision, dict) and isinstance(decision.get("wake_triggers"), list):
-            triggers.extend(decision["wake_triggers"])
+            for trigger in decision["wake_triggers"]:
+                if not isinstance(trigger, dict):
+                    continue
+                instrument = instrument_root(trigger.get("instrument"))
+                direction = str(trigger.get("direction") or "")
+                try:
+                    price = float(trigger.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                if not instrument or direction not in {"ABOVE", "BELOW"}:
+                    continue
+                unique[(instrument, direction, price)] = {
+                    "type": "PRICE_CROSS",
+                    "instrument": instrument,
+                    "direction": direction,
+                    "price": price,
+                    "source_cycle_id": packet_id,
+                }
     write_json_atomic(wake_trigger_path(exchange), {
-        "schema_version": "glitch.hermes.wake_triggers.v1",
+        "schema_version": "glitch.hermes.wake_triggers.v2",
         "cycle_id": packet_id,
-        "triggers": triggers,
+        "triggers": list(unique.values()),
         "updated_utc": utc_now(),
     })
 
@@ -1743,6 +1917,67 @@ def candidate_comparison_template(candidates: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def trigger_review_template() -> str:
+    lines = [TRIGGER_REVIEW_MARKER]
+    lines.extend(f"{field}=REPLACE_WITH_CURRENT_PACKET_EVIDENCE" for field in TRIGGER_REVIEW_FIELDS)
+    return "\n".join(lines)
+
+
+def _instrument_comparison_section(text: str, instrument: str) -> str:
+    root = instrument_root(instrument)
+    match = re.search(
+        rf"(?ims)^INSTRUMENT\s+{re.escape(root)}\s*:\s*(.*?)(?=^INSTRUMENT\s+|^RANKING\s*=|\Z)",
+        text,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def trigger_invocation_context(
+    exchange: Path,
+    fired_triggers: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not fired_triggers:
+        return None
+    enriched: list[dict[str, Any]] = []
+    for trigger in fired_triggers:
+        value = dict(trigger)
+        source_cycle_id = str(trigger.get("source_cycle_id") or "")
+        source_path = exchange / "hermes" / "outbox" / f"{source_cycle_id}.json"
+        if source_path.is_file():
+            try:
+                source_batch = read_json(source_path)
+            except (OSError, ValueError, TypeError):
+                source_batch = {}
+            for decision in source_batch.get("decisions", []):
+                if not isinstance(decision, dict):
+                    continue
+                audit = decision.get("decision_audit")
+                if not isinstance(audit, dict):
+                    continue
+                section = _instrument_comparison_section(
+                    str(audit.get("decisive_evidence") or ""), str(trigger.get("instrument") or "")
+                )
+                if section:
+                    value["prior_decision"] = {
+                        "selected_instrument": decision.get("instrument"),
+                        "action": decision.get("action"),
+                        "confidence": decision.get("confidence"),
+                        "reason": decision.get("reason"),
+                        "change_condition": audit.get("change_condition"),
+                        "instrument_ledger": section,
+                    }
+                    break
+        enriched.append(value)
+    return {
+        "reason": "condition_change",
+        "fired_triggers": enriched,
+        "continuity_rule": (
+            "Evaluate each frozen prior trigger before defining a newer trigger. "
+            "Do not require the same class of confirmation again at a newer extreme."
+        ),
+    }
+
+
 def positioned_instruments(book: dict[str, Any]) -> list[str]:
     contexts = book.get("instrument_contexts")
     if not isinstance(contexts, dict):
@@ -1850,12 +2085,42 @@ def validate_candidate_comparison(
         raise ValueError(f"candidate_comparison_selection_action_mismatch:{index}")
 
 
+def validate_trigger_review(
+    text: str,
+    candidates: list[str] | set[str],
+    selected_instrument: str,
+    action: str,
+    index: int,
+) -> None:
+    if not isinstance(text, str) or TRIGGER_REVIEW_MARKER not in text:
+        raise ValueError(f"trigger_review_missing:{index}")
+    values: dict[str, str] = {}
+    for field in TRIGGER_REVIEW_FIELDS:
+        match = re.search(rf"(?mi)^{re.escape(field)}\s*=\s*(.+?)\s*$", text)
+        if not match or not match.group(1).strip():
+            raise ValueError(f"trigger_review_field_missing:{index}:{field}")
+        value = match.group(1).strip()
+        if value.upper().startswith("REPLACE_WITH_") or value in {"...", "?"}:
+            raise ValueError(f"trigger_review_field_placeholder:{index}:{field}")
+        values[field] = value
+    expected = {instrument_root(value) for value in candidates if instrument_root(value)}
+    selection = instrument_root(values["SELECTION_INSTRUMENT"])
+    if selection != instrument_root(selected_instrument) or selection not in expected:
+        raise ValueError(f"trigger_review_selection_instrument_mismatch:{index}")
+    if values["SELECTION_ACTION"].upper() != action:
+        raise ValueError(f"trigger_review_selection_action_mismatch:{index}")
+    status = values["PRIOR_TRIGGER_REVIEW"].split(maxsplit=1)[0].rstrip(":").upper()
+    if status not in {"HELD", "FAILED", "EXPIRED", "NOT_APPLICABLE", "NOT_REACHED"}:
+        raise ValueError(f"trigger_review_status_invalid:{index}")
+
+
 def validate_batch(
     batch: dict[str, Any],
     scenario: dict[str, Any],
     directive: dict[str, Any] | None = None,
     *,
     allow_entry_revalidation: bool = False,
+    expected_decision_mode: str | None = None,
 ) -> None:
     forced_scope = (
         forced_entry_scope(directive, scenario)
@@ -1881,6 +2146,11 @@ def validate_batch(
         raise ValueError("decision_count_mismatch")
     seen_routes: set[str] = set()
     snapshot_hash = scenario["market"]["snapshot_hash"]
+    candidate_roots = {
+        instrument_root(row.get("instrument"))
+        for row in scenario["market"].get("candidates", [])
+        if isinstance(row, dict) and instrument_root(row.get("instrument"))
+    }
     for index, (book, intent) in enumerate(zip(books, decisions)):
         if not isinstance(intent, dict):
             raise ValueError(f"intent_contract_incomplete:{index}:not_object")
@@ -1915,7 +2185,13 @@ def validate_batch(
         if any(not isinstance(audit[field], str) or not audit[field].strip()
                for field in DECISION_AUDIT_FIELDS):
             raise ValueError(f"decision_audit_value_invalid:{index}")
-        require_explicit_wake_triggers(audit, intent["wake_triggers"], index)
+        require_explicit_wake_triggers(
+            audit,
+            intent["wake_triggers"],
+            index,
+            candidate_roots,
+            intent.get("instrument"),
+        )
         route = intent.get("operator_profile")
         if route in seen_routes:
             raise ValueError("duplicate_route")
@@ -1923,7 +2199,6 @@ def validate_batch(
         if route != book["route_id"] or intent.get("account") != book["master_account"]:
             raise ValueError(f"book_scope_violation:{index}")
         selected_instrument = instrument_root(intent.get("instrument"))
-        candidate_roots = {row.get("instrument") for row in scenario["market"].get("candidates", []) if isinstance(row, dict)}
         if (candidate_roots and selected_instrument not in candidate_roots) or intent.get("snapshot_hash") != snapshot_hash:
             raise ValueError(f"market_scope_violation:{index}")
         action = intent.get("action")
@@ -1947,13 +2222,23 @@ def validate_batch(
                 index,
             )
         elif candidate_roots:
-            validate_candidate_comparison(
-                audit["decisive_evidence"],
-                candidate_roots,
-                selected_instrument,
-                action,
-                index,
-            )
+            evidence = audit["decisive_evidence"]
+            if expected_decision_mode == "trigger_review" or TRIGGER_REVIEW_MARKER in evidence:
+                validate_trigger_review(
+                    evidence,
+                    candidate_roots,
+                    selected_instrument,
+                    action,
+                    index,
+                )
+            else:
+                validate_candidate_comparison(
+                    evidence,
+                    candidate_roots,
+                    selected_instrument,
+                    action,
+                    index,
+                )
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
             if "protection_updates" in intent:
                 raise ValueError(f"entry_contains_protection_updates:{index}")
@@ -2065,12 +2350,17 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
         batch["decisions"] = decisions
     if not isinstance(decisions, list):
         return batch
+    candidate_roots = {
+        instrument_root(row.get("instrument"))
+        for row in (scenario or {}).get("market", {}).get("candidates", [])
+        if isinstance(row, dict) and instrument_root(row.get("instrument"))
+    }
     for intent in decisions:
         if isinstance(intent, dict):
             if "wake_triggers" not in intent and "wake_trigger" in intent:
                 legacy = intent.pop("wake_trigger")
                 intent["wake_triggers"] = [] if legacy is None else [legacy]
-            normalize_wake_triggers(intent)
+            normalize_wake_triggers(intent, candidate_roots)
             try:
                 uuid.UUID(str(intent.get("intent_id", "")))
             except (ValueError, TypeError, AttributeError):
@@ -2332,6 +2622,7 @@ def invoke_hermes(
     timeout_seconds: int,
     *,
     positioned_only: bool = False,
+    trigger_review_only: bool = False,
 ) -> dict[str, Any]:
     executable = shutil.which("hermes")
     if not executable:
@@ -2355,13 +2646,15 @@ def invoke_hermes(
         "--source", TRADING_SOURCE,
         "--model", CORE_MODEL,
         "--provider", CORE_PROVIDER,
-        "--max-turns", "2" if positioned_only else "3",
+        "--max-turns", "2" if positioned_only or trigger_review_only else "3",
         "--skills", (
             "glitch-setup-state,glitch-order-flow,glitch-position-management,glitch-build-intent"
             if positioned_only else
+            "glitch-setup-state,glitch-order-flow,glitch-build-intent"
+            if trigger_review_only else
             "glitch-market-scan,glitch-setup-state,glitch-order-flow,glitch-position-management,glitch-build-intent"
         ),
-        "--toolsets", "context_engine" if positioned_only else "memory",
+        "--toolsets", "context_engine" if positioned_only or trigger_review_only else "memory",
     ]
     wrapper = (
         "import os,sys;"
@@ -2408,9 +2701,11 @@ def invoke_validated_batch(
     scenario: dict[str, Any],
     directive: dict[str, Any] | None,
     timeout_seconds: int,
+    decision_mode: str = "flat_scan",
 ) -> tuple[dict[str, Any], int]:
     """Regenerate once when Luna's content, rather than its provider, is invalid."""
     positioned_only = all_scoped_books_positioned(scenario)
+    trigger_review_only = decision_mode == "trigger_review"
     for repair_count in range(2):
         try:
             batch = stamp_decision_created_utc(
@@ -2420,11 +2715,17 @@ def invoke_validated_batch(
                         prompt,
                         timeout_seconds,
                         positioned_only=positioned_only,
+                        trigger_review_only=trigger_review_only,
                     ),
                     scenario,
                 )
             )
-            validate_batch(batch, scenario, directive)
+            validate_batch(
+                batch,
+                scenario,
+                directive,
+                expected_decision_mode=decision_mode,
+            )
             return batch, repair_count
         except ValueError as error:
             if repair_count:
@@ -2737,8 +3038,21 @@ def build_prompt(
     scenario: dict[str, Any],
     journals: dict[str, Any],
     directive: dict[str, Any] | None = None,
+    invocation_reason: str | None = None,
+    invocation_context: dict[str, Any] | None = None,
 ) -> str:
     positioned_only = all_scoped_books_positioned(scenario)
+    trigger_review_only = (
+        not positioned_only
+        and invocation_reason == "condition_change"
+        and isinstance(invocation_context, dict)
+        and bool(invocation_context.get("fired_triggers"))
+    )
+    decision_mode = (
+        "position_management" if positioned_only
+        else "trigger_review" if trigger_review_only
+        else "flat_scan"
+    )
     decisions = []
     comparison_template = candidate_comparison_template(scenario["market"].get("candidates", []))
     for book in scenario["books"]:
@@ -2768,6 +3082,7 @@ def build_prompt(
                 "conservative_case": "Replace with the conservative alternative.",
                 "decisive_evidence": (
                     position_management_template(book) if len(active_instruments) == 1
+                    else trigger_review_template() if trigger_review_only
                     else comparison_template
                 ),
                 "disconfirming_evidence": "Replace with evidence against that path.",
@@ -2783,10 +3098,13 @@ def build_prompt(
         "decisions": decisions,
     }
     envelope = {
-        "decision_mode": "position_management" if positioned_only else "flat_scan",
+        "decision_mode": decision_mode,
+        "invocation_context": invocation_context,
         "decision_packet": packet_for_model(packet, scenario, positioned_only=positioned_only),
         "execution_scope": scenario_for_model(scenario, positioned_only),
-        "recent_glitch_ledger": ledger_for_model(journals, positioned_only),
+        "recent_glitch_ledger": (
+            {} if trigger_review_only else ledger_for_model(journals, positioned_only)
+        ),
         "operator_advisory": directive,
         "required_output_template": output_template,
     }
@@ -2810,10 +3128,22 @@ def build_prompt(
             "For MOVE_TP use protection_updates=[{\"leg_id\":\"COPY_NATIVE_LEG_ID\",\"take_profit\":3059.1,\"stop_loss\":3055.2}]. "
             "Copy only supplied native leg_id values. For HOLD or EXIT omit protection_updates. "
         )
+    elif trigger_review_only:
+        instructions = (
+            "Apply the injected SOUL, glitch-setup-state, glitch-order-flow, and glitch-build-intent exactly. "
+            "This is a fast condition-change review, not a new full market scan. Evaluate every frozen fired trigger and its prior instrument ledger before defining any newer transition. "
+            "A crossing is a reassessment event, not an automatic order, but it promotes the prior conditional path to active review. Do not require the same class of confirmation again at a newer extreme. "
+            "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. If it HELD and practical positive asymmetry remains, act while the entry range is executable. "
+            "If choosing NOTHING after a held trigger, identify the new post-trigger disconfirmation or show that the original remaining objective no longer offers positive target-before-stop value after noise, costs, latency, and survival risk. "
+            "Check the other supplied candidates compactly only to determine whether one has clearly overtaken the fired path; do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
+            "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder. "
+            "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price and remain strictly between stop and primary target. "
+            "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with evidence-grounded probability and confidence from 0 to 1. "
+        )
     else:
         instructions = (
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
-            "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
+            "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
             "Live in-progress rows are valid anticipatory evidence; completed candles are stronger evidence, not a universal prerequisite. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
             "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price and remain strictly between stop and primary target. "
@@ -2825,7 +3155,7 @@ def build_prompt(
         common
         + instructions
         + "Preserve required_output_template, cycle, route, account, instrument, snapshot hash, model version, prompt version, and every strict decision_audit key. final_choice must equal action. "
-        + "Mirror explicit above/below prices in change_condition into wake_triggers. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
+        + "Mirror explicit above/below prices in change_condition into instrument-aware wake_triggers shaped exactly as {\"type\":\"PRICE_CROSS\",\"instrument\":\"MNQ\",\"direction\":\"ABOVE\",\"price\":0.0}. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
     )
     return apply_cognitive_overlay(prompt, journals.get("active_cognitive_overlay"))
@@ -3005,6 +3335,7 @@ def invocation_reason(
     scenario: dict[str, Any],
     exchange: Path,
     directive: dict[str, Any] | None,
+    fired_triggers: list[dict[str, Any]] | None = None,
 ) -> str | None:
     window = packet_window_utc(packet)
     positioned = scoped_master_is_positioned(packet, scenario)
@@ -3012,7 +3343,9 @@ def invocation_reason(
         return "operator_directive"
     if positioned:
         return "positioned"
-    if wake_trigger_fired(exchange, packet, scenario):
+    if fired_triggers is None:
+        fired_triggers = fired_wake_triggers(exchange, packet, scenario)
+    if fired_triggers:
         return "condition_change"
     prior = latest_prior_attempt(exchange, packet)
     if prior is None:
@@ -3213,9 +3546,19 @@ def run_once(
         return 0
 
     directive = read_operator_directive(exchange)
-    reason = invocation_reason(packet, scenario, exchange, directive)
+    fired_triggers = fired_wake_triggers(exchange, packet, scenario)
+    reason = invocation_reason(packet, scenario, exchange, directive, fired_triggers)
     if reason is None:
         return 0
+    invocation_context = (
+        trigger_invocation_context(exchange, fired_triggers)
+        if reason == "condition_change" else None
+    )
+    decision_mode = (
+        "position_management" if all_scoped_books_positioned(scenario)
+        else "trigger_review" if invocation_context is not None
+        else "flat_scan"
+    )
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
         return 0
@@ -3233,7 +3576,14 @@ def run_once(
     journals = journal_tail(glitch_data)
     journals.update(learning_context(exchange))
     journals["active_trade_state"] = trade_state
-    prompt = build_prompt(packet, scenario, journals, directive)
+    prompt = build_prompt(
+        packet,
+        scenario,
+        journals,
+        directive,
+        invocation_reason=reason,
+        invocation_context=invocation_context,
+    )
     write_json_atomic(attempt_path, {
         "schema_version": "glitch.hermes.model_attempt.v1",
         "cycle_id": packet_id,
@@ -3243,13 +3593,18 @@ def run_once(
         "provider": CORE_PROVIDER,
         "prompt_version": DIRECT_PROMPT_VERSION,
         "cognitive_bundle_hash": DIRECT_PROMPT_VERSION.rsplit("-", 1)[-1],
-        "decision_mode": "position_management" if all_scoped_books_positioned(scenario) else "flat_scan",
+        "decision_mode": decision_mode,
         "hermes_session_source": TRADING_SOURCE,
         "hermes_session_mode": "isolated",
     })
     try:
         batch, output_repair_count = invoke_validated_batch(
-            args.profile, prompt, scenario, directive, args.timeout_seconds
+            args.profile,
+            prompt,
+            scenario,
+            directive,
+            args.timeout_seconds,
+            decision_mode,
         )
         latest_packet = read_json(packet_path)
         entry_superseded = apply_entry_revalidation(batch, packet, latest_packet)
@@ -3266,7 +3621,7 @@ def run_once(
             "provider": CORE_PROVIDER,
             "prompt_version": DIRECT_PROMPT_VERSION,
             "cognitive_bundle_hash": DIRECT_PROMPT_VERSION.rsplit("-", 1)[-1],
-            "decision_mode": "position_management" if all_scoped_books_positioned(scenario) else "flat_scan",
+            "decision_mode": decision_mode,
             "hermes_session_source": TRADING_SOURCE,
             "hermes_session_mode": "isolated",
             "output_repair_count": output_repair_count,

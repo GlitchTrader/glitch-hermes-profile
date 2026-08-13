@@ -89,6 +89,7 @@ def test_normalize_wake_triggers_repairs_model_shape() -> None:
 
     assert intent["wake_triggers"] == [{
         "type": "PRICE_CROSS",
+        "instrument": "MNQ",
         "direction": "ABOVE",
         "price": 20100.5,
     }]
@@ -108,6 +109,7 @@ def test_normalize_wake_triggers_repairs_string_trigger() -> None:
 
     assert intent["wake_triggers"] == [{
         "type": "PRICE_CROSS",
+        "instrument": "MNQ",
         "direction": "BELOW",
         "price": 19900.0,
     }]

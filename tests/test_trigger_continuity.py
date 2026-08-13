@@ -1,0 +1,226 @@
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+SPEC = importlib.util.spec_from_file_location(
+    "run_direct_glitch_cycle_trigger_continuity",
+    ROOT / "scripts" / "run-direct-glitch-cycle.py",
+)
+DIRECT = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(DIRECT)
+
+
+def test_change_condition_prices_keep_instrument_identity() -> None:
+    intent = {
+        "instrument": "MES",
+        "decision_audit": {
+            "change_condition": (
+                "Reassess if MES accepts above 7769.00 or below 7766.25; "
+                "if M2K accepts above 3054.10 or below 3053.00; "
+                "or if MNQ accepts above 29840.75 or below 29828.75."
+            )
+        },
+        "wake_triggers": [],
+    }
+
+    DIRECT.normalize_wake_triggers(intent, {"MNQ", "MES", "M2K"})
+
+    assert {
+        (row["instrument"], row["direction"], row["price"])
+        for row in intent["wake_triggers"]
+    } == {
+        ("MES", "ABOVE", 7769.0),
+        ("MES", "BELOW", 7766.25),
+        ("M2K", "ABOVE", 3054.1),
+        ("M2K", "BELOW", 3053.0),
+        ("MNQ", "ABOVE", 29840.75),
+        ("MNQ", "BELOW", 29828.75),
+    }
+
+
+def test_persisted_triggers_are_frozen_instrument_aware_and_deduplicated(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    (exchange / "hermes" / "supervisor").mkdir(parents=True)
+    trigger = {
+        "type": "PRICE_CROSS",
+        "instrument": "MNQ",
+        "direction": "BELOW",
+        "price": 29837.0,
+    }
+    batch = {"decisions": [{"wake_triggers": [trigger]}, {"wake_triggers": [trigger]}]}
+
+    DIRECT.persist_wake_triggers(exchange, batch, "20260813T0110Z")
+
+    state = json.loads((exchange / "hermes" / "supervisor" / "active-wake-triggers.json").read_text())
+    assert state["schema_version"] == "glitch.hermes.wake_triggers.v2"
+    assert state["triggers"] == [{
+        **trigger,
+        "source_cycle_id": "20260813T0110Z",
+    }]
+
+
+def test_only_the_instrument_that_crossed_its_own_level_fires(tmp_path: Path, monkeypatch) -> None:
+    exchange = tmp_path / "exchange"
+    supervisor = exchange / "hermes" / "supervisor"
+    supervisor.mkdir(parents=True)
+    (supervisor / "active-wake-triggers.json").write_text(json.dumps({
+        "schema_version": "glitch.hermes.wake_triggers.v2",
+        "cycle_id": "source",
+        "triggers": [
+            {"type": "PRICE_CROSS", "instrument": "MNQ", "direction": "BELOW", "price": 100.0, "source_cycle_id": "source"},
+            {"type": "PRICE_CROSS", "instrument": "MES", "direction": "BELOW", "price": 10.0, "source_cycle_id": "source"},
+        ],
+    }))
+    scenario = {"market": {"candidates": [{"instrument": "MNQ"}, {"instrument": "MES"}]}}
+    packet = {"packet_id": "current"}
+    prior = {"MNQ": 101.0, "MES": 11.0}
+    current = {"MNQ": 100.5, "MES": 9.5}
+    ranges = {"MNQ": (100.25, 101.0), "MES": (9.25, 11.0)}
+    monkeypatch.setattr(DIRECT, "prior_packet_price", lambda _exchange, _packet, instrument: prior[instrument])
+    monkeypatch.setattr(DIRECT, "candidate_price", lambda _packet, instrument: current[instrument])
+    monkeypatch.setattr(DIRECT, "packet_one_minute_range", lambda _packet, instrument: ranges[instrument])
+
+    fired = DIRECT.fired_wake_triggers(exchange, packet, scenario)
+
+    assert len(fired) == 1
+    assert fired[0]["instrument"] == "MES"
+    assert fired[0]["price"] == 10.0
+
+
+def test_crossing_during_model_latency_is_not_lost(tmp_path: Path, monkeypatch) -> None:
+    exchange = tmp_path / "exchange"
+    supervisor = exchange / "hermes" / "supervisor"
+    supervisor.mkdir(parents=True)
+    (supervisor / "active-wake-triggers.json").write_text(json.dumps({
+        "schema_version": "glitch.hermes.wake_triggers.v2",
+        "cycle_id": "source",
+        "triggers": [{
+            "type": "PRICE_CROSS",
+            "instrument": "MNQ",
+            "direction": "BELOW",
+            "price": 100.0,
+            "source_cycle_id": "source",
+        }],
+    }))
+    scenario = {"market": {"candidates": [{"instrument": "MNQ"}]}}
+    packet = {"packet_id": "current"}
+    monkeypatch.setattr(DIRECT, "prior_packet_price", lambda *_args: 99.0)
+    monkeypatch.setattr(DIRECT, "candidate_price", lambda *_args: 98.0)
+    monkeypatch.setattr(DIRECT, "packet_one_minute_range", lambda *_args: (97.5, 99.0))
+    monkeypatch.setattr(DIRECT, "trigger_path_extremes", lambda *_args: (101.0, 97.5, 101.0))
+
+    fired = DIRECT.fired_wake_triggers(exchange, packet, scenario)
+
+    assert len(fired) == 1
+    assert fired[0]["source_price"] == 101.0
+    assert fired[0]["previous_price"] == 99.0
+
+
+def test_legacy_trigger_recovers_instrument_from_source_decision(tmp_path: Path, monkeypatch) -> None:
+    exchange = tmp_path / "exchange"
+    supervisor = exchange / "hermes" / "supervisor"
+    outbox = exchange / "hermes" / "outbox"
+    supervisor.mkdir(parents=True)
+    outbox.mkdir(parents=True)
+    (supervisor / "active-wake-triggers.json").write_text(json.dumps({
+        "schema_version": "glitch.hermes.wake_triggers.v1",
+        "cycle_id": "source",
+        "triggers": [{"type": "PRICE_CROSS", "direction": "BELOW", "price": 10.0}],
+    }))
+    (outbox / "source.json").write_text(json.dumps({
+        "decisions": [{
+            "instrument": "MNQ",
+            "decision_audit": {
+                "change_condition": "Reassess if MES accepts below 10.0 or MNQ accepts below 100.0."
+            },
+        }],
+    }))
+    scenario = {"market": {"candidates": [{"instrument": "MNQ"}, {"instrument": "MES"}]}}
+    monkeypatch.setattr(DIRECT, "prior_packet_price", lambda *_args: 11.0)
+    monkeypatch.setattr(DIRECT, "candidate_price", lambda *_args: 9.0)
+    monkeypatch.setattr(DIRECT, "packet_one_minute_range", lambda *_args: (8.5, 11.0))
+    monkeypatch.setattr(DIRECT, "trigger_path_extremes", lambda *_args: (11.0, 8.5, 11.0))
+
+    fired = DIRECT.fired_wake_triggers(exchange, {"packet_id": "current"}, scenario)
+
+    assert len(fired) == 1
+    assert fired[0]["instrument"] == "MES"
+
+
+def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> None:
+    packet = {
+        "packet_id": "current",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [], "coverage": []},
+            "portfolio_snapshot": {"accounts": []},
+        }],
+    }
+    scenario = {
+        "cycle_id": "current",
+        "market": {
+            "snapshot_hash": "snapshot",
+            "candidates": [
+                {"instrument": "MNQ", "current_price": 98.0},
+                {"instrument": "MES", "current_price": 10.0},
+            ],
+        },
+        "books": [{
+            "route_id": "glitch",
+            "master_account": "Sim101",
+            "followers": [],
+            "exposure": [],
+            "position_building_context": {"instrument": "MNQ"},
+            "instrument_contexts": {
+                "MNQ": {"current_signed_quantity": 0},
+                "MES": {"current_signed_quantity": 0},
+            },
+        }],
+    }
+    context = {
+        "reason": "condition_change",
+        "fired_triggers": [{
+            "source_cycle_id": "source",
+            "instrument": "MNQ",
+            "direction": "BELOW",
+            "price": 100.0,
+            "previous_price": 101.0,
+            "current_price": 98.0,
+            "prior_decision": {"instrument_ledger": "BEARISH_PATH=conditional below 100"},
+        }],
+    }
+
+    prompt = DIRECT.build_prompt(
+        packet,
+        scenario,
+        {},
+        invocation_reason="condition_change",
+        invocation_context=context,
+    )
+
+    assert '"decision_mode":"trigger_review"' in prompt
+    assert DIRECT.TRIGGER_REVIEW_MARKER in prompt
+    assert '"decisive_evidence":"INSTRUMENT_COMPARISON_V1' not in prompt
+    assert '"source_cycle_id":"source"' in prompt
+    assert "Do not require the same class of confirmation again at a newer extreme" in prompt
+    assert '"recent_glitch_ledger":{}' in prompt
+
+
+def test_trigger_review_contract_requires_explicit_prior_status() -> None:
+    lines = [DIRECT.TRIGGER_REVIEW_MARKER]
+    for field in DIRECT.TRIGGER_REVIEW_FIELDS:
+        value = "current evidence"
+        if field == "PRIOR_TRIGGER_REVIEW":
+            value = "HELD: price accepted through the frozen trigger"
+        elif field == "SELECTION_INSTRUMENT":
+            value = "MNQ"
+        elif field == "SELECTION_ACTION":
+            value = "NOTHING"
+        lines.append(f"{field}={value}")
+
+    DIRECT.validate_trigger_review("\n".join(lines), {"MNQ", "MES"}, "MNQ", "NOTHING", 0)
