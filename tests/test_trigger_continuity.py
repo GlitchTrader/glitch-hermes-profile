@@ -208,7 +208,52 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert '"decisive_evidence":"INSTRUMENT_COMPARISON_V1' not in prompt
     assert '"source_cycle_id":"source"' in prompt
     assert "Do not require the same class of confirmation again at a newer extreme" in prompt
+    assert "HELD preserves the hypothesis but supplies no extra directional evidence" in prompt
+    assert "multiple one-minute packets during model and transport delay" in prompt
     assert '"recent_glitch_ledger":{}' in prompt
+
+
+def test_trigger_context_preserves_a_prior_trigger_review_ledger(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    outbox = exchange / "hermes" / "outbox"
+    outbox.mkdir(parents=True)
+    prior_review = "\n".join([
+        DIRECT.TRIGGER_REVIEW_MARKER,
+        "FIRED_TRIGGER=MNQ below 100",
+        "PRIOR_PATH=continue toward 90",
+        "PRIOR_TRIGGER_REVIEW=HELD: accepted below 100",
+        "CURRENT_AUCTION=sellers accepted",
+        "REMAINING_OBJECTIVE_INVALIDATION=objective 90; invalidation 103",
+        "ENTRY_RANGE_NOISE_GEOMETRY=95-97",
+        "ORDER_FLOW_RESPONSE=negative delta with price response",
+        "ALTERNATIVE_CANDIDATES=none displaced MNQ",
+        "ASYMMETRY=positive after uncertainty",
+        "SELECTION_INSTRUMENT=MNQ",
+        "SELECTION_ACTION=NOTHING",
+        "SELECTION_REASON=wait for executable location",
+    ])
+    (outbox / "source.json").write_text(json.dumps({
+        "decisions": [{
+            "instrument": "MNQ",
+            "action": "NOTHING",
+            "confidence": 0.7,
+            "reason": "wait",
+            "decision_audit": {
+                "decisive_evidence": prior_review,
+                "change_condition": "MNQ below 95",
+            },
+        }],
+    }))
+
+    context = DIRECT.trigger_invocation_context(exchange, [{
+        "source_cycle_id": "source",
+        "instrument": "MNQ",
+        "direction": "BELOW",
+        "price": 95.0,
+    }])
+
+    assert context is not None
+    assert context["fired_triggers"][0]["prior_decision"]["instrument_ledger"] == prior_review
 
 
 def test_trigger_review_contract_requires_explicit_prior_status() -> None:
@@ -224,6 +269,35 @@ def test_trigger_review_contract_requires_explicit_prior_status() -> None:
         lines.append(f"{field}={value}")
 
     DIRECT.validate_trigger_review("\n".join(lines), {"MNQ", "MES"}, "MNQ", "NOTHING", 0)
+
+
+def test_trigger_entry_requires_explicit_horizon_and_economic_geometry() -> None:
+    def review(geometry: str) -> str:
+        lines = [DIRECT.TRIGGER_REVIEW_MARKER]
+        for field in DIRECT.TRIGGER_REVIEW_FIELDS:
+            value = "current evidence"
+            if field == "PRIOR_TRIGGER_REVIEW":
+                value = "HELD: price accepted through the frozen trigger"
+            elif field == "ENTRY_RANGE_NOISE_GEOMETRY":
+                value = geometry
+            elif field == "SELECTION_INSTRUMENT":
+                value = "MNQ"
+            elif field == "SELECTION_ACTION":
+                value = "ENTER_SHORT"
+            lines.append(f"{field}={value}")
+        return "\n".join(lines)
+
+    complete = "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency"
+    DIRECT.validate_trigger_review(review(complete), {"MNQ", "MES"}, "MNQ", "ENTER_SHORT", 0)
+
+    try:
+        DIRECT.validate_trigger_review(
+            review("small stop above the pivot"), {"MNQ", "MES"}, "MNQ", "ENTER_SHORT", 0
+        )
+    except ValueError as error:
+        assert str(error).startswith("entry_geometry_evidence_incomplete:0:trigger_review:")
+    else:
+        raise AssertionError("trigger entry without explicit horizon and economic geometry was accepted")
 
 
 def test_trigger_review_retry_restates_the_exact_contract(monkeypatch) -> None:

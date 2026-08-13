@@ -1954,9 +1954,12 @@ def trigger_invocation_context(
                 audit = decision.get("decision_audit")
                 if not isinstance(audit, dict):
                     continue
+                decisive_evidence = str(audit.get("decisive_evidence") or "")
                 section = _instrument_comparison_section(
-                    str(audit.get("decisive_evidence") or ""), str(trigger.get("instrument") or "")
+                    decisive_evidence, str(trigger.get("instrument") or "")
                 )
+                if not section and TRIGGER_REVIEW_MARKER in decisive_evidence:
+                    section = decisive_evidence
                 if section:
                     value["prior_decision"] = {
                         "selected_instrument": decision.get("instrument"),
@@ -2062,7 +2065,9 @@ def validate_candidate_comparison(
         missing = sorted(expected - set(sections))
         extra = sorted(set(sections) - expected)
         raise ValueError(f"candidate_comparison_instruments:{index}:missing={','.join(missing)}:extra={','.join(extra)}")
+    section_values: dict[str, dict[str, str]] = {}
     for root, section in sections.items():
+        section_values[root] = {}
         for field in CANDIDATE_COMPARISON_FIELDS:
             match = re.search(rf"(?mi)^(?:[-*]\s*)?{re.escape(field)}\s*=\s*(.+?)\s*$", section)
             if not match or not match.group(1).strip():
@@ -2070,6 +2075,7 @@ def validate_candidate_comparison(
             value = match.group(1).strip()
             if value.upper().startswith("REPLACE_WITH_") or value in {"...", "?"}:
                 raise ValueError(f"candidate_comparison_field_placeholder:{index}:{root}:{field}")
+            section_values[root][field] = value
     ranking = re.search(r"(?mi)^RANKING\s*=\s*(.+?)\s*$", text)
     selection = re.search(r"(?mi)^SELECTION_INSTRUMENT\s*=\s*([A-Za-z0-9._-]+)\s*$", text)
     selection_action = re.search(r"(?mi)^SELECTION_ACTION\s*=\s*([A-Za-z_]+)\s*$", text)
@@ -2083,6 +2089,30 @@ def validate_candidate_comparison(
         raise ValueError(f"candidate_comparison_selection_instrument_mismatch:{index}")
     if selection_action.group(1).upper() != action:
         raise ValueError(f"candidate_comparison_selection_action_mismatch:{index}")
+    if action in {"ENTER_LONG", "ENTER_SHORT"}:
+        validate_entry_geometry_evidence(
+            section_values[instrument_root(selected_instrument)]["NOISE_AND_GEOMETRY"],
+            index,
+            "candidate_comparison",
+        )
+
+
+def validate_entry_geometry_evidence(value: str, index: int, source: str) -> None:
+    """Require explicit geometry evidence without imposing a numeric strategy gate."""
+    lowered = value.lower()
+    dimensions = {
+        "points": "point" in lowered,
+        "ticks": "tick" in lowered,
+        "dollars": "$" in value or "usd" in lowered or "dollar" in lowered,
+        "horizon_noise": (
+            "horizon noise" in lowered
+            or ("atr" in lowered and "1m" in lowered and "5m" in lowered)
+        ),
+        "latency": "latency" in lowered or "delay" in lowered,
+    }
+    missing = [name for name, present in dimensions.items() if not present]
+    if missing:
+        raise ValueError(f"entry_geometry_evidence_incomplete:{index}:{source}:{','.join(missing)}")
 
 
 def validate_trigger_review(
@@ -2112,6 +2142,12 @@ def validate_trigger_review(
     status = values["PRIOR_TRIGGER_REVIEW"].split(maxsplit=1)[0].rstrip(":").upper()
     if status not in {"HELD", "FAILED", "EXPIRED"}:
         raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
+    if action in {"ENTER_LONG", "ENTER_SHORT"}:
+        validate_entry_geometry_evidence(
+            values["ENTRY_RANGE_NOISE_GEOMETRY"],
+            index,
+            "trigger_review",
+        )
 
 
 def validate_batch(
@@ -2736,7 +2772,9 @@ def invoke_validated_batch(
                     f" decision_audit.decisive_evidence must start with {TRIGGER_REVIEW_MARKER} and contain "
                     f"these exact non-empty field lines: {', '.join(TRIGGER_REVIEW_FIELDS)}. "
                     "PRIOR_TRIGGER_REVIEW must begin exactly HELD:, FAILED:, or EXPIRED:. "
-                    "Never use a numeric status and never omit FIRED_TRIGGER."
+                    "Never use a numeric status and never omit FIRED_TRIGGER. For an entry, "
+                    "ENTRY_RANGE_NOISE_GEOMETRY must state points, ticks, one- and five-minute ATR or "
+                    "equivalent horizon noise, one-contract dollars, and model/transport latency."
                 )
             prompt += (
                 "\nSTRICT_OUTPUT_CORRECTION="
@@ -3142,11 +3180,12 @@ def build_prompt(
             "Apply the injected SOUL, glitch-setup-state, glitch-order-flow, and glitch-build-intent exactly. "
             "This is a fast condition-change review, not a new full market scan. Evaluate every frozen fired trigger and its prior instrument ledger before defining any newer transition. "
             "A crossing is a reassessment event, not an automatic order, but it promotes the prior conditional path to active review. Do not require the same class of confirmation again at a newer extreme. "
-            "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. If it HELD and practical positive asymmetry remains, act while the entry range is executable. "
-            "If choosing NOTHING after a held trigger, identify the new post-trigger disconfirmation or show that the original remaining objective no longer offers positive target-before-stop value after noise, costs, latency, and survival risk. "
+            "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. HELD preserves the hypothesis but supplies no extra directional evidence and does not lower the entry standard. "
+            "Enter only when current response, remaining room, genuine invalidation, execution location, and survival-adjusted asymmetry independently support it; otherwise choose NOTHING and identify the missing edge. "
             "Check the other supplied candidates compactly only to determine whether one has clearly overtaken the fired path; do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
             "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder. "
-            "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price and remain strictly between stop and primary target. "
+            "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
+            "A valid tiny bracket is not proof of edge. In ENTRY_RANGE_NOISE_GEOMETRY state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Reject a shallow pivot that cannot survive the intended five-to-ten-bar path; improve entry location, use a deeper genuine invalidation, or choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with evidence-grounded probability and confidence from 0 to 1. "
         )
     else:
@@ -3155,9 +3194,9 @@ def build_prompt(
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW=NOT_APPLICABLE, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
             "Live in-progress rows are valid anticipatory evidence; completed candles are stronger evidence, not a universal prerequisite. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
             "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
-            "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price and remain strictly between stop and primary target. "
+            "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, a short evidence method grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
-            "A valid tiny bracket is not proof of edge: name current noise and express geometry in points, ticks, ATR context, and dollars. "
+            "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. A shallow pivot must survive the intended five-to-ten-bar path. "
             "Retrieve relevant durable memory exactly once unless the advisory is a native tool canary; do not write memory. "
         )
     prompt = (

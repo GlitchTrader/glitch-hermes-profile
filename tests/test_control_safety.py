@@ -243,10 +243,11 @@ def test_explicit_all_and_exact_route_are_persisted_and_reported(
 
 def valid_decision(route: str, account: str, action: str) -> dict:
     comparison = [DIRECT.CANDIDATE_COMPARISON_MARKER, "INSTRUMENT MNQ:"]
-    comparison.extend(
-        f"{field}=supported MNQ evidence"
-        for field in DIRECT.CANDIDATE_COMPARISON_FIELDS
-    )
+    for field in DIRECT.CANDIDATE_COMPARISON_FIELDS:
+        value = "supported MNQ evidence"
+        if field == "NOISE_AND_GEOMETRY":
+            value = "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency"
+        comparison.append(f"{field}={value}")
     comparison.extend([
         "RANKING=MNQ",
         "SELECTION_INSTRUMENT=MNQ",

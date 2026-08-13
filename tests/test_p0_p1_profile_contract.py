@@ -17,7 +17,11 @@ SPEC.loader.exec_module(DIRECT)
 
 def comparison(action: str, instrument: str = "MNQ") -> str:
     lines = [DIRECT.CANDIDATE_COMPARISON_MARKER, f"INSTRUMENT {instrument}:"]
-    lines.extend(f"{field}=current evidence" for field in DIRECT.CANDIDATE_COMPARISON_FIELDS)
+    for field in DIRECT.CANDIDATE_COMPARISON_FIELDS:
+        value = "current evidence"
+        if field == "NOISE_AND_GEOMETRY":
+            value = "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency"
+        lines.append(f"{field}={value}")
     lines.extend([
         f"RANKING={instrument}",
         f"SELECTION_INSTRUMENT={instrument}",
@@ -112,6 +116,21 @@ def test_entry_requires_calibration_and_a_slippage_tolerant_range() -> None:
         assert str(error) == "entry_range_required:0"
     else:
         raise AssertionError("missing entry range was accepted")
+
+
+def test_entry_rejects_geometry_evidence_that_hides_a_tiny_denominator() -> None:
+    batch, scenario = entry_batch()
+    batch["decisions"][0]["decision_audit"]["decisive_evidence"] = comparison("ENTER_LONG").replace(
+        "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency",
+        "small structural stop with attractive ratio",
+    )
+
+    try:
+        DIRECT.validate_batch(batch, scenario)
+    except ValueError as error:
+        assert str(error).startswith("entry_geometry_evidence_incomplete:0:candidate_comparison:")
+    else:
+        raise AssertionError("entry without explicit horizon and economic geometry was accepted")
 
 
 def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeypatch) -> None:
