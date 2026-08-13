@@ -261,18 +261,33 @@ def test_trigger_context_preserves_a_prior_trigger_review_ledger(tmp_path: Path)
 
 
 def test_trigger_review_contract_requires_explicit_prior_status() -> None:
-    lines = [DIRECT.TRIGGER_REVIEW_MARKER]
-    for field in DIRECT.TRIGGER_REVIEW_FIELDS:
-        value = "current evidence"
-        if field == "PRIOR_TRIGGER_REVIEW":
-            value = "HELD: price accepted through the frozen trigger"
-        elif field == "SELECTION_INSTRUMENT":
-            value = "MNQ"
-        elif field == "SELECTION_ACTION":
-            value = "NOTHING"
-        lines.append(f"{field}={value}")
+    def review(status: str) -> str:
+        lines = [DIRECT.TRIGGER_REVIEW_MARKER]
+        for field in DIRECT.TRIGGER_REVIEW_FIELDS:
+            value = "current evidence"
+            if field == "PRIOR_TRIGGER_REVIEW":
+                value = status
+            elif field == "SELECTION_INSTRUMENT":
+                value = "MNQ"
+            elif field == "SELECTION_ACTION":
+                value = "NOTHING"
+            lines.append(f"{field}={value}")
+        return "\n".join(lines)
 
-    DIRECT.validate_trigger_review("\n".join(lines), {"MNQ", "MES"}, "MNQ", "NOTHING", 0)
+    DIRECT.validate_trigger_review(
+        review("HELD: price accepted through the frozen trigger"), {"MNQ", "MES"}, "MNQ", "NOTHING", 0
+    )
+    # Trailing punctuation on the status token is formatting, not cognition.
+    DIRECT.validate_trigger_review(
+        review("HELD. Price accepted through the frozen trigger"), {"MNQ", "MES"}, "MNQ", "NOTHING", 0
+    )
+
+    try:
+        DIRECT.validate_trigger_review(review("MAYBE: unclear"), {"MNQ", "MES"}, "MNQ", "NOTHING", 0)
+    except ValueError as error:
+        assert str(error).startswith("trigger_review_status_invalid:0:")
+    else:
+        raise AssertionError("an unknown prior trigger status was accepted")
 
 
 def test_trigger_review_rejects_deferring_setup_derivation_to_packet() -> None:

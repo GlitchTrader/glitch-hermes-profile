@@ -2221,7 +2221,7 @@ def validate_trigger_review(
         raise ValueError(f"trigger_review_selection_instrument_mismatch:{index}")
     if values["SELECTION_ACTION"].upper() != action:
         raise ValueError(f"trigger_review_selection_action_mismatch:{index}")
-    status = values["PRIOR_TRIGGER_REVIEW"].split(maxsplit=1)[0].rstrip(":").upper()
+    status = values["PRIOR_TRIGGER_REVIEW"].split(maxsplit=1)[0].rstrip(":.,;").upper()
     if status not in {"HELD", "FAILED", "EXPIRED"}:
         raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
     validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
