@@ -129,3 +129,24 @@ def test_management_evidence_is_bounded_but_preserves_non_hold_actions() -> None
     bounded = LEARNING.bounded_management_decisions(rows)
     assert len(bounded) <= LEARNING.MAX_DEBRIEF_MANAGEMENT_DECISIONS
     assert any(row.get("intent", {}).get("action") == "MOVE_STOP" for row in bounded)
+
+
+def test_hourly_evidence_fits_oldest_complete_slice_with_repair_room(tmp_path, monkeypatch) -> None:
+    rows = [{"episode_id": f"episode-{index}", "payload": "x" * 40} for index in range(5)]
+
+    monkeypatch.setattr(LEARNING, "MAX_PROMPT_CHARS", 150)
+    monkeypatch.setattr(LEARNING, "LEARNING_REPAIR_PROMPT_RESERVE_CHARS", 20)
+    monkeypatch.setattr(LEARNING, "compact_episode", lambda row: dict(row))
+    monkeypatch.setattr(LEARNING, "continuity", lambda _supervisor: {})
+    monkeypatch.setattr(LEARNING, "output_template", lambda *_args: {})
+    monkeypatch.setattr(
+        LEARNING,
+        "build_prompt",
+        lambda _loop, evidence, _template, _continuity: "x" * (10 + 50 * len(evidence["episodes"])),
+    )
+
+    batch, evidence = LEARNING.fit_hourly_evidence(rows, tmp_path)
+
+    assert [row["episode_id"] for row in batch] == ["episode-0", "episode-1"]
+    assert evidence["scope"]["evidence_episode_ids"] == ["episode-0", "episode-1"]
+    assert [row["episode_id"] for row in evidence["episodes"]] == ["episode-0", "episode-1"]

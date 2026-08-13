@@ -55,6 +55,7 @@ MAX_HOURLY_EVIDENCE = 24
 MAX_PLANNING_REVIEWS = 6
 MAX_PLANNING_EPISODES = 12
 MAX_PROMPT_CHARS = 320_000
+LEARNING_REPAIR_PROMPT_RESERVE_CHARS = 2_000
 
 # Only market/geometry/capacity decisions belong in cognitive evidence. Missing
 # services, stale state, policy/auth failures, and native API faults remain code
@@ -1163,6 +1164,38 @@ def continuity(supervisor: Path) -> dict[str, Any]:
     }
 
 
+def fit_hourly_evidence(
+    rows: list[dict[str, Any]], supervisor: Path
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Keep the oldest hourly backlog slice that leaves room for one repair."""
+    batch = list(rows[:MAX_HOURLY_EVIDENCE])
+    if not batch:
+        return [], {
+            "episodes": [],
+            "scope": {"kind": "oldest_unreviewed_supervision", "evidence_episode_ids": []},
+        }
+    while batch:
+        batch_ids = [str(row["episode_id"]) for row in batch]
+        evidence = {
+            "episodes": [compact_episode(row) for row in batch],
+            "scope": {
+                "kind": "oldest_unreviewed_supervision",
+                "evidence_episode_ids": batch_ids,
+            },
+        }
+        review_id = stable_id("hourly-review", "|".join(batch_ids))
+        prompt = build_prompt(
+            "hourly",
+            evidence,
+            output_template("hourly", [review_id]),
+            continuity(supervisor),
+        )
+        if len(prompt) <= MAX_PROMPT_CHARS - LEARNING_REPAIR_PROMPT_RESERVE_CHARS:
+            return batch, evidence
+        batch.pop()
+    raise ValueError("learning_prompt_too_large:hourly:single_episode")
+
+
 def invoke_loop(
     args,
     loop_id: str,
@@ -1663,7 +1696,7 @@ def run_once(args) -> dict[str, Any]:
             (hourly_due or args.force_loop == "hourly")
             and args.force_loop in {None, "hourly"}
         ):
-            batch = unreviewed[:MAX_HOURLY_EVIDENCE]
+            batch, hourly_evidence = fit_hourly_evidence(unreviewed, supervisor)
             batch_ids = [str(row["episode_id"]) for row in batch]
             if batch:
                 review_id = stable_id("hourly-review", "|".join(batch_ids))
@@ -1671,13 +1704,7 @@ def run_once(args) -> dict[str, Any]:
                     records = invoke_loop(
                         args,
                         "hourly",
-                        {
-                            "episodes": [compact_episode(row) for row in batch],
-                            "scope": {
-                                "kind": "oldest_unreviewed_supervision",
-                                "evidence_episode_ids": batch_ids,
-                            },
-                        },
+                        hourly_evidence,
                         [review_id],
                         supervisor,
                     )

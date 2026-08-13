@@ -2110,8 +2110,8 @@ def validate_trigger_review(
     if values["SELECTION_ACTION"].upper() != action:
         raise ValueError(f"trigger_review_selection_action_mismatch:{index}")
     status = values["PRIOR_TRIGGER_REVIEW"].split(maxsplit=1)[0].rstrip(":").upper()
-    if status not in {"HELD", "FAILED", "EXPIRED", "NOT_APPLICABLE", "NOT_REACHED"}:
-        raise ValueError(f"trigger_review_status_invalid:{index}")
+    if status not in {"HELD", "FAILED", "EXPIRED"}:
+        raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
 
 
 def validate_batch(
@@ -2730,6 +2730,14 @@ def invoke_validated_batch(
         except ValueError as error:
             if repair_count:
                 raise
+            mode_instruction = ""
+            if decision_mode == "trigger_review":
+                mode_instruction = (
+                    f" decision_audit.decisive_evidence must start with {TRIGGER_REVIEW_MARKER} and contain "
+                    f"these exact non-empty field lines: {', '.join(TRIGGER_REVIEW_FIELDS)}. "
+                    "PRIOR_TRIGGER_REVIEW must begin exactly HELD:, FAILED:, or EXPIRED:. "
+                    "Never use a numeric status and never omit FIRED_TRIGGER."
+                )
             prompt += (
                 "\nSTRICT_OUTPUT_CORRECTION="
                 + json.dumps({
@@ -2738,6 +2746,7 @@ def invoke_validated_batch(
                         "Regenerate the same CURRENT_CYCLE decision from the supplied required_output_template. "
                         "Return one complete strict JSON object only; do not change cycle or scoped identities. "
                         "For an entry include the required range and forecast fields. For MOVE_STOP or MOVE_TP use only supplied native leg IDs."
+                        + mode_instruction
                     ),
                 }, separators=(",", ":"))
             )
