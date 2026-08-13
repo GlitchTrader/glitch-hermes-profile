@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v20-truthful-completed-bars"
+DIRECT_PROMPT_REVISION = "direct-v21-executable-opportunity"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
@@ -2751,6 +2751,24 @@ def _compact_model_instrument(
         for bar in value.get("timeframe_bars", [])
         if isinstance(bar, dict) and bar.get("minutes") in retained_minutes
     ]
+    session = value.get("session")
+    if isinstance(session, dict):
+        for bar in value["timeframe_bars"]:
+            descriptive = bar.get("descriptive_state")
+            state = descriptive.get("descriptive_state") if isinstance(descriptive, dict) else None
+            location = state.get("location") if isinstance(state, dict) else None
+            if not isinstance(location, dict):
+                continue
+            # The packet-level session block is canonical. A chart refresh can
+            # reset the nested descriptive tracker and create false extremes.
+            for source, target in (
+                ("high", "session_high"),
+                ("low", "session_low"),
+                ("previous_high", "previous_session_high"),
+                ("previous_low", "previous_session_low"),
+            ):
+                if session.get(source) is not None:
+                    location[target] = session[source]
     return value
 
 
@@ -3395,12 +3413,19 @@ def scenario_for_model(scenario: dict[str, Any], positioned_only: bool) -> dict[
 
 
 def ledger_for_model(journals: dict[str, Any], positioned_only: bool) -> dict[str, Any]:
-    if not positioned_only:
-        return journals
+    if positioned_only:
+        return {
+            "outcomes": list(journals.get("outcomes", []))[-3:],
+            "active_trade_state": journals.get("active_trade_state"),
+            "current_guidance": journals.get("current_guidance"),
+        }
+    # Preserve factual continuity without feeding the learner's prose verdict
+    # back into entry cognition. Otherwise repeated NOTHING episodes can label
+    # themselves disciplined abstention and become their own veto.
     return {
-        "outcomes": list(journals.get("outcomes", []))[-3:],
-        "active_trade_state": journals.get("active_trade_state"),
-        "current_guidance": journals.get("current_guidance"),
+        "decisions": list(journals.get("decisions", []))[-3:],
+        "executions": list(journals.get("executions", []))[-3:],
+        "outcomes": list(journals.get("outcomes", []))[-6:],
     }
 
 
@@ -3512,10 +3537,11 @@ def build_prompt(
             "This is a fast condition-change review, not a new full market scan. Evaluate every frozen fired trigger and its prior instrument ledger before defining any newer transition. "
             "A crossing is a reassessment event, not an automatic order, but it promotes the prior conditional path to active review. Do not require the same class of confirmation again at a newer extreme. "
             "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. HELD preserves the hypothesis but supplies no extra directional evidence and does not lower the entry standard. "
-            "Enter only when current response, remaining room, genuine invalidation, execution location, and survival-adjusted asymmetry independently support it; otherwise choose NOTHING and identify the missing edge. "
+            "Enter when current response, remaining probabilistic room, genuine invalidation, execution location, and survival-adjusted asymmetry jointly support positive expected value; these are evidence dimensions, not five independent permission gates. Otherwise choose NOTHING and identify the missing edge. "
             "Hermes must derive the current objective, genuine invalidation, and executable zone from supplied market structure, volatility, auction response, and flow; never defer because these interpretations were not prewritten or labeled authoritative. UNKNOWN is valid only when the underlying evidence is unusable. A confirmation transition is not automatically the primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
+            "A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
-            "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder. "
+            "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder. Keep every field to one compact evidence-dense sentence, avoid repeated facts, and keep the complete ledger under 8000 characters. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
             "A valid tiny bracket is not proof of edge. In ENTRY_RANGE_NOISE_GEOMETRY state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. Reject a shallow pivot that cannot survive the intended five-to-ten-bar path; improve entry location, use a deeper genuine invalidation, or choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with evidence-grounded probability and confidence from 0 to 1. "
@@ -3525,12 +3551,12 @@ def build_prompt(
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs a current auction, bullish and bearish paths, next transition, PRIOR_TRIGGER_REVIEW classified as HELD, FAILED, EXPIRED, or NOT_APPLICABLE only when no prior path exists, coarse next-five-to-ten-bar forecast, delta-price response, objective/invalidation, practical entry range, noise-aware geometry, uncertainty, asymmetry, and rejection reason. "
             "Use each one-minute row's native_observations.last_completed_bar as the authoritative completed candle. Current OHLCV is live partial evidence and must remain labeled partial. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
-            "Choose the best supported path only when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. "
+            "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, an evidence method of at most 128 characters grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "
-            "Use the supplied recent ledger and learning context; do not retrieve or write memory in the hot path. "
+            "Keep every comparison field to one compact evidence-dense sentence, do not repeat the same fact or veto across fields, and keep the complete INSTRUMENT_COMPARISON_V1 ledger under 12000 characters. Use the supplied recent factual ledger; learner guidance is deliberately excluded from flat entry cognition. Do not retrieve or write memory in the hot path. "
         )
         if prior_cognition:
             instructions += (

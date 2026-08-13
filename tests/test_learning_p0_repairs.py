@@ -150,3 +150,16 @@ def test_hourly_evidence_fits_oldest_complete_slice_with_repair_room(tmp_path, m
     assert [row["episode_id"] for row in batch] == ["episode-0", "episode-1"]
     assert evidence["scope"]["evidence_episode_ids"] == ["episode-0", "episode-1"]
     assert [row["episode_id"] for row in evidence["episodes"]] == ["episode-0", "episode-1"]
+
+
+def test_hourly_prompt_reviews_nothing_with_bounded_counterfactual_geometry() -> None:
+    prompt = LEARNING.build_prompt(
+        "hourly",
+        {"episodes": []},
+        LEARNING.output_template("hourly", []),
+        {},
+    )
+
+    assert "conservative noise-aware counterfactual zone" in prompt
+    assert "absence of an actual trade" in prompt
+    assert "target-before-stop chronology" in prompt

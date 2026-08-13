@@ -933,6 +933,99 @@ def test_compacted_bars_preserve_native_completed_bar_without_relabeling_current
     assert "prior fully closed NinjaTrader candle" in result["observation_contract"]["last_completed_bar"]
 
 
+def test_compacted_bars_use_packet_session_as_canonical_location() -> None:
+    packet = {
+        "packet_id": "20260813T1009Z",
+        "window_close_utc": "2026-08-13T10:09:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {
+                "instruments": [{
+                    "instrument": "M2K",
+                    "current_price": 3066.0,
+                    "session": {
+                        "high": 3067.9,
+                        "low": 3021.4,
+                        "previous_high": 3050.0,
+                        "previous_low": 3005.0,
+                    },
+                    "timeframe_bars": [{
+                        "minutes": 1,
+                        "descriptive_state": {"descriptive_state": {"location": {
+                            "session_high": 3059.7,
+                            "session_low": 3030.0,
+                            "previous_session_high": 3040.0,
+                            "previous_session_low": 3010.0,
+                        }}},
+                    }],
+                }],
+                "coverage": [],
+            },
+            "portfolio_snapshot": {"accounts": []},
+        }],
+    }
+    scenario = {"books": [{"route_id": "glitch", "master_account": "Sim101", "followers": []}]}
+
+    result = DIRECT.packet_for_model(packet, scenario)
+
+    location = result["frames"][0]["market_snapshot"]["instruments"][0]["timeframe_bars"][0][
+        "descriptive_state"
+    ]["descriptive_state"]["location"]
+    assert location == {
+        "session_high": 3067.9,
+        "session_low": 3021.4,
+        "previous_session_high": 3050.0,
+        "previous_session_low": 3005.0,
+    }
+
+
+def test_flat_ledger_excludes_recursive_guidance_but_preserves_facts() -> None:
+    journals = {
+        "decisions": [{"id": index} for index in range(5)],
+        "executions": [{"id": index} for index in range(5)],
+        "outcomes": [{"id": index} for index in range(8)],
+        "current_guidance": {"verdict": "RECURSIVE_ABSTENTION_VETO"},
+        "current_plan": {"instruction": "WAIT_FOR_MORE_CONFIRMATION"},
+        "active_trade_state": {"instrument": "MNQ"},
+    }
+
+    compact = DIRECT.ledger_for_model(journals, positioned_only=False)
+
+    assert [row["id"] for row in compact["decisions"]] == [2, 3, 4]
+    assert [row["id"] for row in compact["executions"]] == [2, 3, 4]
+    assert [row["id"] for row in compact["outcomes"]] == [2, 3, 4, 5, 6, 7]
+    assert "current_guidance" not in compact
+    assert "current_plan" not in compact
+    assert "active_trade_state" not in compact
+
+
+def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> None:
+    scenario = multibook_flat_scenario()
+    for book in scenario["books"]:
+        book["followers"] = []
+        book["exposure"] = []
+        book["position_building_context"] = {"instrument": "MNQ"}
+    packet = {
+        "packet_id": "cycle-9",
+        "window_close_utc": "2026-08-13T10:05:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101"}, {"account": "Sim301"}]},
+        }],
+    }
+
+    prompt = DIRECT.build_prompt(
+        packet,
+        scenario,
+        {"outcomes": [], "current_guidance": {"verdict": "RECURSIVE_ABSTENTION_VETO"}},
+    )
+
+    assert "does not require the future target to have traded already" in prompt
+    assert "learner guidance is deliberately excluded from flat entry cognition" in prompt
+    assert "RECURSIVE_ABSTENTION_VETO" not in prompt
+
+
 def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     scenario = multibook_flat_scenario()
     for book in scenario["books"]:
