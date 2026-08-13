@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v14-frozen-trigger-continuity"
+DIRECT_PROMPT_REVISION = "direct-v15-completed-bar-cadence"
 TRADING_SOURCE = "trading"
 REQUIRED_ENTRY_FIELDS = {"quantity", "order_type", "stop_loss", "take_profit_1"}
 ENTRY_FIELDS = REQUIRED_ENTRY_FIELDS | {
@@ -2478,6 +2478,38 @@ def _attach_observation_layers(instrument: dict[str, Any]) -> None:
     instrument["heuristic_projections"] = projections
 
 
+def _compact_model_bar(bar: dict[str, Any]) -> dict[str, Any]:
+    """Remove observation aliases while preserving native facts and analytics."""
+    value = dict(bar)
+    value.pop("native_observations", None)
+    value.pop("heuristic_projections", None)
+    if not value.get("descriptive_state"):
+        value.pop("descriptive_state", None)
+    return value
+
+
+def _compact_model_instrument(
+    instrument: dict[str, Any],
+    *,
+    latest_frame: bool,
+) -> dict[str, Any]:
+    """Keep the five-minute path and one current higher-timeframe context."""
+    value = dict(instrument)
+    _attach_observation_layers(value)
+    # These are aliases of instrument_economics, the one-minute descriptive
+    # state, and per-timeframe derived_analytics respectively.
+    value.pop("native_observations", None)
+    value.pop("descriptive_state", None)
+    value.pop("heuristic_projections", None)
+    retained_minutes = {1, 5, 15, 60} if latest_frame else {1}
+    value["timeframe_bars"] = [
+        _compact_model_bar(bar)
+        for bar in value.get("timeframe_bars", [])
+        if isinstance(bar, dict) and bar.get("minutes") in retained_minutes
+    ]
+    return value
+
+
 def packet_for_model(
     packet: dict[str, Any],
     scenario: dict[str, Any],
@@ -2488,7 +2520,8 @@ def packet_for_model(
     model_packet = json.loads(json.dumps(packet))
     policy = model_packet.get("policy")
     if not isinstance(policy, dict):
-        return model_packet
+        policy = {}
+        model_packet["policy"] = policy
     policy.pop("mode", None)
     policy.pop("max_trades_per_day", None)
     policy.pop("cooldown_after_loss_minutes", None)
@@ -2527,9 +2560,16 @@ def packet_for_model(
                     or instrument_root(instrument.get("instrument") or instrument.get("instrument_root")) in active_roots
                 )
             ]
-            for instrument in instruments:
-                _attach_observation_layers(instrument)
-            market["instruments"] = instruments
+            latest_frame = frame_index == len(frames) - 1
+            market["instruments"] = [
+                _compact_model_instrument(
+                    instrument,
+                    latest_frame=latest_frame,
+                )
+                for instrument in instruments
+            ]
+            if not latest_frame:
+                market.pop("fundamental_context", None)
             market["coverage"] = [
                 item for item in market.get("coverage", [])
                 if isinstance(item, dict) and instrument_root(item.get("instrument_root") or item.get("instrument"))
@@ -2689,7 +2729,7 @@ def invoke_hermes(
         "--source", TRADING_SOURCE,
         "--model", CORE_MODEL,
         "--provider", CORE_PROVIDER,
-        "--max-turns", "2" if positioned_only or trigger_review_only else "3",
+        "--max-turns", "1",
         "--skills", (
             "glitch-setup-state,glitch-order-flow,glitch-position-management,glitch-build-intent"
             if positioned_only else
@@ -2697,7 +2737,6 @@ def invoke_hermes(
             if trigger_review_only else
             "glitch-market-scan,glitch-setup-state,glitch-order-flow,glitch-position-management,glitch-build-intent"
         ),
-        "--toolsets", "context_engine" if positioned_only or trigger_review_only else "memory",
     ]
     wrapper = (
         "import os,sys;"
@@ -2746,56 +2785,28 @@ def invoke_validated_batch(
     timeout_seconds: int,
     decision_mode: str = "flat_scan",
 ) -> tuple[dict[str, Any], int]:
-    """Regenerate once when Luna's content, rather than its provider, is invalid."""
+    """Make one bounded Luna call and validate it without a second review call."""
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = decision_mode == "trigger_review"
-    for repair_count in range(2):
-        try:
-            batch = stamp_decision_created_utc(
-                normalize_batch(
-                    invoke_hermes(
-                        profile,
-                        prompt,
-                        timeout_seconds,
-                        positioned_only=positioned_only,
-                        trigger_review_only=trigger_review_only,
-                    ),
-                    scenario,
-                )
-            )
-            validate_batch(
-                batch,
-                scenario,
-                directive,
-                expected_decision_mode=decision_mode,
-            )
-            return batch, repair_count
-        except ValueError as error:
-            if repair_count:
-                raise
-            mode_instruction = ""
-            if decision_mode == "trigger_review":
-                mode_instruction = (
-                    f" decision_audit.decisive_evidence must start with {TRIGGER_REVIEW_MARKER} and contain "
-                    f"these exact non-empty field lines: {', '.join(TRIGGER_REVIEW_FIELDS)}. "
-                    "PRIOR_TRIGGER_REVIEW must begin exactly HELD:, FAILED:, or EXPIRED:. "
-                    "Never use a numeric status and never omit FIRED_TRIGGER. For an entry, "
-                    "ENTRY_RANGE_NOISE_GEOMETRY must state points, ticks, one- and five-minute ATR or "
-                    "equivalent horizon noise, one-contract dollars, and model/transport latency."
-                )
-            prompt += (
-                "\nSTRICT_OUTPUT_CORRECTION="
-                + json.dumps({
-                    "validation_error": str(error)[:240],
-                    "instruction": (
-                        "Regenerate the same CURRENT_CYCLE decision from the supplied required_output_template. "
-                        "Return one complete strict JSON object only; do not change cycle or scoped identities. "
-                        "For an entry include the required range and forecast fields. For MOVE_STOP or MOVE_TP use only supplied native leg IDs."
-                        + mode_instruction
-                    ),
-                }, separators=(",", ":"))
-            )
-    raise AssertionError("unreachable")
+    batch = stamp_decision_created_utc(
+        normalize_batch(
+            invoke_hermes(
+                profile,
+                prompt,
+                timeout_seconds,
+                positioned_only=positioned_only,
+                trigger_review_only=trigger_review_only,
+            ),
+            scenario,
+        )
+    )
+    validate_batch(
+        batch,
+        scenario,
+        directive,
+        expected_decision_mode=decision_mode,
+    )
+    return batch, 0
 
 
 def post_intent(intent: dict[str, Any], token: str) -> dict[str, Any]:
@@ -3050,29 +3061,58 @@ def pending_outbox(exchange: Path) -> tuple[str, Path] | None:
 
 def scenario_for_model(scenario: dict[str, Any], positioned_only: bool) -> dict[str, Any]:
     value = json.loads(json.dumps(scenario))
-    if not positioned_only:
-        return value
     active_roots = {
         root for book in value.get("books", []) for root in positioned_instruments(book)
     }
     market = value.get("market")
     if isinstance(market, dict):
-        market["candidates"] = [
-            row for row in market.get("candidates", [])
-            if isinstance(row, dict) and instrument_root(row.get("instrument")) in active_roots
+        candidates = [
+            row for row in market.get("candidates", []) if isinstance(row, dict)
+            and (not positioned_only or instrument_root(row.get("instrument")) in active_roots)
         ]
+        market.clear()
+        market["snapshot_hash"] = scenario.get("market", {}).get("snapshot_hash")
+        market["candidates"] = [{
+            key: row.get(key) for key in (
+                "instrument", "instrument_full_name", "current_price", "is_fresh",
+                "missing_timeframes_minutes", "instrument_economics",
+            ) if key in row
+        } for row in candidates]
         market["candidate_count"] = len(market["candidates"])
     for book in value.get("books", []):
+        for key in ("book_id", "group_ids", "master_size"):
+            book.pop(key, None)
         book["followers"] = []
         book["exposure"] = [
             row for row in book.get("exposure", [])
             if isinstance(row, dict) and row.get("role") == "master"
         ]
+        position_context = book.pop("position_building_context", {})
+        if isinstance(position_context, dict):
+            book["account_context"] = {
+                key: position_context.get(key) for key in (
+                    "account_size", "equity", "liquidation_threshold",
+                    "liquidation_buffer_usd", "drawdown_headroom_ratio",
+                    "max_drawdown", "prop_firm_id", "rule_status",
+                    "current_total_contracts", "contract_ceiling",
+                    "valid_entry_quantities", "account_survival_scope_known",
+                    "apex_legacy_survival_applicable",
+                ) if key in position_context
+            }
         contexts = book.get("instrument_contexts")
         if isinstance(contexts, dict):
             book["instrument_contexts"] = {
-                root: context for root, context in contexts.items()
-                if instrument_root(root) in active_roots
+                root: {
+                    key: context.get(key) for key in (
+                        "instrument", "current_price", "point_value_usd", "tick_size",
+                        "instrument_economics_source", "instrument_economics",
+                        "current_signed_quantity", "current_average_price",
+                        "next_entry_role", "native_protection",
+                    ) if key in context
+                }
+                for root, context in contexts.items()
+                if isinstance(context, dict)
+                and (not positioned_only or instrument_root(root) in active_roots)
             }
     return value
 
@@ -3206,13 +3246,13 @@ def build_prompt(
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the complete zone where edge survives ordinary movement across multiple one-minute packets during model and transport delay. If that useful zone cannot fit, choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, a short evidence method grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "
-            "Retrieve relevant durable memory exactly once unless the advisory is a native tool canary; do not write memory. "
+            "Use the supplied recent ledger and learning context; do not retrieve or write memory in the hot path. "
         )
     prompt = (
         common
         + instructions
         + "Preserve required_output_template, cycle, route, account, instrument, snapshot hash, model version, prompt version, and every strict decision_audit key. final_choice must equal action. "
-        + "Mirror explicit above/below prices in change_condition into instrument-aware wake_triggers shaped exactly as {\"type\":\"PRICE_CROSS\",\"instrument\":\"MNQ\",\"direction\":\"ABOVE\",\"price\":0.0}. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
+        + "Keep wake_triggers empty; reassessment is driven by completed bars. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
     )
     return apply_cognitive_overlay(prompt, journals.get("active_cognitive_overlay"))
@@ -3400,17 +3440,7 @@ def invocation_reason(
         return "operator_directive"
     if positioned:
         return "positioned"
-    if fired_triggers is None:
-        fired_triggers = fired_wake_triggers(exchange, packet, scenario)
-    if fired_triggers:
-        return "condition_change"
-    prior = latest_prior_attempt(exchange, packet)
-    if prior is None:
-        return "first_packet"
-    prior_window, attempt = prior
-    if attempt.get("status") in {"started", "failed", "execution_failed", "delivery_incomplete"}:
-        return "retry_after_failure"
-    if (window - prior_window).total_seconds() >= 300:
+    if window.minute % 5 == 0:
         return "scheduled"
     return None
 
@@ -3507,7 +3537,7 @@ def run_once(
             original_scenario,
             allow_entry_revalidation=True,
         )
-        entry_superseded = apply_entry_revalidation(pending_batch, original_packet, packet)
+        apply_entry_revalidation(pending_batch, original_packet, packet)
         if not args.dry_run:
             write_json_atomic(pending_path, pending_batch)
         if args.dry_run:
@@ -3520,8 +3550,6 @@ def run_once(
             return 0
         consume_outbox_directive(exchange, pending_id)
         pending_receipt = submit_batch(pending_batch, glitch_data, exchange)
-        if entry_superseded and all_entry_actions_superseded(pending_batch):
-            request_immediate_cycle(exchange, "entry_range_superseded")
         mark_attempt_from_receipt(exchange, pending_id, pending_receipt)
         print(json.dumps(pending_receipt, separators=(",", ":")))
         return 1 if receipt_classification(pending_receipt) not in COMPLETED_RECEIPT_CLASSIFICATIONS else 0
@@ -3541,7 +3569,7 @@ def run_once(
         batch = normalize_batch(read_json(outbox_path), scenario)
         validate_batch(batch, scenario, allow_entry_revalidation=True)
         current_packet = read_json(packet_path)
-        entry_superseded = apply_entry_revalidation(batch, packet, current_packet)
+        apply_entry_revalidation(batch, packet, current_packet)
         if not args.dry_run:
             write_json_atomic(outbox_path, batch)
         if args.dry_run:
@@ -3554,8 +3582,6 @@ def run_once(
             return 0
         consume_outbox_directive(exchange, packet_id)
         receipt = submit_batch(batch, glitch_data, exchange)
-        if entry_superseded and all_entry_actions_superseded(batch):
-            request_immediate_cycle(exchange, "entry_range_superseded")
         mark_attempt_from_receipt(exchange, packet_id, receipt)
         print(json.dumps(receipt, separators=(",", ":")))
         return 0 if receipt_classification(receipt) in COMPLETED_RECEIPT_CLASSIFICATIONS else 1
@@ -3603,33 +3629,18 @@ def run_once(
         return 0
 
     directive = read_operator_directive(exchange)
-    fired_triggers = fired_wake_triggers(exchange, packet, scenario)
-    reason = invocation_reason(packet, scenario, exchange, directive, fired_triggers)
+    reason = invocation_reason(packet, scenario, exchange, directive)
     if reason is None:
         return 0
-    invocation_context = (
-        trigger_invocation_context(exchange, fired_triggers)
-        if reason == "condition_change" else None
-    )
+    invocation_context = None
     decision_mode = (
         "position_management" if all_scoped_books_positioned(scenario)
-        else "trigger_review" if invocation_context is not None
         else "flat_scan"
     )
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
         return 0
     remember_packet_activation(exchange, packet)
-    try:
-        reconcile_completed_outcomes(glitch_data, exchange, timeout_seconds=10)
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-        append_event(events_path, {
-            "schema_version": "glitch.hermes.cycle_event.v1",
-            "event": "outcome_reconcile_deferred",
-            "recorded_utc": utc_now(),
-            "cycle_id": packet_id,
-            "error": f"{type(error).__name__}:{str(error)[:800]}",
-        })
     journals = journal_tail(glitch_data)
     journals.update(learning_context(exchange))
     journals["active_trade_state"] = trade_state
@@ -3664,9 +3675,8 @@ def run_once(
             decision_mode,
         )
         latest_packet = read_json(packet_path)
-        entry_superseded = apply_entry_revalidation(batch, packet, latest_packet)
+        apply_entry_revalidation(batch, packet, latest_packet)
         if not args.dry_run:
-            persist_wake_triggers(exchange, batch, packet_id)
             persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)
         write_json_atomic(attempt_path, {
             "schema_version": "glitch.hermes.model_attempt.v1",
@@ -3717,8 +3727,6 @@ def run_once(
         print(json.dumps({"cycle_id": packet_id, "decision_count": len(batch["decisions"]), "submitted": False}))
         return 0
     receipt = submit_batch(batch, glitch_data, exchange)
-    if entry_superseded and all_entry_actions_superseded(batch):
-        request_immediate_cycle(exchange, "entry_range_superseded")
     mark_attempt_from_receipt(exchange, packet_id, receipt)
     classification = receipt_classification(receipt)
     print(json.dumps(receipt, separators=(",", ":")))

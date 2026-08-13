@@ -211,7 +211,7 @@ foreach ($expected in $expectedJobs) {
 }
 $direct = @($freshJobs | Where-Object name -eq 'glitch-direct-operator')[0]
 $learning = @($freshJobs | Where-Object name -eq 'glitch-learning-supervisor')[0]
-if ([string]$direct.schedule.expr -ne '* * * * *' -or [string]$learning.schedule.expr -ne '*/30 * * * *') {
+if ([string]$direct.schedule.expr -ne '* * * * *' -or [string]$learning.schedule.expr -ne '2,32 * * * *') {
     throw 'Reset setup created an unexpected cron schedule.'
 }
 

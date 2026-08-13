@@ -222,7 +222,7 @@ try {
         -Workdir $exchange
     $learningJob = Ensure-CronJob `
         -Name 'glitch-learning-supervisor' `
-        -Schedule '*/30 * * * *' `
+        -Schedule '2,32 * * * *' `
         -Script 'launch-hermes-learning-cycle.py' `
         -Workdir $exchange
 }
@@ -233,7 +233,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.35'
+    distribution_version = '0.0.2.36'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)

@@ -606,7 +606,7 @@ def test_forecast_is_validated_as_non_gating_metadata() -> None:
         DIRECT.validate_batch(batch, scenario)
 
 
-def test_packet_labels_native_and_heuristic_observation_layers() -> None:
+def test_packet_preserves_economics_and_removes_duplicate_observation_aliases() -> None:
     packet = {
         "policy": {},
         "frames": [{
@@ -619,6 +619,20 @@ def test_packet_labels_native_and_heuristic_observation_layers() -> None:
                         "tick_size": 0.25,
                         "source": "ninjatrader_master_instrument",
                     },
+                    "native_observations": {"duplicate": True},
+                    "descriptive_state": {"duplicate": True},
+                    "heuristic_projections": {"duplicate": True},
+                    "timeframe_bars": [{
+                        "minutes": 1,
+                        "open": 1,
+                        "high": 2,
+                        "low": 0,
+                        "close": 1,
+                        "native_observations": {"duplicate": True},
+                        "descriptive_state": {"flow": {"delta": 1}},
+                        "derived_analytics": {"directional_score": 0.2},
+                        "heuristic_projections": {"directional_score": 0.2},
+                    }],
                 }],
                 "coverage": [],
             },
@@ -636,9 +650,38 @@ def test_packet_labels_native_and_heuristic_observation_layers() -> None:
     result = DIRECT.packet_for_model(packet, scenario)
     instrument = result["frames"][0]["market_snapshot"]["instruments"][0]
 
-    assert instrument["native_observations"]["source"] == "ninjatrader"
-    assert instrument["native_observations"]["instrument_economics"]["point_value_usd"] == 5.0
-    assert instrument["heuristic_projections"]["strategy_semantics"] == "none"
+    assert instrument["instrument_economics"]["point_value_usd"] == 5.0
+    assert "native_observations" not in instrument
+    assert "descriptive_state" not in instrument
+    assert "heuristic_projections" not in instrument
+    bar = instrument["timeframe_bars"][0]
+    assert bar["descriptive_state"]["flow"]["delta"] == 1
+    assert bar["derived_analytics"]["directional_score"] == 0.2
+    assert "native_observations" not in bar
+    assert "heuristic_projections" not in bar
+
+
+def test_flat_invocation_uses_exact_completed_five_minute_boundaries(tmp_path: Path) -> None:
+    scenario = {"books": [{"master_account": "Sim101"}]}
+
+    def packet_at(minute: int, quantity: int = 0) -> dict:
+        return {
+            "packet_id": f"20260813T12{minute:02d}Z",
+            "window_close_utc": f"2026-08-13T12:{minute:02d}:00Z",
+            "frames": [{"portfolio_snapshot": {"accounts": [{
+                "account": "Sim101",
+                "positions": [] if quantity == 0 else [{
+                    "instrument_root": "MNQ",
+                    "market_position": "Long",
+                    "quantity": quantity,
+                }],
+            }]}}],
+        }
+
+    assert DIRECT.invocation_reason(packet_at(5), scenario, tmp_path, None) == "scheduled"
+    assert DIRECT.invocation_reason(packet_at(6), scenario, tmp_path, None) is None
+    assert DIRECT.invocation_reason(packet_at(6, 1), scenario, tmp_path, None) == "positioned"
+    assert DIRECT.invocation_reason(packet_at(6), scenario, tmp_path, {"status": "pending"}) == "operator_directive"
 
 
 def test_human_override_flat_is_audited_as_superseded_no_op(tmp_path: Path) -> None:

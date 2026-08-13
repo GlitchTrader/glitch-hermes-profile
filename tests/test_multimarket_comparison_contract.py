@@ -63,5 +63,5 @@ def test_template_contains_every_supplied_instrument_and_required_states():
 
 def test_dry_run_does_not_persist_executable_outbox():
     source = (ROOT / "scripts" / "run-direct-glitch-cycle.py").read_text(encoding="utf-8")
-    guarded = "if not args.dry_run:\n            persist_wake_triggers(exchange, batch, packet_id)\n            persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)"
+    guarded = "if not args.dry_run:\n            persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)"
     assert guarded in source

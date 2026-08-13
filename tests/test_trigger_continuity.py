@@ -326,34 +326,33 @@ def test_trigger_entry_requires_explicit_horizon_and_economic_geometry() -> None
         raise AssertionError("trigger entry without explicit horizon and economic geometry was accepted")
 
 
-def test_trigger_review_retry_restates_the_exact_contract(monkeypatch) -> None:
+def test_invalid_output_is_not_retried(monkeypatch) -> None:
     prompts = []
-    attempts = [{"decisions": []}, {"decisions": []}]
 
     def invoke(_profile, prompt, _timeout, **_kwargs):
         prompts.append(prompt)
-        return attempts[len(prompts) - 1]
+        return {"decisions": []}
 
     def validate(*_args, **_kwargs):
-        if len(prompts) == 1:
-            raise ValueError("trigger_review_status_invalid:0:0")
+        raise ValueError("invalid_output")
 
     monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
     monkeypatch.setattr(DIRECT, "normalize_batch", lambda value, _scenario: value)
     monkeypatch.setattr(DIRECT, "stamp_decision_created_utc", lambda value: value)
     monkeypatch.setattr(DIRECT, "validate_batch", validate)
 
-    batch, repairs = DIRECT.invoke_validated_batch(
-        "glitch",
-        "ORIGINAL_PROMPT",
-        {"books": []},
-        None,
-        30,
-        decision_mode="trigger_review",
-    )
+    try:
+        DIRECT.invoke_validated_batch(
+            "glitch",
+            "ORIGINAL_PROMPT",
+            {"books": []},
+            None,
+            30,
+            decision_mode="flat_scan",
+        )
+    except ValueError as error:
+        assert str(error) == "invalid_output"
+    else:
+        raise AssertionError("invalid output was accepted")
 
-    assert batch == attempts[1]
-    assert repairs == 1
-    assert "PRIOR_TRIGGER_REVIEW must begin exactly HELD:, FAILED:, or EXPIRED:" in prompts[1]
-    assert "Never use a numeric status and never omit FIRED_TRIGGER" in prompts[1]
-    assert all(field in prompts[1] for field in DIRECT.TRIGGER_REVIEW_FIELDS)
+    assert prompts == ["ORIGINAL_PROMPT"]
