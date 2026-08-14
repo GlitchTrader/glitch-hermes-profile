@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v22-timely-positive-ev"
+DIRECT_PROMPT_REVISION = "direct-v23-compact-contract-retry"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
@@ -3000,7 +3000,9 @@ def extract_json(stdout: str, expected_schema_version: str | None = None) -> dic
                     try:
                         candidate, _ = decoder.raw_decode(text, index)
                     except json.JSONDecodeError:
-                        continue
+                        candidate = repair_terminal_json_delimiters(text[index:])
+                        if candidate is None:
+                            continue
                     if not isinstance(candidate, dict):
                         continue
                     schema_matches = (
@@ -3024,6 +3026,17 @@ def extract_json(stdout: str, expected_schema_version: str | None = None) -> dic
 
 class EmptyModelResponseError(RuntimeError):
     """The model transport completed but returned no output at all."""
+
+
+class InvalidModelResponseError(ValueError):
+    """Hermes returned content, but it was not a valid intent batch."""
+
+    def __init__(self, output: str, error: Exception):
+        self.output = output
+        self.original_error = error
+        super().__init__(
+            f"model_output_invalid:{type(error).__name__}:{error}:chars={len(output)}"
+        )
 
 
 def invoke_hermes(
@@ -3104,7 +3117,75 @@ def invoke_hermes(
     # latest assistant message shared with other chats.
     if not completed.stdout.strip():
         raise EmptyModelResponseError("hermes_stdout_empty")
-    return extract_json(completed.stdout, "glitch.intent.batch.v1")
+    try:
+        return extract_json(completed.stdout, "glitch.intent.batch.v1")
+    except (json.JSONDecodeError, ValueError) as error:
+        raise InvalidModelResponseError(completed.stdout, error) from error
+
+
+RETRYABLE_MODEL_CONTRACT_ERRORS = (
+    "batch_",
+    "candidate_comparison_",
+    "decision_audit_",
+    "decision_count_mismatch",
+    "forecast_contract_",
+    "hermes_output_",
+    "intent_contract_",
+    "intent_unknown_fields:",
+    "trigger_review_",
+    "wake_triggers_",
+)
+
+
+def retryable_model_contract_error(error: Exception) -> bool:
+    if isinstance(error, InvalidModelResponseError):
+        return True
+    return isinstance(error, ValueError) and str(error).startswith(
+        RETRYABLE_MODEL_CONTRACT_ERRORS
+    )
+
+
+def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
+    if isinstance(output, str):
+        prior = output.strip()
+    else:
+        prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
+    return (
+        prompt
+        + "\nFORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, "
+        "prices, confidence, reasons, and audit evidence. Correct only JSON syntax and the "
+        "required field/nesting contract identified below. Return one JSON object only. "
+        "decision_audit ends after final_choice; wake_triggers is its decision-level sibling."
+        + "\nCONTRACT_ERROR=" + str(error)
+        + "\nPREVIOUS_RESPONSE=" + prior
+    )
+
+
+def stamp_deterministic_intent_fields(
+    batch: dict[str, Any],
+    scenario: dict[str, Any],
+) -> dict[str, Any]:
+    """Own transport metadata in code so Luna authors cognition, not routing."""
+    decisions = batch.get("decisions")
+    books = scenario.get("books")
+    if not isinstance(decisions, list) or not isinstance(books, list):
+        return batch
+    if len(decisions) != len(books):
+        return batch
+    if not decisions:
+        return batch
+    cycle = str(batch.get("cycle_id") or scenario["cycle_id"])
+    snapshot_hash = str(scenario["market"]["snapshot_hash"])
+    for intent, book in zip(decisions, books):
+        if not isinstance(intent, dict) or not isinstance(book, dict):
+            continue
+        route = str(book["route_id"])
+        intent["schema_version"] = "glitch.intent.v3"
+        intent["intent_id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"glitch:{cycle}:{route}"))
+        intent["account"] = str(book["master_account"])
+        intent["operator_profile"] = route
+        intent["snapshot_hash"] = snapshot_hash
+    return batch
 
 
 def invoke_validated_batch(
@@ -3116,48 +3197,65 @@ def invoke_validated_batch(
     decision_mode: str = "flat_scan",
     prior_cognition: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int, int]:
-    """Make one bounded Luna call and validate it without a second review call.
-
-    An entirely empty transport response is retried once; invalid model output
-    is never retried or repaired by another model call.
-    """
+    """Make one bounded Luna call plus at most one contract-only correction."""
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = decision_mode == "trigger_review"
-    transport_retry_count = 0
-    try:
-        raw = invoke_hermes(
-            profile,
-            prompt,
-            timeout_seconds,
-            positioned_only=positioned_only,
-            trigger_review_only=trigger_review_only,
+
+    def prepare(value: dict[str, Any]) -> dict[str, Any]:
+        batch = stamp_decision_created_utc(
+            stamp_deterministic_intent_fields(
+                normalize_batch(
+                    expand_shared_flat_decision(value, scenario),
+                    scenario,
+                ),
+                scenario,
+            )
         )
-    except EmptyModelResponseError:
-        transport_retry_count = 1
-        raw = invoke_hermes(
-            profile,
-            prompt,
-            timeout_seconds,
-            positioned_only=positioned_only,
-            trigger_review_only=trigger_review_only,
+        backfill_constant_comparison_fields(
+            batch,
+            allow_not_applicable=prior_cognition is None,
         )
-    batch = stamp_decision_created_utc(
-        normalize_batch(
-            expand_shared_flat_decision(raw, scenario),
+        validate_batch(
+            batch,
             scenario,
+            directive,
+            expected_decision_mode=decision_mode,
         )
-    )
-    backfill_constant_comparison_fields(
-        batch,
-        allow_not_applicable=prior_cognition is None,
-    )
-    validate_batch(
-        batch,
-        scenario,
-        directive,
-        expected_decision_mode=decision_mode,
-    )
-    return batch, 0, transport_retry_count
+        return batch
+
+    transport_retry_count = 0
+    raw: dict[str, Any] | None = None
+    try:
+        try:
+            raw = invoke_hermes(
+                profile,
+                prompt,
+                timeout_seconds,
+                positioned_only=positioned_only,
+                trigger_review_only=trigger_review_only,
+            )
+        except EmptyModelResponseError:
+            transport_retry_count = 1
+            raw = invoke_hermes(
+                profile,
+                prompt,
+                timeout_seconds,
+                positioned_only=positioned_only,
+                trigger_review_only=trigger_review_only,
+            )
+        return prepare(raw), 0, transport_retry_count
+    except (InvalidModelResponseError, ValueError) as error:
+        if not retryable_model_contract_error(error):
+            raise
+        failed_output: Any = error.output if isinstance(error, InvalidModelResponseError) else raw
+        repaired_raw = invoke_hermes(
+            profile,
+            contract_repair_prompt(prompt, failed_output, error),
+            timeout_seconds,
+            positioned_only=positioned_only,
+            trigger_review_only=trigger_review_only,
+        )
+        return prepare(repaired_raw), 1, transport_retry_count
 
 
 def post_intent(intent: dict[str, Any], token: str) -> dict[str, Any]:
@@ -3516,21 +3614,12 @@ def build_prompt(
     for book in template_books:
         active_instruments = positioned_instruments(book)
         action = "HOLD" if len(active_instruments) == 1 else "NOTHING"
-        route = str(book["route_id"])
         decisions.append({
-            "schema_version": "glitch.intent.v3",
-            "intent_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"glitch:{scenario['cycle_id']}:{route}")),
-            "created_utc": utc_now(),
             "instrument": active_instruments[0] if len(active_instruments) == 1 else str(
                 book.get("position_building_context", {}).get("instrument") or ""
             ),
-            "account": str(book["master_account"]),
-            "operator_profile": route,
             "action": action,
             "confidence": 0.5,
-            "snapshot_hash": str(scenario["market"]["snapshot_hash"]),
-            "model_version": CORE_MODEL,
-            "prompt_version": DIRECT_PROMPT_VERSION,
             "reason": "Replace with the current evidence-based decision.",
             "decision_audit": {
                 "bull_case": "Replace with compact bullish evidence.",
@@ -3632,10 +3721,13 @@ def build_prompt(
     prompt = (
         common
         + instructions
-        + "Preserve required_output_template, cycle, route, account, instrument, snapshot hash, model version, prompt version, and every strict decision_audit key. final_choice must equal action. "
+        + "Return only the model-owned fields shown in required_output_template. The runtime deterministically supplies schema, intent ID, time, route, account, snapshot hash, model version, and prompt version. Preserve instrument and every strict decision_audit key; final_choice must equal action. "
         + wake_instruction
         + "Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
+        + "\nOUTPUT_CLOSURE: End each decision exactly with "
+        + "...,\"change_condition\":\"...\",\"final_choice\":\"SAME_AS_ACTION\"},\"wake_triggers\":[]}. "
+        + "decision_audit closes before wake_triggers."
     )
     return apply_cognitive_overlay(prompt, journals.get("active_cognitive_overlay"))
 

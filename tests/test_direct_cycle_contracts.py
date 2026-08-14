@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -138,6 +139,18 @@ def test_extract_json_repairs_only_terminal_missing_decision_closer() -> None:
     assert value["decisions"][0]["decision_audit"]["final_choice"] == "NOTHING"
 
 
+def test_extract_json_repairs_prefixed_terminal_missing_decision_closer() -> None:
+    malformed = (
+        'Hermes response:\n'
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"final_choice":"NOTHING","wake_triggers":[]}]}]}'
+    )
+
+    value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+
+    assert value["decisions"][0]["decision_audit"]["final_choice"] == "NOTHING"
+
+
 def test_extract_json_does_not_repair_missing_semantic_value() -> None:
     malformed = (
         '{"schema_version":"glitch.intent.batch.v1","decisions":['
@@ -163,6 +176,23 @@ def test_model_decisions_use_runtime_owned_created_utc() -> None:
     created = batch["decisions"][0]["created_utc"]
     assert created != "2000-01-01T00:00:00Z"
     assert datetime.fromisoformat(created.replace("Z", "+00:00")).date() == datetime.now(timezone.utc).date()
+
+
+def test_runtime_owns_intent_transport_metadata() -> None:
+    batch, scenario = valid_batch("2000-01-01T00:00:00Z")
+    intent = batch["decisions"][0]
+    for field in (
+        "schema_version", "intent_id", "account", "operator_profile", "snapshot_hash"
+    ):
+        intent.pop(field)
+
+    DIRECT.stamp_deterministic_intent_fields(batch, scenario)
+
+    assert intent["schema_version"] == "glitch.intent.v3"
+    assert intent["account"] == "Sim101"
+    assert intent["operator_profile"] == "glitch"
+    assert intent["snapshot_hash"] == "snapshot-1"
+    uuid.UUID(intent["intent_id"])
 
 
 def test_native_gl1_protection_uses_authoritative_order_fields() -> None:
@@ -930,6 +960,58 @@ def test_empty_model_stdout_is_retried_exactly_once(monkeypatch: pytest.MonkeyPa
     assert len(calls) == 2
 
 
+def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid, scenario = valid_batch("2026-08-13T10:00:00Z")
+    invalid["decisions"][0]["decision_audit"].pop("bear_case")
+    valid, _ = valid_batch("2026-08-13T10:00:00Z")
+    calls: list[str] = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return invalid if len(calls) == 1 else valid
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+
+    batch, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
+        "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+    )
+
+    assert batch["decisions"][0]["action"] == "NOTHING"
+    assert output_repair_count == 1
+    assert transport_retry_count == 0
+    assert len(calls) == 2
+    assert calls[1].startswith("ORIGINAL_PROMPT\nFORMAT_CORRECTION_ONLY:")
+    assert "Preserve the same market judgment" in calls[1]
+
+
+def test_unparseable_model_output_gets_one_contract_only_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid, scenario = valid_batch("2026-08-13T10:00:00Z")
+    calls: list[str] = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            cause = json.JSONDecodeError("missing closer", "{", 1)
+            raise DIRECT.InvalidModelResponseError("BROKEN_RESPONSE", cause)
+        return valid
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+
+    batch, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
+        "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+    )
+
+    assert batch["decisions"][0]["action"] == "NOTHING"
+    assert output_repair_count == 1
+    assert transport_retry_count == 0
+    assert len(calls) == 2
+    assert "PREVIOUS_RESPONSE=BROKEN_RESPONSE" in calls[1]
+
+
 def test_compacted_bars_preserve_native_completed_bar_without_relabeling_current_bar() -> None:
     packet = {
         "packet_id": "20260813T1009Z",
@@ -1092,9 +1174,11 @@ def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     prompt = DIRECT.build_prompt(packet, scenario, {"outcomes": []})
 
     assert '"decision_mode":"flat_scan"' in prompt
-    assert prompt.count('"operator_profile"') == 1
+    assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
+    assert "runtime deterministically supplies schema, intent ID, time, route, account" in prompt
+    assert "decision_audit closes before wake_triggers" in prompt
 
 
 def test_prompt_mirrors_change_condition_prices_into_wake_triggers() -> None:
@@ -1182,7 +1266,7 @@ def test_shared_flat_trigger_review_requests_one_shared_decision() -> None:
     )
 
     assert '"decision_mode":"trigger_review"' in prompt
-    assert prompt.count('"operator_profile"') == 1
+    assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
 
