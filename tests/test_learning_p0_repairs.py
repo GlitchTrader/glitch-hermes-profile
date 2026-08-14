@@ -163,3 +163,29 @@ def test_hourly_prompt_reviews_nothing_with_bounded_counterfactual_geometry() ->
     assert "conservative noise-aware counterfactual zone" in prompt
     assert "absence of an actual trade" in prompt
     assert "target-before-stop chronology" in prompt
+    assert "Classify every supplied flat NOTHING episode exactly once" in prompt
+    assert "cite representative episode IDs" in prompt
+
+    review = LEARNING.output_template("hourly", ["review-1"])["records"][0][
+        "opportunity_review"
+    ]
+    assert set(review) == {
+        "missed_opportunity_episode_ids",
+        "disciplined_abstention_episode_ids",
+        "uncertain_episode_ids",
+        "summary",
+    }
+
+
+def test_compact_review_preserves_structured_opportunity_accountability() -> None:
+    value = {
+        "review_id": "review-1",
+        "opportunity_review": {
+            "missed_opportunity_episode_ids": ["episode-1"],
+            "disciplined_abstention_episode_ids": [],
+            "uncertain_episode_ids": ["episode-2"],
+            "summary": "Repeated geometry veto affected episode-1.",
+        },
+    }
+
+    assert LEARNING.compact_review(value)["opportunity_review"] == value["opportunity_review"]

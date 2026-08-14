@@ -59,6 +59,23 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         self.assertIn("must not replace", text)
         self.assertNotIn("arbitrary compliance", text)
 
+    def test_entry_cognition_prices_latency_once_without_independent_gates(self) -> None:
+        soul = (ROOT / "SOUL.md").read_text(encoding="utf-8").lower()
+        scan = (ROOT / "skills" / "glitch-market-scan" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ).lower()
+        intent = (ROOT / "skills" / "glitch-build-intent" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ).lower()
+
+        self.assertNotIn("independently support the trade", soul)
+        self.assertIn("not independent permission gates", soul)
+        self.assertIn("future destination need not have traded already", scan)
+        self.assertNotIn("until price accepts through the nearer objective", scan)
+        self.assertIn("price plausible decision-to-delivery drift once", intent)
+        self.assertIn("deterministic latest-price revalidation", intent)
+        self.assertNotIn("across multiple one-minute packets", intent)
+
 
 if __name__ == "__main__":
     unittest.main()

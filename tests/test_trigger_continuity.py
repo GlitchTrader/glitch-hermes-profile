@@ -231,7 +231,9 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert '"source_cycle_id":"source"' in prompt
     assert "Do not require the same class of confirmation again at a newer extreme" in prompt
     assert "HELD preserves the hypothesis but supplies no extra directional evidence" in prompt
-    assert "multiple one-minute packets during model and transport delay" in prompt
+    assert "Price latency once" in prompt
+    assert "deterministic latest-price revalidation skips stale entries" in prompt
+    assert "multiple one-minute packets during model and transport delay" not in prompt
     assert "stop-distance points times the packet point_value_usd" in prompt
     assert "never defer because these interpretations were not prewritten" in prompt
     assert "confirmation transition is not automatically the primary profit objective" in prompt

@@ -807,6 +807,12 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                 record.update({
                     "working": ["REPLACE"], "failing": ["REPLACE"], "unknown": ["REPLACE"],
                     "repeated_patterns": ["REPLACE"], "system_findings": ["REPLACE"],
+                    "opportunity_review": {
+                        "missed_opportunity_episode_ids": [],
+                        "disciplined_abstention_episode_ids": [],
+                        "uncertain_episode_ids": [],
+                        "summary": "REPLACE",
+                    },
                     "candidate_lessons": [],
                     "guidance": {"summary": "REPLACE", "consider": ["REPLACE"], "avoid": ["REPLACE"]},
                     "cognitive_change_decision": {
@@ -878,7 +884,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         ),
         "hourly": (
             "Supervise supplied completed trade and decision episodes. Do not double-count correlated route/master/follower implementations. "
-            "Classify NOTHING and rejected candidates as disciplined abstention, missed opportunity, or uncertainty from their complete candidate ledgers and each candidate's later authoritative path. When ex-ante evidence is sufficient, reconstruct one conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective, then score target-before-stop chronology. Do not invent fills or PnL, but do not use the absence of an actual trade or model-emitted bracket to exempt NOTHING from effective-opportunity review. Distinguish supported probabilistic room from arbitrary extension and current remaining value from entry-thesis anchoring. Produce compact advisory guidance and propose at most one narrow cognitive clause only when repeated independent evidence and contradiction review support it."
+            "Classify every supplied flat NOTHING episode exactly once in opportunity_review as disciplined abstention, missed opportunity, or uncertainty, using its exact episode_id. When ex-ante evidence is sufficient, reconstruct one conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective, then score target-before-stop chronology. A missed opportunity requires the decision's own directional hypothesis or contemporaneous candidate evidence plus a later path that reached the objective without reaching invalidation; later movement alone is insufficient. Do not invent fills or PnL, but do not use the absence of an actual trade or model-emitted bracket to exempt NOTHING from effective-opportunity review. In opportunity_review.summary name the repeated veto, if any, and cite representative episode IDs; if no episode is classified missed, state which reconstruction element prevented it. Distinguish supported probabilistic room from arbitrary extension and current remaining value from entry-thesis anchoring. Produce compact advisory guidance and propose at most one narrow cognitive clause only when repeated independent evidence and contradiction review support it."
         ),
         "planning": (
             "Create the next six-hour advisory plan from supplied regime, attributable outcomes, uncertainty, and current account state. "
@@ -1129,7 +1135,7 @@ def compact_review(row: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "schema_version", "review_id", "recorded_utc", "evidence_episode_ids",
             "working", "failing", "unknown", "repeated_patterns", "system_findings",
-            "candidate_lessons", "guidance", "cognitive_change_decision",
+            "opportunity_review", "candidate_lessons", "guidance", "cognitive_change_decision",
             "cognitive_change_candidate",
         )
         if key in row

@@ -810,6 +810,20 @@ def comparison_ledger(sections: dict[str, list[str]]) -> str:
     return "\n".join(lines)
 
 
+def test_flat_comparison_contract_is_compact_but_preserves_decision_dimensions() -> None:
+    assert DIRECT.CANDIDATE_COMPARISON_FIELDS == (
+        "CURRENT_AUCTION", "BULLISH_PATH", "BEARISH_PATH", "NEXT_TRANSITION",
+        "PRIOR_TRIGGER_REVIEW", "FIVE_TO_TEN_BAR_FORECAST",
+        "OBJECTIVE_INVALIDATION", "ENTRY_RANGE", "NOISE_AND_GEOMETRY", "ASYMMETRY",
+    )
+    assert DIRECT.TRIGGER_REVIEW_FIELDS == (
+        "FIRED_TRIGGER", "PRIOR_TRIGGER_REVIEW", "CURRENT_AUCTION",
+        "REMAINING_OBJECTIVE_INVALIDATION", "ENTRY_RANGE_NOISE_GEOMETRY",
+        "ALTERNATIVE_CANDIDATES", "SELECTION_INSTRUMENT", "SELECTION_ACTION",
+        "SELECTION_REASON",
+    )
+
+
 def test_missing_constant_prior_trigger_review_is_backfilled() -> None:
     complete = [f"{field}=supported evidence" for field in DIRECT.CANDIDATE_COMPARISON_FIELDS]
     omitted = [
