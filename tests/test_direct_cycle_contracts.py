@@ -115,6 +115,39 @@ def test_normalize_wake_triggers_repairs_string_trigger() -> None:
     }]
 
 
+def test_normalize_batch_relocates_misplaced_audit_wake_triggers() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    intent = batch["decisions"][0]
+    intent["decision_audit"]["wake_triggers"] = []
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert intent["wake_triggers"] == []
+    assert set(intent["decision_audit"]) == DIRECT.DECISION_AUDIT_FIELDS
+    DIRECT.validate_batch(batch, scenario)
+
+
+def test_extract_json_repairs_only_terminal_missing_decision_closer() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"final_choice":"NOTHING","wake_triggers":[]}]}]}'
+    )
+
+    value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+
+    assert value["decisions"][0]["decision_audit"]["final_choice"] == "NOTHING"
+
+
+def test_extract_json_does_not_repair_missing_semantic_value() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"final_choice":}]}]}'
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+
+
 def test_validator_rejects_compact_created_utc() -> None:
     batch, scenario = valid_batch("20260803T070241.0414980Z")
 
@@ -1082,7 +1115,8 @@ def test_prompt_mirrors_change_condition_prices_into_wake_triggers() -> None:
 
     prompt = DIRECT.build_prompt(packet, scenario, {"outcomes": []})
 
-    assert "Keep wake_triggers empty" in prompt
+    assert "Keep the decision-level wake_triggers field empty" in prompt
+    assert "never place wake_triggers inside decision_audit" in prompt
     assert "mirrors explicit instrument-labeled above/below prices from change_condition" in prompt
     assert "the first crossing wakes one immediate reassessment" in prompt
 

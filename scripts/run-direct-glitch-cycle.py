@@ -2581,6 +2581,13 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
     }
     for intent in decisions:
         if isinstance(intent, dict):
+            audit = intent.get("decision_audit")
+            if isinstance(audit, dict) and "wake_triggers" in audit:
+                # Luna occasionally places this decision-level field beside
+                # final_choice. Relocate only the known wire field; never
+                # repair or reinterpret any cognitive audit value.
+                misplaced = audit.pop("wake_triggers")
+                intent.setdefault("wake_triggers", misplaced)
             if "wake_triggers" not in intent and "wake_trigger" in intent:
                 legacy = intent.pop("wake_trigger")
                 intent["wake_triggers"] = [] if legacy is None else [legacy]
@@ -2923,40 +2930,91 @@ def validate_protection_updates(
             if (not isinstance(stop, (int, float)) or isinstance(stop, bool)
                     or not math.isfinite(float(stop))):
                 raise ValueError(f"protection_update_stop_invalid:{index}:{update_index}")
+def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
+    """Repair one missing object closer at the terminal decisions boundary.
+
+    This accepts no missing value or semantic field. It only handles the
+    observed model serialization defect where a complete decision object is
+    followed by the decisions-array closer before the decision itself closes.
+    """
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for index, character in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            stack.append(character)
+        elif character in "]}":
+            expected = "[" if character == "]" else "{"
+            if stack and stack[-1] == expected:
+                stack.pop()
+                continue
+            if not (
+                character == "]"
+                and stack
+                and stack[-1] == "{"
+                and len(text) - index <= 16
+            ):
+                return None
+            repaired = text[:index] + "}" + text[index:]
+            try:
+                value, end = json.JSONDecoder().raw_decode(repaired)
+            except json.JSONDecodeError:
+                return None
+            trailing = repaired[end:].strip()
+            if trailing and any(item not in "]}" for item in trailing):
+                return None
+            return value if isinstance(value, dict) else None
+    return None
+
+
 def extract_json(stdout: str, expected_schema_version: str | None = None) -> dict[str, Any]:
     text = stdout.strip()
     try:
         value = json.loads(text)
     except json.JSONDecodeError as original_error:
         decoder = json.JSONDecoder()
-        try:
-            value, end = decoder.raw_decode(text)
-            trailing = text[end:].strip()
-            if trailing and any(character not in "]}" for character in trailing):
-                raise original_error
-        except json.JSONDecodeError:
-            candidates = []
-            for index, character in enumerate(text):
-                if character != "{":
-                    continue
-                try:
-                    candidate, _ = decoder.raw_decode(text, index)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(candidate, dict):
-                    continue
-                schema_matches = (
-                    candidate.get("schema_version") == expected_schema_version
-                    if expected_schema_version
-                    else candidate.get("schema_version") == "glitch.intent.batch.v1"
-                        or isinstance(candidate.get("decisions"), list)
-                        or isinstance(candidate.get("intents"), list)
-                )
-                if schema_matches:
-                    candidates.append(candidate)
-            if len(candidates) != 1:
-                raise original_error
-            value = candidates[0]
+        repaired = repair_terminal_json_delimiters(text)
+        if repaired is not None:
+            value = repaired
+        else:
+            try:
+                value, end = decoder.raw_decode(text)
+                trailing = text[end:].strip()
+                if trailing and any(character not in "]}" for character in trailing):
+                    raise original_error
+            except json.JSONDecodeError:
+                candidates = []
+                for index, character in enumerate(text):
+                    if character != "{":
+                        continue
+                    try:
+                        candidate, _ = decoder.raw_decode(text, index)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(candidate, dict):
+                        continue
+                    schema_matches = (
+                        candidate.get("schema_version") == expected_schema_version
+                        if expected_schema_version
+                        else candidate.get("schema_version") == "glitch.intent.batch.v1"
+                            or isinstance(candidate.get("decisions"), list)
+                            or isinstance(candidate.get("intents"), list)
+                    )
+                    if schema_matches:
+                        candidates.append(candidate)
+                if len(candidates) != 1:
+                    raise original_error
+                value = candidates[0]
     if not isinstance(value, dict):
         raise ValueError("hermes_output_not_object")
     if expected_schema_version and value.get("schema_version") != expected_schema_version:
@@ -3567,9 +3625,9 @@ def build_prompt(
             "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
         )
     wake_instruction = (
-        "Keep wake_triggers empty. This condition-change wake is consumed once; the next scheduled five-minute scan may arm new instrument-labeled above/below levels. "
+        "Keep the decision-level wake_triggers field empty and never place wake_triggers inside decision_audit. This condition-change wake is consumed once; the next scheduled five-minute scan may arm new instrument-labeled above/below levels. "
         if trigger_review_only else
-        "Keep wake_triggers empty; the runtime mirrors explicit instrument-labeled above/below prices from change_condition into wake triggers, and the first crossing wakes one immediate reassessment before the next scheduled review, so write change_condition as concrete instrument-labeled above/below price levels. "
+        "Keep the decision-level wake_triggers field empty and never place wake_triggers inside decision_audit; the runtime mirrors explicit instrument-labeled above/below prices from change_condition into wake triggers, and the first crossing wakes one immediate reassessment before the next scheduled review, so write change_condition as concrete instrument-labeled above/below price levels. "
     )
     prompt = (
         common
