@@ -1094,7 +1094,8 @@ def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
     assert output_repair_count == 1
     assert transport_retry_count == 0
     assert len(calls) == 2
-    assert calls[1].startswith("ORIGINAL_PROMPT\nFORMAT_CORRECTION_ONLY:")
+    assert calls[1].startswith("FORMAT_CORRECTION_ONLY:")
+    assert "ORIGINAL_PROMPT" not in calls[1]
     assert "Preserve the same market judgment" in calls[1]
 
 

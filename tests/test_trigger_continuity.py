@@ -86,6 +86,44 @@ def test_clear_wake_triggers_consumes_the_set_once(tmp_path: Path) -> None:
     assert state["triggers"] == []
 
 
+def test_trigger_review_consumes_only_fired_trigger_and_preserves_unfired(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    supervisor = exchange / "hermes" / "supervisor"
+    supervisor.mkdir(parents=True)
+    unfired = {
+        "type": "PRICE_CROSS",
+        "instrument": "MNQ",
+        "direction": "ABOVE",
+        "price": 102.0,
+        "source_cycle_id": "source",
+    }
+    (supervisor / "active-wake-triggers.json").write_text(json.dumps({
+        "schema_version": "glitch.hermes.wake_triggers.v2",
+        "cycle_id": "source",
+        "triggers": [
+            {
+                "type": "PRICE_CROSS",
+                "instrument": "M2K",
+                "direction": "BELOW",
+                "price": 10.0,
+                "source_cycle_id": "source",
+            },
+            unfired,
+        ],
+    }))
+
+    DIRECT.consume_fired_wake_triggers(exchange, [{
+        "instrument": "M2K",
+        "direction": "BELOW",
+        "price": 10.0,
+        "source_cycle_id": "source",
+    }], "review")
+
+    state = json.loads((supervisor / "active-wake-triggers.json").read_text())
+    assert state["cycle_id"] == "source"
+    assert state["triggers"] == [unfired]
+
+
 def test_only_the_instrument_that_crossed_its_own_level_fires(tmp_path: Path, monkeypatch) -> None:
     exchange = tmp_path / "exchange"
     supervisor = exchange / "hermes" / "supervisor"
@@ -409,6 +447,19 @@ def test_semantic_contract_repair_allows_market_judgment_to_change() -> None:
     assert "DECISION_CONSISTENCY_CORRECTION" in prompt
     assert "You may change action, instrument, prices" in prompt
     assert "FORMAT_CORRECTION_ONLY" not in prompt
+
+
+def test_format_contract_repair_is_compact_and_names_every_selection_ev_field() -> None:
+    prompt = DIRECT.contract_repair_prompt(
+        "ORIGINAL_CURRENT_CYCLE_PACKET",
+        {"decisions": [{"action": "NOTHING"}]},
+        ValueError("selection_ev_fields_missing:0:candidate_comparison:breakeven_target_first"),
+    )
+    assert "FORMAT_CORRECTION_ONLY" in prompt
+    assert "ORIGINAL_CURRENT_CYCLE_PACKET" not in prompt
+    assert "PREVIOUS_RESPONSE=" in prompt
+    assert "breakeven_target_first" in prompt
+    assert "estimated_target_first_range" in prompt
 
 
 def test_held_trigger_nothing_requests_one_minute_review() -> None:

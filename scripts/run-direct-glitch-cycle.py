@@ -1731,6 +1731,64 @@ def clear_wake_triggers(exchange: Path, packet_id: str) -> None:
     })
 
 
+def consume_fired_wake_triggers(
+    exchange: Path,
+    fired_triggers: list[dict[str, Any]],
+    packet_id: str,
+) -> None:
+    """Consume only fired triggers while preserving unrelated frozen paths."""
+    path = wake_trigger_path(exchange)
+    if not path.is_file() or not fired_triggers:
+        return
+    try:
+        state = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return
+    triggers = state.get("triggers")
+    if not isinstance(triggers, list):
+        return
+    state_cycle_id = str(state.get("cycle_id") or "")
+    fired_keys: set[tuple[str, str, float, str]] = set()
+    fired_legacy_keys: set[tuple[str, float, str]] = set()
+    for trigger in fired_triggers:
+        if not isinstance(trigger, dict):
+            continue
+        instrument = instrument_root(trigger.get("instrument"))
+        direction = str(trigger.get("direction") or "")
+        source_cycle_id = str(trigger.get("source_cycle_id") or state_cycle_id)
+        try:
+            price = float(trigger.get("price"))
+        except (TypeError, ValueError):
+            continue
+        fired_keys.add((instrument, direction, price, source_cycle_id))
+        fired_legacy_keys.add((direction, price, source_cycle_id))
+    remaining: list[dict[str, Any]] = []
+    for trigger in triggers:
+        if not isinstance(trigger, dict):
+            continue
+        instrument = instrument_root(trigger.get("instrument"))
+        direction = str(trigger.get("direction") or "")
+        source_cycle_id = str(trigger.get("source_cycle_id") or state_cycle_id)
+        try:
+            price = float(trigger.get("price"))
+        except (TypeError, ValueError):
+            remaining.append(trigger)
+            continue
+        fired = (
+            (instrument, direction, price, source_cycle_id) in fired_keys
+            if instrument
+            else (direction, price, source_cycle_id) in fired_legacy_keys
+        )
+        if not fired:
+            remaining.append(trigger)
+    write_json_atomic(path, {
+        "schema_version": "glitch.hermes.wake_triggers.v2",
+        "cycle_id": state_cycle_id if remaining else packet_id,
+        "triggers": remaining,
+        "updated_utc": utc_now(),
+    })
+
+
 def latest_prior_cognition(
     exchange: Path,
     current_cycle_id: str,
@@ -3292,14 +3350,20 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
             "You may change action, instrument, prices, confidence, reasons, and audit evidence. "
             "Return one fully consistent strict JSON object only."
         )
-    else:
-        correction = (
-            "\nFORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, "
-            "prices, confidence, reasons, and audit evidence. Correct only JSON syntax and the "
-            "required field/nesting contract identified below. Return one JSON object only. "
-            "decision_audit ends after final_choice; wake_triggers is its decision-level sibling."
-        )
-    return prompt + correction + "\nCONTRACT_ERROR=" + error_text + "\nPREVIOUS_RESPONSE=" + prior
+        return prompt + correction + "\nCONTRACT_ERROR=" + error_text + "\nPREVIOUS_RESPONSE=" + prior
+    return (
+        "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
+        "confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
+        "and the required field or nesting contract named by CONTRACT_ERROR. Return exactly one "
+        "complete strict glitch.intent.batch.v1 JSON object with no Markdown or prose. "
+        "decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
+        "Every SELECTION_EV must contain direction, entry, stop, target, risk_points, reward_points, "
+        "friction_points, breakeven_target_first, estimated_target_first_range, now_ev, wait_price, "
+        "wait_ev, and decisive_reason.\nCONTRACT_ERROR="
+        + error_text
+        + "\nPREVIOUS_RESPONSE="
+        + prior
+    )
 
 
 def trigger_review_has_held_nothing(batch: dict[str, Any]) -> bool:
@@ -4413,7 +4477,14 @@ def run_once(
     if attempt_path.is_file():
         return 0
     if not args.dry_run:
-        clear_wake_triggers(exchange, packet_id)
+        if decision_mode == "trigger_review":
+            consume_fired_wake_triggers(
+                exchange,
+                invocation_context.get("fired_triggers", []) if invocation_context else [],
+                packet_id,
+            )
+        elif decision_mode == "position_management":
+            clear_wake_triggers(exchange, packet_id)
     remember_packet_activation(exchange, packet)
     journals = journal_tail(glitch_data)
     journals.update(learning_context(exchange))
