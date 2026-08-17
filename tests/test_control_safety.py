@@ -176,7 +176,65 @@ def configure_plugin_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setattr(PLUGIN, "DIRECTIVE_DIR", directive_directory)
     monkeypatch.setattr(PLUGIN, "DIRECTIVE_PATH", directive_directory / "operator-directive.json")
     monkeypatch.setattr(PLUGIN, "DIRECTIVE_LOG", directive_directory / "operator-directives.jsonl")
+    monkeypatch.setattr(PLUGIN, "LEARNING_LOCK_PATH", directive_directory / "learning-cycle.lock")
+    monkeypatch.setattr(
+        PLUGIN,
+        "LEARNING_STATUS_PATH",
+        directive_directory / "supervisor" / "learning-worker-status.json",
+    )
     monkeypatch.setattr(PLUGIN, "_require_flat_group", lambda: None)
+
+
+def test_trade_resume_refreshes_waiting_learning_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_plugin_paths(monkeypatch, tmp_path)
+
+    PLUGIN._mark_learning_waiting_after_resume()
+
+    status = json.loads(PLUGIN.LEARNING_STATUS_PATH.read_text(encoding="utf-8"))
+    assert status["status"] == "waiting"
+    assert status["reason"] == "trading_resumed"
+    assert status["recorded_utc"].endswith("Z")
+
+
+def test_trade_resume_does_not_overwrite_running_learner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_plugin_paths(monkeypatch, tmp_path)
+    PLUGIN.LEARNING_STATUS_PATH.parent.mkdir(parents=True)
+    PLUGIN.LEARNING_STATUS_PATH.write_text(
+        json.dumps({"status": "started"}), encoding="utf-8"
+    )
+    PLUGIN.LEARNING_LOCK_PATH.write_text("{}", encoding="utf-8")
+
+    PLUGIN._mark_learning_waiting_after_resume()
+
+    assert json.loads(PLUGIN.LEARNING_STATUS_PATH.read_text(encoding="utf-8")) == {
+        "status": "started"
+    }
+
+
+def test_trade_resume_preserves_recent_completed_learning_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_plugin_paths(monkeypatch, tmp_path)
+    PLUGIN.LEARNING_STATUS_PATH.parent.mkdir(parents=True)
+    recent = {
+        "schema_version": "glitch.hermes.learning_worker_status.v1",
+        "recorded_utc": PLUGIN.datetime.now(PLUGIN.timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        ),
+        "status": "ok",
+    }
+    PLUGIN.LEARNING_STATUS_PATH.write_text(json.dumps(recent), encoding="utf-8")
+
+    PLUGIN._mark_learning_waiting_after_resume()
+
+    assert json.loads(PLUGIN.LEARNING_STATUS_PATH.read_text(encoding="utf-8")) == recent
 
 
 def test_bare_forced_command_rejects_multiple_routes(

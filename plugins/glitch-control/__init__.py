@@ -27,6 +27,42 @@ GLITCH_DATA = Path(os.environ.get(
 DIRECTIVE_DIR = GLITCH_DATA / "hermes" / "exchange" / "hermes"
 DIRECTIVE_PATH = DIRECTIVE_DIR / "operator-directive.json"
 DIRECTIVE_LOG = DIRECTIVE_DIR / "operator-directives.jsonl"
+LEARNING_LOCK_PATH = DIRECTIVE_DIR / "learning-cycle.lock"
+LEARNING_STATUS_PATH = DIRECTIVE_DIR / "supervisor" / "learning-worker-status.json"
+
+
+def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, separators=(",", ":"), ensure_ascii=False)
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
+def _mark_learning_waiting_after_resume() -> None:
+    if LEARNING_LOCK_PATH.is_file():
+        return
+    try:
+        current = json.loads(LEARNING_STATUS_PATH.read_text(encoding="utf-8"))
+        recorded = datetime.fromisoformat(
+            str(current.get("recorded_utc", "")).replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        if datetime.now(timezone.utc) - recorded <= timedelta(minutes=45):
+            return
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    _write_json_atomic(LEARNING_STATUS_PATH, {
+        "schema_version": "glitch.hermes.learning_worker_status.v1",
+        "recorded_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "status": "waiting",
+        "reason": "trading_resumed",
+    })
 
 
 def _token() -> str:
@@ -218,17 +254,7 @@ def _write_operator_directive(
         "rationale": raw_args.strip() or f"Operator requested a {bias} bias for the next cycle.",
         "source": "glitch-hermes-chat",
     }
-    DIRECTIVE_DIR.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(prefix="operator-directive.", suffix=".tmp", dir=DIRECTIVE_DIR)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(directive, stream, separators=(",", ":"), ensure_ascii=False)
-        os.replace(temporary_name, DIRECTIVE_PATH)
-    finally:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
+    _write_json_atomic(DIRECTIVE_PATH, directive)
     with DIRECTIVE_LOG.open("a", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(directive, separators=(",", ":"), ensure_ascii=False) + "\n")
     if directive_type == "forced_entry":
@@ -327,6 +353,12 @@ def _trade(_raw_args: str) -> str:
         if resumed:
             _pause_jobs("rollback_after_glitch_resume_failure")
         raise
+    try:
+        _mark_learning_waiting_after_resume()
+    except OSError:
+        # Trading is already restored. A transient observability write must not
+        # roll back or strand the operator; the next learner launch refreshes it.
+        pass
     return "Trading is ON. " + _status_text()
 
 

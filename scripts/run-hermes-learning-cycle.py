@@ -2024,6 +2024,12 @@ def main() -> int:
     status_path = supervisor / "learning-worker-status.json"
     lock_path = exchange / "hermes" / "learning-cycle.lock"
     if not DIRECT.acquire_owner_lock(lock_path):
+        DIRECT.write_json_atomic(status_path, {
+            "schema_version": "glitch.hermes.learning_worker_status.v1",
+            "recorded_utc": utc_now(),
+            "status": "running",
+            "reason": "learning_cycle_already_running",
+        })
         return 0
     try:
         try:
