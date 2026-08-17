@@ -259,6 +259,7 @@ def test_trigger_context_preserves_a_prior_trigger_review_ledger(tmp_path: Path)
         "ASYMMETRY=positive after uncertainty",
         "SELECTION_INSTRUMENT=MNQ",
         "SELECTION_ACTION=NOTHING",
+        "SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range=35-45%;now_ev=NEGATIVE;wait_price=5012;wait_ev=NEGATIVE;decisive_reason=fixture",
         "SELECTION_REASON=wait for executable location",
     ])
     (outbox / "source.json").write_text(json.dumps({
@@ -297,6 +298,7 @@ def test_trigger_review_contract_requires_explicit_prior_status() -> None:
             elif field == "SELECTION_ACTION":
                 value = "NOTHING"
             lines.append(f"{field}={value}")
+        lines.insert(-1, "SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range=35-45%;now_ev=NEGATIVE;wait_price=5012;wait_ev=NEGATIVE;decisive_reason=fixture")
         return "\n".join(lines)
 
     DIRECT.validate_trigger_review(
@@ -326,6 +328,7 @@ def test_trigger_review_accepts_instrument_labeled_prior_statuses() -> None:
         elif field == "SELECTION_ACTION":
             value = "NOTHING"
         lines.append(f"{field}={value}")
+    lines.insert(-1, "SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range=35-45%;now_ev=NEGATIVE;wait_price=5012;wait_ev=NEGATIVE;decisive_reason=fixture")
 
     DIRECT.validate_trigger_review(
         "\n".join(lines), {"M2K", "MES", "MNQ"}, "MNQ", "NOTHING", 0
@@ -345,6 +348,7 @@ def test_trigger_review_rejects_deferring_setup_derivation_to_packet() -> None:
         elif field == "SELECTION_ACTION":
             value = "NOTHING"
         lines.append(f"{field}={value}")
+    lines.insert(-1, "SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range=35-45%;now_ev=NEGATIVE;wait_price=5012;wait_ev=NEGATIVE;decisive_reason=fixture")
 
     try:
         DIRECT.validate_trigger_review("\n".join(lines), {"MNQ", "MES"}, "MNQ", "NOTHING", 0)
@@ -368,6 +372,7 @@ def test_trigger_entry_requires_explicit_horizon_and_economic_geometry() -> None
             elif field == "SELECTION_ACTION":
                 value = "ENTER_SHORT"
             lines.append(f"{field}={value}")
+        lines.insert(-1, "SELECTION_EV=direction=SHORT;entry=5000;stop=5012;target=4988;risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range=55-65%;now_ev=POSITIVE;wait_price=4992;wait_ev=NEGATIVE;decisive_reason=fixture")
         return "\n".join(lines)
 
     complete = "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency"

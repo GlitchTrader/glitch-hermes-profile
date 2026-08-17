@@ -2003,6 +2003,7 @@ def candidate_comparison_template(candidates: list[dict[str, Any]]) -> str:
         "RANKING=REPLACE_WITH_ALL_CANDIDATES_IN_ORDER",
         "SELECTION_INSTRUMENT=REPLACE_WITH_TOP_SUPPORTED_CANDIDATE_OR_REFERENCE_CANDIDATE",
         "SELECTION_ACTION=REPLACE_WITH_ACTION",
+        "SELECTION_EV=direction=REPLACE;entry=REPLACE;stop=REPLACE;target=REPLACE;risk_points=REPLACE;reward_points=REPLACE;friction_points=REPLACE;breakeven_target_first=REPLACE;estimated_target_first_range=REPLACE;now_ev=POSITIVE|NEGATIVE|UNCERTAIN;wait_price=REPLACE;wait_ev=REPLACE;decisive_reason=REPLACE",
         "SELECTION_REASON=REPLACE_WITH_COMPARATIVE_REASON",
     ])
     return "\n".join(lines)
@@ -2011,6 +2012,7 @@ def candidate_comparison_template(candidates: list[dict[str, Any]]) -> str:
 def trigger_review_template() -> str:
     lines = [TRIGGER_REVIEW_MARKER]
     lines.extend(f"{field}=REPLACE_WITH_CURRENT_PACKET_EVIDENCE" for field in TRIGGER_REVIEW_FIELDS)
+    lines.insert(-1, "SELECTION_EV=direction=REPLACE;entry=REPLACE;stop=REPLACE;target=REPLACE;risk_points=REPLACE;reward_points=REPLACE;friction_points=REPLACE;breakeven_target_first=REPLACE;estimated_target_first_range=REPLACE;now_ev=POSITIVE|NEGATIVE|UNCERTAIN;wait_price=REPLACE;wait_ev=REPLACE;decisive_reason=REPLACE")
     return "\n".join(lines)
 
 
@@ -2258,8 +2260,9 @@ def validate_candidate_comparison(
     ranking = re.search(r"(?mi)^RANKING\s*=\s*(.+?)\s*$", text)
     selection = re.search(r"(?mi)^SELECTION_INSTRUMENT\s*=\s*([A-Za-z0-9._-]+)\s*$", text)
     selection_action = re.search(r"(?mi)^SELECTION_ACTION\s*=\s*([A-Za-z_]+)\s*$", text)
+    selection_ev = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
     selection_reason = re.search(r"(?mi)^SELECTION_REASON\s*=\s*(.+?)\s*$", text)
-    if not ranking or not ranking.group(1).strip() or not selection or not selection_action or not selection_reason:
+    if not ranking or not ranking.group(1).strip() or not selection or not selection_action or not selection_ev or not selection_reason:
         raise ValueError(f"candidate_comparison_selection_incomplete:{index}")
     ranked_text = ranking.group(1).upper()
     if any(root not in ranked_text for root in expected):
@@ -2268,6 +2271,7 @@ def validate_candidate_comparison(
         raise ValueError(f"candidate_comparison_selection_instrument_mismatch:{index}")
     if selection_action.group(1).upper() != action:
         raise ValueError(f"candidate_comparison_selection_action_mismatch:{index}")
+    validate_selection_ev(selection_ev.group(1), action, index, "candidate_comparison")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
             section_values[instrument_root(selected_instrument)]["NOISE_AND_GEOMETRY"],
@@ -2294,6 +2298,54 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> Non
         raise ValueError(f"entry_geometry_evidence_incomplete:{index}:{source}:{','.join(missing)}")
 
 
+def validate_selection_ev(value: str, action: str, index: int, source: str) -> None:
+    """Check Hermes' selected-candidate EV arithmetic without choosing the trade in code."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"selection_ev_missing:{index}:{source}")
+    fields: dict[str, str] = {}
+    for part in value.split(";"):
+        key, separator, raw = part.partition("=")
+        if separator and key.strip():
+            fields[key.strip().lower()] = raw.strip()
+    required = {
+        "direction", "entry", "stop", "target", "risk_points", "reward_points",
+        "friction_points", "breakeven_target_first", "estimated_target_first_range",
+        "now_ev", "wait_price", "wait_ev", "decisive_reason",
+    }
+    missing = sorted(key for key in required if not fields.get(key))
+    if missing:
+        raise ValueError(f"selection_ev_fields_missing:{index}:{source}:{','.join(missing)}")
+    verdict = fields["now_ev"].upper()
+    if verdict not in {"POSITIVE", "NEGATIVE", "UNCERTAIN"}:
+        raise ValueError(f"selection_ev_verdict_invalid:{index}:{source}")
+    if action in {"ENTER_LONG", "ENTER_SHORT"} and verdict != "POSITIVE":
+        raise ValueError(f"selection_ev_entry_not_positive:{index}:{source}")
+    if action == "NOTHING" and verdict == "POSITIVE":
+        raise ValueError(f"selection_ev_nothing_positive:{index}:{source}")
+    numeric: dict[str, float] = {}
+    for key in ("risk_points", "reward_points", "friction_points", "breakeven_target_first"):
+        raw = fields[key]
+        if raw.upper() in {"NA", "N/A", "UNKNOWN"}:
+            continue
+        try:
+            parsed = float(raw.rstrip("%"))
+        except (TypeError, ValueError):
+            raise ValueError(f"selection_ev_number_invalid:{index}:{source}:{key}")
+        if not math.isfinite(parsed):
+            raise ValueError(f"selection_ev_number_invalid:{index}:{source}:{key}")
+        numeric[key] = parsed / 100.0 if raw.endswith("%") else parsed
+    risk = numeric.get("risk_points")
+    reward = numeric.get("reward_points")
+    friction = numeric.get("friction_points", 0.0)
+    reported = numeric.get("breakeven_target_first")
+    if risk is not None and reward is not None and reported is not None:
+        if risk <= 0 or reward <= 0 or friction < 0:
+            raise ValueError(f"selection_ev_geometry_invalid:{index}:{source}")
+        expected = (risk + friction) / (risk + reward + friction)
+        if abs(expected - reported) > 0.035:
+            raise ValueError(f"selection_ev_breakeven_mismatch:{index}:{source}")
+
+
 def validate_trigger_review(
     text: str,
     candidates: list[str] | set[str],
@@ -2318,6 +2370,10 @@ def validate_trigger_review(
         raise ValueError(f"trigger_review_selection_instrument_mismatch:{index}")
     if values["SELECTION_ACTION"].upper() != action:
         raise ValueError(f"trigger_review_selection_action_mismatch:{index}")
+    ev_match = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
+    if not ev_match:
+        raise ValueError(f"trigger_review_selection_ev_missing:{index}")
+    validate_selection_ev(ev_match.group(1), action, index, "trigger_review")
     status_value = values["PRIOR_TRIGGER_REVIEW"]
     allowed_statuses = {"HELD", "FAILED", "EXPIRED"}
     status = status_value.split(maxsplit=1)[0].rstrip(":.,;").upper()
@@ -3372,6 +3428,8 @@ def apply_entry_revalidation(
             "latest_price": current_price,
             "entry_range_low": low if math.isfinite(low) else None,
             "entry_range_high": high if math.isfinite(high) else None,
+            "stop": stop if math.isfinite(stop) else None,
+            "target": target if math.isfinite(target) else None,
             "geometry_valid": geometry_valid,
             "favorable_supersession": favorable,
         }
@@ -3389,17 +3447,39 @@ def favorable_supersession_exists(batch: dict[str, Any]) -> bool:
 
 
 def maybe_request_favorable_reassessment(
-    batch: dict[str, Any], exchange: Path, source_packet: dict[str, Any], latest_packet: dict[str, Any]
+    batch: dict[str, Any], exchange: Path, source_packet: dict[str, Any], latest_packet: dict[str, Any],
+    *, suppress_followup: bool = False,
 ) -> bool:
-    if batch.get("favorable_reassessment_requested") is True:
+    if suppress_followup or batch.get("favorable_reassessment_requested") is True:
         return False
-    if not favorable_supersession_exists(batch):
+    intent = next((
+        value for value in batch.get("decisions", [])
+        if isinstance(value, dict)
+        and isinstance(value.get("entry_revalidation"), dict)
+        and value["entry_revalidation"].get("favorable_supersession") is True
+    ), None)
+    if not isinstance(intent, dict):
         return False
+    evidence = intent["entry_revalidation"]
     batch["favorable_reassessment_requested"] = True
     request_immediate_cycle(
         exchange,
-        "favorable_entry_supersession|source=" + str(source_packet.get("packet_id") or "")
-        + "|latest=" + str(latest_packet.get("packet_id") or ""),
+        {
+            "kind": "favorable_entry_supersession",
+            "suppress_favorable_followup": True,
+            "reassessment_context": {
+                "original_action": intent.get("action"),
+                "instrument": intent.get("instrument"),
+                "entry_range_low": evidence.get("entry_range_low"),
+                "entry_range_high": evidence.get("entry_range_high"),
+                "stop": evidence.get("stop"),
+                "target": evidence.get("target"),
+                "source_price": evidence.get("source_price"),
+                "latest_price": evidence.get("latest_price"),
+                "source_packet_id": evidence.get("source_packet_id") or source_packet.get("packet_id"),
+                "latest_packet_id": evidence.get("latest_packet_id") or latest_packet.get("packet_id"),
+            },
+        },
     )
     return True
 
@@ -3416,11 +3496,11 @@ def all_entry_actions_superseded(batch: dict[str, Any]) -> bool:
     )
 
 
-def request_immediate_cycle(exchange: Path, reason: str) -> None:
+def request_immediate_cycle(exchange: Path, request: dict[str, Any]) -> None:
     write_json_atomic(exchange / "hermes" / "direct-cycle-request.json", {
         "schema_version": "glitch.hermes.direct_cycle_request.v1",
         "requested_utc": utc_now(),
-        "reason": reason,
+        **request,
     })
 
 
@@ -3732,11 +3812,11 @@ def build_prompt(
             "This is a fast condition-change review, not a new full market scan. Evaluate every frozen fired trigger and its prior instrument ledger before defining any newer transition. "
             "A crossing is a reassessment event, not an automatic order, but it promotes the prior conditional path to active review. Do not require the same class of confirmation again at a newer extreme. "
             "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. HELD preserves the hypothesis but supplies no extra directional evidence and does not lower the entry standard. "
-            "Enter when current response, remaining probabilistic room, genuine invalidation, execution location, and survival-adjusted asymmetry jointly support positive expected value; assess these dimensions once, not as repeated vetoes. Otherwise choose NOTHING and identify top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. "
+            "For the selected candidate compare NOW with WAIT. State entry, stop, primary target, risk points, reward points, friction points, break-even target-before-stop probability, estimated target-before-stop probability range, now_ev, wait price, wait_ev, and one decisive reason in SELECTION_EV. Enter only when now_ev is POSITIVE; choose NOTHING only when now_ev is NEGATIVE or UNCERTAIN. A confirmation at or beyond the primary objective is not a valid missing condition because it consumes the trade. Assess latency, noise, stale depth and partial flow once in this comparison, not as repeated vetoes. Otherwise choose NOTHING and identify top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. "
             "Hermes must derive the current objective, genuine invalidation, and executable zone from supplied market structure, volatility, auction response, and flow; never defer because these interpretations were not prewritten or labeled authoritative. UNKNOWN is valid only when the underlying evidence is unusable. A confirmation transition is not automatically the primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
-            "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder. CURRENT_AUCTION must include current context, price response, and material evidence quality; ALTERNATIVE_CANDIDATES must include comparative asymmetry and rejection. Keep every field to one compact evidence-dense sentence, avoid repeated facts, and keep the complete ledger under 6000 characters. "
+            "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder, including SELECTION_EV. CURRENT_AUCTION must include current context, price response, and material evidence quality; ALTERNATIVE_CANDIDATES must include comparative asymmetry and rejection. Keep every field to one compact evidence-dense sentence, avoid repeated facts, and keep the complete ledger under 6000 characters. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "A valid tiny bracket is not proof of edge. In ENTRY_RANGE_NOISE_GEOMETRY state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. Reject a shallow pivot that cannot survive the intended five-to-ten-bar path; improve entry location, use a deeper genuine invalidation, or choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with evidence-grounded probability and confidence from 0 to 1. "
@@ -3746,7 +3826,7 @@ def build_prompt(
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs CURRENT_AUCTION containing regime, location, price/flow response, and material evidence quality; bullish and bearish paths; next transition; PRIOR_TRIGGER_REVIEW classified as HELD, FAILED, EXPIRED, or NOT_APPLICABLE only when no prior path exists; coarse next-five-to-ten-bar forecast; objective/invalidation; practical entry range; noise-aware geometry; and ASYMMETRY containing execution uncertainty, comparative rank, and rejection reason. "
             "Use each one-minute row's native_observations.last_completed_bar as the authoritative completed candle. Current OHLCV is live partial evidence and must remain labeled partial. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
-            "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that unified assessment; name the top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
+            "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. For the selected candidate compare NOW with WAIT and write SELECTION_EV with entry, stop, primary target, risk/reward points, friction, break-even target-before-stop probability, estimated target-before-stop range, now_ev, wait price, wait_ev, and one decisive reason. Enter only when now_ev is POSITIVE; choose NOTHING only when now_ev is NEGATIVE or UNCERTAIN. A confirmation at or beyond the primary objective is not a valid missing condition because it consumes the trade. NOTHING is valid when no candidate retains practical edge after that unified assessment; name the top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, an evidence method of at most 128 characters grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
@@ -4019,6 +4099,7 @@ def run_once(
     args: argparse.Namespace,
     glitch_data: Path,
     exchange: Path,
+    direct_request: dict[str, Any] | None = None,
 ) -> int:
     if not trading_runtime_enabled(glitch_data):
         return 0
@@ -4171,15 +4252,27 @@ def run_once(
         return 0
 
     directive = read_operator_directive(exchange)
-    reason = invocation_reason(packet, scenario, exchange, directive)
+    reassessment_request = (
+        direct_request if isinstance(direct_request, dict)
+        and direct_request.get("kind") == "favorable_entry_supersession"
+        else None
+    )
+    reason = (
+        "favorable_entry_supersession"
+        if reassessment_request is not None
+        else invocation_reason(packet, scenario, exchange, directive)
+    )
     if reason is None:
         return 0
     invocation_context = (
-        trigger_invocation_context(exchange, fired_wake_triggers(exchange, packet, scenario))
+        reassessment_request.get("reassessment_context")
+        if reassessment_request is not None
+        else trigger_invocation_context(exchange, fired_wake_triggers(exchange, packet, scenario))
         if reason == "condition_change" else None
     )
     decision_mode = (
-        "position_management" if all_scoped_books_positioned(scenario)
+        "flat_scan" if reassessment_request is not None
+        else "position_management" if all_scoped_books_positioned(scenario)
         else "trigger_review" if invocation_context is not None
         else "flat_scan"
     )
@@ -4234,7 +4327,8 @@ def run_once(
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
         favorable_reassessment = maybe_request_favorable_reassessment(
-            batch, exchange, packet, latest_packet
+            batch, exchange, packet, latest_packet,
+            suppress_followup=bool((reassessment_request or {}).get("suppress_favorable_followup")),
         )
         if not args.dry_run:
             if decision_mode == "flat_scan":
@@ -4415,10 +4509,10 @@ def main() -> int:
         # while a model call is in flight are then drained one at a time using
         # the latest native packet; there is still exactly one worker and no
         # concurrent model call or duplicate intent replay.
-        consume_direct_cycle_request(exchange)
+        request = consume_direct_cycle_request(exchange)
         result = 0
         while True:
-            result = run_once(args, glitch_data, exchange)
+            result = run_once(args, glitch_data, exchange, direct_request=request)
             if result != 0:
                 return result
             request = consume_direct_cycle_request(exchange)

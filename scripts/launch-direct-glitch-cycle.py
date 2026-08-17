@@ -48,10 +48,21 @@ def launch(args) -> dict[str, object]:
     exchange = args.glitch_data.resolve() / "hermes" / "exchange"
     events = exchange / "hermes" / "events"
     events.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(exchange / "hermes" / "direct-cycle-request.json", {
-        "schema_version": "glitch.hermes.direct_cycle_request.v1",
-        "requested_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    })
+    request_path = exchange / "hermes" / "direct-cycle-request.json"
+    existing: dict[str, object] | None = None
+    if request_path.is_file():
+        try:
+            candidate = json.loads(request_path.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict):
+                existing = candidate
+        except (OSError, json.JSONDecodeError):
+            existing = None
+    if not existing or existing.get("kind") != "favorable_entry_supersession":
+        write_json_atomic(request_path, {
+            "schema_version": "glitch.hermes.direct_cycle_request.v1",
+            "requested_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "kind": "scheduled",
+        })
     log_path = events / "direct-worker.log"
     _, env_overlay = resolve_python_invocation()
     env = os.environ.copy()

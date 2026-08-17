@@ -584,22 +584,38 @@ def _instrument_observation(frame: dict[str, Any], instrument_root_name: str | N
     ), None)
     if not isinstance(instrument, dict):
         return None
-    current = instrument.get("current_price")
-    try:
-        close = float(current)
-    except (TypeError, ValueError):
-        return None
+    descriptive = instrument.get("descriptive_state")
+    native = descriptive.get("native_observations") if isinstance(descriptive, dict) else None
+    completed = native.get("last_completed_bar") if isinstance(native, dict) else None
+    if isinstance(completed, dict):
+        source = completed
+        completed_flag = True
+    else:
+        current = instrument.get("current_price")
+        try:
+            close = float(current)
+        except (TypeError, ValueError):
+            return None
+        source = None
+        completed_flag = False
     one_minute = next((
         row for row in instrument.get("timeframe_bars", [])
         if isinstance(row, dict) and int(row.get("minutes", 0) or 0) == 1
     ), {})
     def number(key: str, fallback: float) -> float:
         try:
-            return float(one_minute.get(key, fallback))
+            return float((source or one_minute).get(key, fallback))
         except (TypeError, ValueError):
             return fallback
+    if source is not None:
+        try:
+            close = float(source.get("close"))
+        except (TypeError, ValueError):
+            return None
     return {
-        "minute_id": frame.get("minute_id"),
+        "minute_id": source.get("utc_time") if source is not None else frame.get("minute_id"),
+        "closed_utc": source.get("closed_utc") if source is not None else None,
+        "completed": completed_flag,
         "high": number("high", close),
         "low": number("low", close),
         "close": number("close", close),
@@ -713,6 +729,13 @@ def collect_decision_episodes(
                 initial = float(candidate_initials[instrument_name])
             except (KeyError, TypeError, ValueError):
                 continue
+            selected_candidate = next((
+                row for row in scenario["market"].get("candidates", [])
+                if isinstance(row, dict)
+                and DIRECT.instrument_root(row.get("instrument")) == instrument_name
+            ), {})
+            economics = selected_candidate.get("instrument_economics") if isinstance(selected_candidate, dict) else {}
+            revalidation = intent.get("entry_revalidation") if isinstance(intent.get("entry_revalidation"), dict) else None
             forward_high = max(row["high"] for row in future)
             forward_low = min(row["low"] for row in future)
             candidate_forward_summaries = {}
@@ -748,6 +771,8 @@ def collect_decision_episodes(
                 "action": action,
                 "prompt_version": intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION,
                 "cognitive_bundle_hash": str(intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION).rsplit("-", 1)[-1],
+                "instrument_point_value_usd": economics.get("point_value_usd") if isinstance(economics, dict) else None,
+                "instrument_tick_size": economics.get("tick_size") if isinstance(economics, dict) else None,
                 "opportunity_group_id": opportunity_group_id(
                     intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION,
                     instrument_name,
@@ -772,6 +797,7 @@ def collect_decision_episodes(
                 },
                 "receipt": result,
                 "evidence_kind": "flat_nothing" if flat_nothing else "entry_range_superseded" if favorable_supersession else "rejected_or_nonexecuted_intent",
+                "entry_range_supersession": revalidation if favorable_supersession else None,
                 "forward_observation_count": len(future),
                 "forward_observations": future,
                 "forward_high": forward_high,
@@ -787,17 +813,35 @@ def collect_decision_episodes(
             record["correlated_episode_ids"] = [record["episode_id"]]
             records.append(record)
             existing.add(intent_id)
-    grouped: dict[str, dict[str, Any]] = {}
-    for record in records:
-        group_id = str(record.get("opportunity_group_id") or record.get("episode_id"))
-        prior = grouped.get(group_id)
-        if prior is None:
-            grouped[group_id] = record
+    grouped: list[dict[str, Any]] = []
+    for record in sorted(records, key=lambda row: str(row.get("decision_utc") or "")):
+        matched = None
+        try:
+            decision_time = parse_utc(record.get("decision_utc"))
+        except (TypeError, ValueError):
+            decision_time = None
+        for prior in reversed(grouped):
+            same_setup = (
+                prior.get("prompt_version") == record.get("prompt_version")
+                and DIRECT.instrument_root(prior.get("instrument")) == DIRECT.instrument_root(record.get("instrument"))
+                and prior.get("action") == record.get("action")
+            )
+            if not same_setup:
+                continue
+            try:
+                prior_time = parse_utc(prior.get("decision_utc"))
+            except (TypeError, ValueError):
+                prior_time = None
+            if decision_time is not None and prior_time is not None and abs(decision_time - prior_time) < timedelta(minutes=5):
+                matched = prior
+                break
+        if matched is None:
+            grouped.append(record)
             continue
-        prior_ids = list(prior.get("correlated_episode_ids") or [prior.get("episode_id")])
+        prior_ids = list(matched.get("correlated_episode_ids") or [matched.get("episode_id")])
         prior_ids.extend(record.get("correlated_episode_ids") or [record.get("episode_id")])
-        prior["correlated_episode_ids"] = list(dict.fromkeys(str(item) for item in prior_ids if item))
-    records = list(grouped.values())
+        matched["correlated_episode_ids"] = list(dict.fromkeys(str(item) for item in prior_ids if item))
+    records = grouped
     if rebuild:
         write_jsonl_atomic(output_path, records)
     else:
@@ -1073,7 +1117,9 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
     for key in (
         "schema_version", "episode_id", "recorded_utc", "intent_id", "cycle_id",
         "decision_utc", "window_close_utc", "route_id", "master_account",
-        "instrument", "action", "reason", "evidence_kind", "classification",
+        "instrument", "action", "prompt_version", "cognitive_bundle_hash",
+        "opportunity_group_id", "correlated_episode_ids", "instrument_point_value_usd",
+        "instrument_tick_size", "entry_range_supersession", "reason", "evidence_kind", "classification",
         "entry_assessment", "exit_assessment", "what_went_well", "what_went_wrong",
         "geometry_assessment", "management_assessment", "quantity_assessment",
         "market_behavior", "lesson_candidates", "uncertainties", "proposed_geometry",
@@ -1698,7 +1744,11 @@ def run_once(args) -> dict[str, Any]:
     else:
         episodes = read_jsonl(supervisor / "trade-episodes.jsonl")
         all_evidence = cognitive_evidence(supervisor)
-        episode_ids = [str(row["episode_id"]) for row in all_evidence]
+        current_evidence = [
+            row for row in all_evidence
+            if str(row.get("prompt_version") or "") == DIRECT.DIRECT_PROMPT_VERSION
+        ]
+        episode_ids = [str(row["episode_id"]) for row in current_evidence]
         reviewed_ids = {
             str(value) for value in state.get("hourly_reviewed_episode_ids", [])
             if value
@@ -1721,7 +1771,7 @@ def run_once(args) -> dict[str, Any]:
                     if row.get("episode_id")
                 )
         unreviewed = [
-            row for row in all_evidence
+            row for row in current_evidence
             if str(row.get("episode_id")) not in reviewed_ids
         ]
         hourly_due = bool(unreviewed) and (
@@ -1729,7 +1779,7 @@ def run_once(args) -> dict[str, Any]:
             or minutes_since(state.get("last_hourly_utc"), now) >= 60
         )
         if args.force_loop == "hourly" and not unreviewed:
-            unreviewed = all_evidence[-MAX_HOURLY_EVIDENCE:]
+            unreviewed = current_evidence[-MAX_HOURLY_EVIDENCE:]
         if (
             (hourly_due or args.force_loop == "hourly")
             and args.force_loop in {None, "hourly"}

@@ -55,6 +55,57 @@ def test_entry_context_uses_the_selected_instruments_price_and_economics(tmp_pat
     assert captured == {"reference_price": 5000, "economics": {"point_value_usd": 5}}
 
 
+def test_completed_bar_observation_uses_authoritative_last_completed_bar() -> None:
+    frame = {
+        "minute_id": "20260817T0531Z",
+        "market_snapshot": {
+            "instruments": [{
+                "instrument": "MNQ",
+                "current_price": 101,
+                "descriptive_state": {
+                    "native_observations": {
+                        "last_completed_bar": {
+                            "utc_time": "20260817T0530Z",
+                            "closed_utc": "20260817T0531Z",
+                            "high": 102,
+                            "low": 99,
+                            "close": 100,
+                        }
+                    }
+                },
+                "timeframe_bars": [{"minutes": 1, "high": 999, "low": 1, "close": 50}],
+            }]
+        },
+    }
+    observed = LEARNING._instrument_observation(frame, "MNQ")
+    assert observed == {
+        "minute_id": "20260817T0530Z",
+        "closed_utc": "20260817T0531Z",
+        "completed": True,
+        "high": 102.0,
+        "low": 99.0,
+        "close": 100.0,
+    }
+
+
+def test_compact_episode_preserves_prompt_and_opportunity_identity() -> None:
+    compact = LEARNING.compact_episode({
+        "schema_version": "glitch.hermes.decision_episode.v2",
+        "episode_id": "episode-1",
+        "prompt_version": "prompt-v2",
+        "cognitive_bundle_hash": "hash-1",
+        "opportunity_group_id": "group-1",
+        "correlated_episode_ids": ["episode-1", "episode-2"],
+        "instrument_point_value_usd": 2,
+        "instrument_tick_size": 0.25,
+        "entry_range_supersession": {"favorable_supersession": True},
+    })
+    assert compact["prompt_version"] == "prompt-v2"
+    assert compact["opportunity_group_id"] == "group-1"
+    assert compact["correlated_episode_ids"] == ["episode-1", "episode-2"]
+    assert compact["instrument_point_value_usd"] == 2
+
+
 def test_rebuilt_decision_episode_uses_each_instruments_own_path(tmp_path, monkeypatch) -> None:
     exchange = tmp_path / "exchange"
     supervisor = exchange / "hermes" / "supervisor"
