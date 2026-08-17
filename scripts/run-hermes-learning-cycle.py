@@ -57,7 +57,11 @@ MAX_PLANNING_EPISODES = 12
 MAX_PROMPT_CHARS = 320_000
 LEARNING_REPAIR_PROMPT_RESERVE_CHARS = 2_000
 LEARNING_DEFER_RETRY_SECONDS = 5
-LEARNING_DEFER_RETRY_WINDOW_SECONDS = 600
+# One busy ten-minute transition can keep the operator queue continuously full.
+# Keep the same cheap background worker eligible for the first safe gap across
+# the next scheduler interval; it still releases Hermes immediately to every
+# live decision and exits as soon as AI is paused for maintenance.
+LEARNING_DEFER_RETRY_WINDOW_SECONDS = 3_600
 
 # Only market/geometry/capacity decisions belong in cognitive evidence. Missing
 # services, stale state, policy/auth failures, and native API faults remain code

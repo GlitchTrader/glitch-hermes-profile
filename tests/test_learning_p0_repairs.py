@@ -61,6 +61,10 @@ def test_deferred_learner_does_not_retry_while_ai_is_paused(tmp_path, monkeypatc
     assert slept == []
 
 
+def test_deferred_learner_retry_window_spans_a_full_scheduler_interval() -> None:
+    assert LEARNING.LEARNING_DEFER_RETRY_WINDOW_SECONDS >= 3600
+
+
 def test_entry_context_uses_the_selected_instruments_price_and_economics(tmp_path, monkeypatch) -> None:
     packet_path = tmp_path / "hermes" / "exchange" / "glitch" / "decision-packets" / "cycle-1.json"
     packet_path.parent.mkdir(parents=True)
