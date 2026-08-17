@@ -170,6 +170,7 @@ def test_hourly_prompt_reviews_nothing_with_bounded_counterfactual_geometry() ->
         "opportunity_review"
     ]
     assert set(review) == {
+        "results",
         "missed_opportunity_episode_ids",
         "disciplined_abstention_episode_ids",
         "uncertain_episode_ids",

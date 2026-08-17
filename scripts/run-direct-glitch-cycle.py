@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v23-compact-contract-retry"
+DIRECT_PROMPT_REVISION = "direct-v24-daily-capture-latency"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
@@ -680,6 +680,17 @@ def add_group_exposure_context(
             "tick_size": (economics or LEGACY_FIXTURE_ECONOMICS)["tick_size"],
             "instrument_economics_source": (economics or LEGACY_FIXTURE_ECONOMICS)["source"],
             "account_size": observed_master.get("account_size", book["master_size"]),
+            "realized_pnl": observed_master.get("realized_pnl"),
+            "unrealized_pnl": observed_master.get("unrealized_pnl"),
+            "total_pnl": observed_master.get("total_pnl"),
+            "profit_target": observed_master.get("profit_target"),
+            "ai_daily_capture_enabled": observed_master.get("ai_daily_capture_enabled"),
+            "ai_daily_capture_context_available": observed_master.get("ai_daily_capture_context_available"),
+            "ai_daily_capture_target_ratio": observed_master.get("ai_daily_capture_target_ratio"),
+            "ai_daily_capture_target_usd": observed_master.get("ai_daily_capture_target_usd"),
+            "ai_daily_capture_remaining_usd": observed_master.get("ai_daily_capture_remaining_usd"),
+            "ai_daily_capture_progress_ratio": observed_master.get("ai_daily_capture_progress_ratio"),
+            "ai_daily_capture_reached": observed_master.get("ai_daily_capture_reached"),
             "equity": observed_master.get("equity"),
             "liquidation_threshold": observed_master.get("liquidation_threshold"),
             "liquidation_buffer_usd": observed_master.get("buffer_margin"),
@@ -3334,6 +3345,13 @@ def apply_entry_revalidation(
         else:
             geometry_valid = current_price is not None and target < current_price < stop
         accepted = range_valid and geometry_valid
+        favorable = (
+            not accepted and latest_fresh and current_price is not None
+            and all(math.isfinite(value) for value in (low, high, stop, target))
+            and geometry_valid
+            and ((intent.get("action") == "ENTER_LONG" and current_price < low)
+                 or (intent.get("action") == "ENTER_SHORT" and current_price > high))
+        )
         status = "accepted_current_price_in_range" if accepted else "superseded"
         reason = None if accepted else (
             "latest_market_unavailable" if current_price is None or not latest_fresh
@@ -3355,9 +3373,35 @@ def apply_entry_revalidation(
             "entry_range_low": low if math.isfinite(low) else None,
             "entry_range_high": high if math.isfinite(high) else None,
             "geometry_valid": geometry_valid,
+            "favorable_supersession": favorable,
         }
         superseded = superseded or not accepted
     return superseded
+
+
+def favorable_supersession_exists(batch: dict[str, Any]) -> bool:
+    return any(
+        isinstance(intent, dict)
+        and isinstance(intent.get("entry_revalidation"), dict)
+        and intent["entry_revalidation"].get("favorable_supersession") is True
+        for intent in batch.get("decisions", [])
+    )
+
+
+def maybe_request_favorable_reassessment(
+    batch: dict[str, Any], exchange: Path, source_packet: dict[str, Any], latest_packet: dict[str, Any]
+) -> bool:
+    if batch.get("favorable_reassessment_requested") is True:
+        return False
+    if not favorable_supersession_exists(batch):
+        return False
+    batch["favorable_reassessment_requested"] = True
+    request_immediate_cycle(
+        exchange,
+        "favorable_entry_supersession|source=" + str(source_packet.get("packet_id") or "")
+        + "|latest=" + str(latest_packet.get("packet_id") or ""),
+    )
+    return True
 
 
 def all_entry_actions_superseded(batch: dict[str, Any]) -> bool:
@@ -3541,6 +3585,11 @@ def scenario_for_model(scenario: dict[str, Any], positioned_only: bool) -> dict[
             book["account_context"] = {
                 key: position_context.get(key) for key in (
                     "account_size", "equity", "liquidation_threshold",
+                    "realized_pnl", "unrealized_pnl", "total_pnl", "profit_target",
+                    "ai_daily_capture_enabled", "ai_daily_capture_context_available",
+                    "ai_daily_capture_target_ratio", "ai_daily_capture_target_usd",
+                    "ai_daily_capture_remaining_usd", "ai_daily_capture_progress_ratio",
+                    "ai_daily_capture_reached",
                     "liquidation_buffer_usd", "drawdown_headroom_ratio",
                     "max_drawdown", "prop_firm_id", "rule_status",
                     "current_total_contracts", "contract_ceiling",
@@ -3661,6 +3710,7 @@ def build_prompt(
         "Operate only the ordered master books; follower state and replication are deliberately outside cognition. "
         "Use coarse evidence-grounded probability ranges rather than fabricated precision. UNKNOWN is valid only when the supplied evidence is unusable. "
         "Maximize repeated risk-adjusted expected value and capital survival toward the user's evaluation objective. The objective is never a quota, entry trigger, size rule, or promise. "
+        "Use account_context.ai_daily_capture_* as current-session progress context when available. Below the target, prioritize the strongest valid positive-asymmetry candidate and choose quantity only from valid_entry_quantities; state total planned risk and primary-target dollars for the chosen quantity. After the target is reached, protect progress and do not seek new exposure. "
         "Do not force activity, recover losses, use a fixed setup, fixed ATR rule, fixed reward/risk rule, or treat guidance as stronger than current evidence. "
     )
     if positioned_only:
@@ -3682,7 +3732,7 @@ def build_prompt(
             "This is a fast condition-change review, not a new full market scan. Evaluate every frozen fired trigger and its prior instrument ledger before defining any newer transition. "
             "A crossing is a reassessment event, not an automatic order, but it promotes the prior conditional path to active review. Do not require the same class of confirmation again at a newer extreme. "
             "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. HELD preserves the hypothesis but supplies no extra directional evidence and does not lower the entry standard. "
-            "Enter when current response, remaining probabilistic room, genuine invalidation, execution location, and survival-adjusted asymmetry jointly support positive expected value; these are evidence dimensions, not five independent permission gates. Otherwise choose NOTHING and identify the missing edge. "
+            "Enter when current response, remaining probabilistic room, genuine invalidation, execution location, and survival-adjusted asymmetry jointly support positive expected value; assess these dimensions once, not as repeated vetoes. Otherwise choose NOTHING and identify top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. "
             "Hermes must derive the current objective, genuine invalidation, and executable zone from supplied market structure, volatility, auction response, and flow; never defer because these interpretations were not prewritten or labeled authoritative. UNKNOWN is valid only when the underlying evidence is unusable. A confirmation transition is not automatically the primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
@@ -3696,7 +3746,7 @@ def build_prompt(
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs CURRENT_AUCTION containing regime, location, price/flow response, and material evidence quality; bullish and bearish paths; next transition; PRIOR_TRIGGER_REVIEW classified as HELD, FAILED, EXPIRED, or NOT_APPLICABLE only when no prior path exists; coarse next-five-to-ten-bar forecast; objective/invalidation; practical entry range; noise-aware geometry; and ASYMMETRY containing execution uncertainty, comparative rank, and rejection reason. "
             "Use each one-minute row's native_observations.last_completed_bar as the authoritative completed candle. Current OHLCV is live partial evidence and must remain labeled partial. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
-            "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that uncertainty. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
+            "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. NOTHING is valid when no candidate retains practical edge after that unified assessment; name the top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, an evidence method of at most 128 characters grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
@@ -4016,8 +4066,15 @@ def run_once(
             allow_entry_revalidation=True,
         )
         apply_entry_revalidation(pending_batch, original_packet, packet)
+        favorable_reassessment = maybe_request_favorable_reassessment(
+            pending_batch, exchange, original_packet, packet
+        )
         if not args.dry_run:
             write_json_atomic(pending_path, pending_batch)
+        if favorable_reassessment:
+            if args.dry_run:
+                print(json.dumps({"cycle_id": pending_id, "submitted": False, "favorable_reassessment": True}))
+            return 0
         if args.dry_run:
             print(json.dumps({
                 "cycle_id": pending_id,
@@ -4048,8 +4105,15 @@ def run_once(
         validate_batch(batch, scenario, allow_entry_revalidation=True)
         current_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, current_packet)
+        favorable_reassessment = maybe_request_favorable_reassessment(
+            batch, exchange, packet, current_packet
+        )
         if not args.dry_run:
             write_json_atomic(outbox_path, batch)
+        if favorable_reassessment:
+            if args.dry_run:
+                print(json.dumps({"cycle_id": packet_id, "submitted": False, "favorable_reassessment": True}))
+            return 0
         if args.dry_run:
             print(json.dumps({
                 "cycle_id": packet_id,
@@ -4169,6 +4233,9 @@ def run_once(
         )
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
+        favorable_reassessment = maybe_request_favorable_reassessment(
+            batch, exchange, packet, latest_packet
+        )
         if not args.dry_run:
             if decision_mode == "flat_scan":
                 persist_wake_triggers(exchange, batch, packet_id)
@@ -4224,6 +4291,8 @@ def run_once(
     })
     if args.dry_run:
         print(json.dumps({"cycle_id": packet_id, "decision_count": len(batch["decisions"]), "submitted": False}))
+        return 0
+    if favorable_reassessment:
         return 0
     receipt = submit_batch(batch, glitch_data, exchange)
     mark_attempt_from_receipt(exchange, packet_id, receipt)

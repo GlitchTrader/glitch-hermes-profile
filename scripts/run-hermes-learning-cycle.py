@@ -43,7 +43,7 @@ DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 EASTERN = ZoneInfo("America/New_York")
 LOOP_SCHEMAS = {
     "debrief": "glitch.hermes.trade_episode.v1",
-    "hourly": "glitch.hermes.hourly_review.v1",
+    "hourly": "glitch.hermes.hourly_review.v2",
     "planning": "glitch.hermes.portfolio_plan.v2",
     "daily": "glitch.hermes.daily_journal.v1",
     "weekly": "glitch.hermes.weekly_skill_proposal.v1",
@@ -620,6 +620,14 @@ def is_cognitive_rejection(result: Any) -> bool:
     )
 
 
+def opportunity_group_id(prompt_version: str, instrument: str, action: str, decision_utc: Any) -> str:
+    try:
+        bucket = int(parse_utc(decision_utc).timestamp() // 300)
+    except (TypeError, ValueError, OverflowError):
+        bucket = 0
+    return stable_id("opportunity-group", "|".join((prompt_version, instrument, action, str(bucket))))
+
+
 def collect_decision_episodes(
     glitch_data: Path,
     exchange: Path,
@@ -692,7 +700,9 @@ def collect_decision_episodes(
                 action in {"ENTER_LONG", "ENTER_SHORT", "MOVE_STOP", "MOVE_TP"}
                 and is_cognitive_rejection(result)
             )
-            if not flat_nothing and not relevant_failure:
+            executor_code = str(body.get("executor_code") or "") if isinstance(body, dict) else ""
+            favorable_supersession = executor_code == "entry_range_superseded"
+            if not flat_nothing and not relevant_failure and not favorable_supersession:
                 continue
             candidate_initials = {
                 DIRECT.instrument_root(row.get("instrument")): row.get("current_price")
@@ -725,7 +735,7 @@ def collect_decision_episodes(
                     "downward_excursion_points": candidate_initial - candidate_low,
                 }
             record = {
-                "schema_version": "glitch.hermes.decision_episode.v1",
+                "schema_version": "glitch.hermes.decision_episode.v2",
                 "episode_id": stable_id("decision-episode", intent_id),
                 "recorded_utc": utc_now(),
                 "intent_id": intent_id,
@@ -736,6 +746,15 @@ def collect_decision_episodes(
                 "master_account": intent.get("account"),
                 "instrument": intent.get("instrument"),
                 "action": action,
+                "prompt_version": intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION,
+                "cognitive_bundle_hash": str(intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION).rsplit("-", 1)[-1],
+                "opportunity_group_id": opportunity_group_id(
+                    intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION,
+                    instrument_name,
+                    action,
+                    intent.get("created_utc"),
+                ),
+                "correlated_episode_ids": [],
                 "reason": intent.get("reason"),
                 "decision_audit": intent.get("decision_audit"),
                 "pre_decision_state": {
@@ -752,7 +771,7 @@ def collect_decision_episodes(
                     ) if key in intent
                 },
                 "receipt": result,
-                "evidence_kind": "flat_nothing" if flat_nothing else "rejected_or_nonexecuted_intent",
+                "evidence_kind": "flat_nothing" if flat_nothing else "entry_range_superseded" if favorable_supersession else "rejected_or_nonexecuted_intent",
                 "forward_observation_count": len(future),
                 "forward_observations": future,
                 "forward_high": forward_high,
@@ -765,8 +784,20 @@ def collect_decision_episodes(
                 "classification": None,
                 "classification_owner": "hermes",
             }
+            record["correlated_episode_ids"] = [record["episode_id"]]
             records.append(record)
             existing.add(intent_id)
+    grouped: dict[str, dict[str, Any]] = {}
+    for record in records:
+        group_id = str(record.get("opportunity_group_id") or record.get("episode_id"))
+        prior = grouped.get(group_id)
+        if prior is None:
+            grouped[group_id] = record
+            continue
+        prior_ids = list(prior.get("correlated_episode_ids") or [prior.get("episode_id")])
+        prior_ids.extend(record.get("correlated_episode_ids") or [record.get("episode_id")])
+        prior["correlated_episode_ids"] = list(dict.fromkeys(str(item) for item in prior_ids if item))
+    records = list(grouped.values())
     if rebuild:
         write_jsonl_atomic(output_path, records)
     else:
@@ -808,6 +839,7 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                     "working": ["REPLACE"], "failing": ["REPLACE"], "unknown": ["REPLACE"],
                     "repeated_patterns": ["REPLACE"], "system_findings": ["REPLACE"],
                     "opportunity_review": {
+                        "results": [],
                         "missed_opportunity_episode_ids": [],
                         "disciplined_abstention_episode_ids": [],
                         "uncertain_episode_ids": [],
@@ -883,8 +915,8 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
             "Separate market cognition, execution/replication, infrastructure/data quality, deterministic rejection, and variance. Judge the decision ex ante and preserve uncertainty."
         ),
         "hourly": (
-            "Supervise supplied completed trade and decision episodes. Do not double-count correlated route/master/follower implementations. "
-            "Classify every supplied flat NOTHING episode exactly once in opportunity_review as disciplined abstention, missed opportunity, or uncertainty, using its exact episode_id. When ex-ante evidence is sufficient, reconstruct one conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective, then score target-before-stop chronology. A missed opportunity requires the decision's own directional hypothesis or contemporaneous candidate evidence plus a later path that reached the objective without reaching invalidation; later movement alone is insufficient. Do not invent fills or PnL, but do not use the absence of an actual trade or model-emitted bracket to exempt NOTHING from effective-opportunity review. In opportunity_review.summary name the repeated veto, if any, and cite representative episode IDs; if no episode is classified missed, state which reconstruction element prevented it. Distinguish supported probabilistic room from arbitrary extension and current remaining value from entry-thesis anchoring. Produce compact advisory guidance and propose at most one narrow cognitive clause only when repeated independent evidence and contradiction review support it."
+            "Supervise supplied completed trade and decision episodes. Do not double-count correlated route/master/follower implementations. Classify every supplied flat NOTHING episode exactly once and cite representative episode IDs in the summary. "
+            "Review only the current prompt_version evidence first; never mix prompting eras in one hourly batch. For each supplied independent opportunity group, return exactly one opportunity_review.results object with episode_id, correlated_episode_ids, classification (disciplined_abstention, missed_opportunity, or uncertain), conservative direction/entry/invalidation/objective when reconstructable, target_before_stop_chronology, one_contract_gross_opportunity_usd, mfe_usd, and reason. When reconstructable, use a conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective. A missed opportunity requires valid noise-aware geometry and target-before-stop chronology; same-bar ambiguity is uncertain. Do not invent fills or PnL; the absence of an actual trade does not exempt an opportunity from review. Mark correlated route copies as reviewed through the representative. Require at least two independent current-version opportunity groups before proposing a cognitive change. In opportunity_review.summary name repeated vetoes and representative IDs. Produce compact advisory guidance and propose at most one narrow cognitive clause only when repeated independent evidence and contradiction review support it."
         ),
         "planning": (
             "Create the next six-hour advisory plan from supplied regime, attributable outcomes, uncertainty, and current account state. "
