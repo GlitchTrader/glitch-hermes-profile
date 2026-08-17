@@ -262,6 +262,8 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert '"action":"EXIT"' in prompt
     assert '"code":"master_exit_fill_observed"' in prompt
     assert '"master_realized_pnl_usd":-13.75' in prompt
+    assert "master_stop_exit_fill_observed" in prompt
+    assert "completed factual result" in prompt
     assert "state what materially changed after that exit" in prompt
     assert "This is evidence reconciliation, not a cooldown" in prompt
 

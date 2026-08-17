@@ -1549,6 +1549,106 @@ def test_journal_tail_deduplicates_shared_decisions_and_preserves_instrument(
     assert result["decisions"][0]["instrument"] == "MES"
 
 
+def test_journal_tail_retains_native_exit_result_until_full_outcome_exists(
+    tmp_path: Path,
+) -> None:
+    intents = tmp_path / "intents"
+    intents.mkdir()
+    entry_intent = "11111111-1111-4111-8111-111111111111"
+    rows = [
+        {
+            "recorded_utc": "2026-08-17T13:11:05Z",
+            "intent_id": entry_intent,
+            "status": "executed",
+            "code": "master_entry_fill_observed",
+            "message": "account=Sim101|contract=MES 09-26|fill=7805.5",
+        },
+        {
+            "recorded_utc": "2026-08-17T13:34:02Z",
+            "intent_id": entry_intent,
+            "status": "executed",
+            "code": "master_stop_exit_fill_observed",
+            "message": (
+                "account=Sim101|contract=MES 09-26|entry=7805.5|fill=7800.25"
+                "|point_value_usd=5|realized_pnl_usd=-26.25"
+            ),
+        },
+    ]
+    rows.extend({
+        "recorded_utc": f"2026-08-17T13:{35 + index:02d}:00Z",
+        "intent_id": f"nothing-{index}",
+        "status": "executed",
+        "code": "no_native_action_requested",
+        "message": "NOTHING",
+    } for index in range(8))
+    (intents / "executions.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    result = DIRECT.journal_tail(tmp_path)
+
+    codes = [row["code"] for row in result["executions"]]
+    assert "master_entry_fill_observed" in codes
+    assert "master_stop_exit_fill_observed" in codes
+    stop = next(
+        row for row in result["executions"]
+        if row["code"] == "master_stop_exit_fill_observed"
+    )
+    assert "realized_pnl_usd=-26.25" in stop["message"]
+    prompt_ledger = DIRECT.ledger_for_model(result, positioned_only=False)
+    assert "master_stop_exit_fill_observed" in {
+        row["code"] for row in prompt_ledger["executions"]
+    }
+
+
+def test_journal_tail_uses_full_outcome_after_old_lifecycle_result(
+    tmp_path: Path,
+) -> None:
+    intents = tmp_path / "intents"
+    intents.mkdir()
+    entry_intent = "11111111-1111-4111-8111-111111111111"
+    lifecycle = [{
+        "recorded_utc": "2026-08-17T13:34:02Z",
+        "intent_id": entry_intent,
+        "status": "executed",
+        "code": "master_stop_exit_fill_observed",
+        "message": "realized_pnl_usd=-26.25",
+    }]
+    lifecycle.extend({
+        "recorded_utc": f"2026-08-17T14:{index:02d}:00Z",
+        "intent_id": f"nothing-{index}",
+        "status": "executed",
+        "code": "no_native_action_requested",
+        "message": "NOTHING",
+    } for index in range(8))
+    (intents / "executions.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in lifecycle),
+        encoding="utf-8",
+    )
+    (intents / "hermes-trade-outcomes.jsonl").write_text(
+        json.dumps({
+            "intent_id": entry_intent,
+            "cycle_id": "20260817T1310Z",
+            "origin": "ai",
+            "master_learning_eligible": True,
+            "master_account": "Sim101",
+            "instrument": "MES",
+            "action": "ENTER_LONG",
+            "master_realized_pnl_usd": -26.25,
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    result = DIRECT.journal_tail(tmp_path)
+
+    assert all(
+        row["code"] != "master_stop_exit_fill_observed"
+        for row in result["executions"]
+    )
+    assert result["outcomes"][0]["master_realized_pnl_usd"] == -26.25
+
+
 def test_cognitive_bundle_hash_includes_hot_path_runner_contract() -> None:
     assert "SOUL.md" in DIRECT.COGNITIVE_BUNDLE_RELATIVE_PATHS
     assert "scripts/run-direct-glitch-cycle.py" in DIRECT.COGNITIVE_BUNDLE_RELATIVE_PATHS

@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v26-result-continuity"
+DIRECT_PROMPT_REVISION = "direct-v27-immediate-result-continuity"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
@@ -774,6 +774,53 @@ def _compact_execution(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _prompt_executions(
+    rows: list[dict[str, Any]],
+    outcomes: list[dict[str, Any]],
+    max_lines: int,
+) -> list[dict[str, Any]]:
+    """Keep bounded native lifecycle facts until the full outcome catches up."""
+    outcome_ids = {
+        str(row.get("intent_id")) for row in outcomes if row.get("intent_id")
+    }
+    lifecycle_codes = {
+        "master_entry_fill_observed",
+        "master_exit_fill_observed",
+        "master_stop_exit_fill_observed",
+        "master_target_exit_fill_observed",
+    }
+    retained: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in rows:
+        code = str(row.get("code") or "")
+        intent_id = str(row.get("intent_id") or "")
+        if code not in lifecycle_codes or intent_id in outcome_ids:
+            continue
+        compact = _compact_execution(row)
+        key = (
+            str(compact.get("recorded_utc") or ""),
+            intent_id,
+            code,
+            str(compact.get("message") or ""),
+        )
+        if key not in seen:
+            retained.append(compact)
+            seen.add(key)
+    for row in rows[-max_lines:]:
+        compact = _compact_execution(row)
+        key = (
+            str(compact.get("recorded_utc") or ""),
+            str(compact.get("intent_id") or ""),
+            str(compact.get("code") or ""),
+            str(compact.get("message") or ""),
+        )
+        if key not in seen:
+            retained.append(compact)
+            seen.add(key)
+    retained.sort(key=lambda row: str(row.get("recorded_utc") or ""))
+    return retained[-max_lines * 3:]
+
+
 def _compact_decision(row: dict[str, Any]) -> dict[str, Any]:
     intent = row.get("intent") if isinstance(row.get("intent"), dict) else row
     audit = intent.get("decision_audit") if isinstance(intent.get("decision_audit"), dict) else {}
@@ -857,10 +904,6 @@ def outcome_idea_key(row: dict[str, Any]) -> tuple[str, str, str]:
 def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[dict[str, Any]]]:
     intents = glitch_data / "intents"
     result: dict[str, list[dict[str, Any]]] = {"received": []}
-    result["executions"] = [
-        _compact_execution(row)
-        for row in _jsonl_tail(intents / "executions.jsonl", max_lines)
-    ]
     recent_decisions = [
         row for row in _jsonl_tail(intents / "decisions.jsonl", max_lines * 4)
         if (
@@ -890,6 +933,12 @@ def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[dict[s
     result["outcomes"] = [
         _compact_outcome(row) for row in list(unique_ideas.values())[-max_lines:]
     ]
+    execution_rows = _jsonl_tail(intents / "executions.jsonl", max_lines * 80)
+    result["executions"] = _prompt_executions(
+        execution_rows,
+        eligible,
+        max_lines,
+    )
     # Journal.tsv is a long-lived human ledger. It remains on disk and in
     # Hermes memory, but is deliberately excluded from the active entry gate;
     # Bounded recent execution/outcome JSONL preserves Apex-session continuity
@@ -3750,7 +3799,7 @@ def ledger_for_model(journals: dict[str, Any], positioned_only: bool) -> dict[st
     # themselves disciplined abstention and become their own veto.
     return {
         "decisions": list(journals.get("decisions", []))[-3:],
-        "executions": list(journals.get("executions", []))[-6:],
+        "executions": list(journals.get("executions", []))[-18:],
         "outcomes": list(journals.get("outcomes", []))[-6:],
     }
 
@@ -3858,7 +3907,7 @@ def build_prompt(
             "Hermes must derive the current objective, genuine invalidation, and executable zone from supplied market structure, volatility, auction response, and flow; never defer because these interpretations were not prewritten or labeled authoritative. UNKNOWN is valid only when the underlying evidence is unusable. A confirmation transition is not automatically the primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
-            "Use the supplied recent factual ledger. Before re-entering the same instrument and direction after a recent EXIT or completed outcome, state what materially changed after that exit and why the current setup is distinct; a renewed crossing or an EXPIRED label alone is insufficient. This is evidence reconciliation, not a cooldown: re-enter whenever genuinely new current evidence restores positive expected value. "
+            "Use the supplied recent factual ledger. A native master_stop_exit_fill_observed, master_target_exit_fill_observed, or master_exit_fill_observed row is a completed factual result even when the learner's fuller outcome record has not arrived; use its fill and realized_pnl_usd evidence immediately. Before re-entering the same instrument and direction after a recent EXIT or completed result, state what materially changed after that exit and why the current setup is distinct; a renewed crossing or an EXPIRED label alone is insufficient. This is evidence reconciliation, not a cooldown: re-enter whenever genuinely new current evidence restores positive expected value. "
             "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder, including SELECTION_EV. CURRENT_AUCTION must include current context, price response, and material evidence quality; ALTERNATIVE_CANDIDATES must include comparative asymmetry and rejection. Keep every field to one compact evidence-dense sentence, avoid repeated facts, and keep the complete ledger under 6000 characters. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "A valid tiny bracket is not proof of edge. In ENTRY_RANGE_NOISE_GEOMETRY state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. Reject a shallow pivot that cannot survive the intended five-to-ten-bar path; improve entry location, use a deeper genuine invalidation, or choose NOTHING. "
