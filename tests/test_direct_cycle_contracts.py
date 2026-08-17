@@ -1233,7 +1233,7 @@ def test_flat_ledger_excludes_recursive_guidance_but_preserves_facts() -> None:
     compact = DIRECT.ledger_for_model(journals, positioned_only=False)
 
     assert [row["id"] for row in compact["decisions"]] == [2, 3, 4]
-    assert [row["id"] for row in compact["executions"]] == [2, 3, 4]
+    assert [row["id"] for row in compact["executions"]] == [0, 1, 2, 3, 4]
     assert [row["id"] for row in compact["outcomes"]] == [2, 3, 4, 5, 6, 7]
     assert "current_guidance" not in compact
     assert "current_plan" not in compact

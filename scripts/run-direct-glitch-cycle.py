@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v25-decisive-followup"
+DIRECT_PROMPT_REVISION = "direct-v26-result-continuity"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
@@ -3750,7 +3750,7 @@ def ledger_for_model(journals: dict[str, Any], positioned_only: bool) -> dict[st
     # themselves disciplined abstention and become their own veto.
     return {
         "decisions": list(journals.get("decisions", []))[-3:],
-        "executions": list(journals.get("executions", []))[-3:],
+        "executions": list(journals.get("executions", []))[-6:],
         "outcomes": list(journals.get("outcomes", []))[-6:],
     }
 
@@ -3822,9 +3822,7 @@ def build_prompt(
         "prior_cognition": prior_cognition if decision_mode == "flat_scan" else None,
         "decision_packet": packet_for_model(packet, scenario, positioned_only=positioned_only),
         "execution_scope": scenario_for_model(scenario, positioned_only),
-        "recent_glitch_ledger": (
-            {} if trigger_review_only else ledger_for_model(journals, positioned_only)
-        ),
+        "recent_glitch_ledger": ledger_for_model(journals, positioned_only),
         "operator_advisory": directive,
         "required_output_template": output_template,
     }
@@ -3860,6 +3858,7 @@ def build_prompt(
             "Hermes must derive the current objective, genuine invalidation, and executable zone from supplied market structure, volatility, auction response, and flow; never defer because these interpretations were not prewritten or labeled authoritative. UNKNOWN is valid only when the underlying evidence is unusable. A confirmation transition is not automatically the primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
+            "Use the supplied recent factual ledger. Before re-entering the same instrument and direction after a recent EXIT or completed outcome, state what materially changed after that exit and why the current setup is distinct; a renewed crossing or an EXPIRED label alone is insufficient. This is evidence reconciliation, not a cooldown: re-enter whenever genuinely new current evidence restores positive expected value. "
             "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder, including SELECTION_EV. CURRENT_AUCTION must include current context, price response, and material evidence quality; ALTERNATIVE_CANDIDATES must include comparative asymmetry and rejection. Keep every field to one compact evidence-dense sentence, avoid repeated facts, and keep the complete ledger under 6000 characters. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "A valid tiny bracket is not proof of edge. In ENTRY_RANGE_NOISE_GEOMETRY state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. Reject a shallow pivot that cannot survive the intended five-to-ten-bar path; improve entry location, use a deeper genuine invalidation, or choose NOTHING. "

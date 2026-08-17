@@ -217,10 +217,29 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
         }],
     }
 
+    journals = {
+        "decisions": [{
+            "created_utc": "2026-08-17T11:16:57Z",
+            "instrument": "MNQ",
+            "action": "EXIT",
+            "reason": "The prior long response failed below entry.",
+        }],
+        "executions": [{
+            "recorded_utc": "2026-08-17T11:16:58Z",
+            "intent_id": "exit-intent",
+            "status": "executed",
+            "code": "master_exit_fill_observed",
+        }],
+        "outcomes": [{
+            "instrument": "MNQ",
+            "action": "ENTER_LONG",
+            "master_realized_pnl_usd": -13.75,
+        }],
+    }
     prompt = DIRECT.build_prompt(
         packet,
         scenario,
-        {},
+        journals,
         invocation_reason="condition_change",
         invocation_context=context,
     )
@@ -239,7 +258,12 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert "confirmation transition is not automatically the primary profit objective" in prompt
     assert "construct the strongest fresh compact setup" in prompt
     assert "condition-change wake is consumed once" in prompt
-    assert '"recent_glitch_ledger":{}' in prompt
+    assert '"recent_glitch_ledger":{' in prompt
+    assert '"action":"EXIT"' in prompt
+    assert '"code":"master_exit_fill_observed"' in prompt
+    assert '"master_realized_pnl_usd":-13.75' in prompt
+    assert "state what materially changed after that exit" in prompt
+    assert "This is evidence reconciliation, not a cooldown" in prompt
 
 
 def test_trigger_context_preserves_a_prior_trigger_review_ledger(tmp_path: Path) -> None:
