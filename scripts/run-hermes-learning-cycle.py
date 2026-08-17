@@ -694,6 +694,7 @@ def collect_decision_episodes(
             for item in receipt.get("results", []) if isinstance(item, dict)
         }
         books_by_route = {str(book.get("route_id")): book for book in scenario.get("books", [])}
+        prior_cognition = DIRECT.latest_prior_cognition(exchange, cycle_id)
         for intent in batch.get("decisions", []):
             if not isinstance(intent, dict):
                 continue
@@ -725,6 +726,11 @@ def collect_decision_episodes(
                 for row in scenario["market"].get("candidates", [])
                 if isinstance(row, dict) and DIRECT.instrument_root(row.get("instrument"))
             }
+            candidates_by_root = {
+                DIRECT.instrument_root(row.get("instrument")): row
+                for row in scenario["market"].get("candidates", [])
+                if isinstance(row, dict) and DIRECT.instrument_root(row.get("instrument"))
+            }
             try:
                 initial = float(candidate_initials[instrument_name])
             except (KeyError, TypeError, ValueError):
@@ -748,14 +754,56 @@ def collect_decision_episodes(
                     continue
                 candidate_high = max(row["high"] for row in observations)
                 candidate_low = min(row["low"] for row in observations)
+                candidate_row = candidates_by_root.get(root, {})
+                candidate_economics = (
+                    candidate_row.get("instrument_economics")
+                    if isinstance(candidate_row, dict) else {}
+                )
+                point_value = (
+                    candidate_economics.get("point_value_usd")
+                    if isinstance(candidate_economics, dict) else None
+                )
+                tick_size = (
+                    candidate_economics.get("tick_size")
+                    if isinstance(candidate_economics, dict) else None
+                )
+                quantities = [
+                    int(value) for value in book.get("valid_entry_quantities", [])
+                    if isinstance(value, int) and not isinstance(value, bool) and value > 0
+                ]
+                max_quantity = max(quantities, default=0)
+                upward_points = candidate_high - candidate_initial
+                downward_points = candidate_initial - candidate_low
+                audit = intent.get("decision_audit") if isinstance(intent.get("decision_audit"), dict) else {}
+                decision_evidence = DIRECT._instrument_comparison_section(
+                    str(audit.get("decisive_evidence") or ""), root
+                )
                 candidate_forward_summaries[root] = {
                     "initial_price": candidate_initial,
                     "observation_count": len(observations),
                     "forward_high": candidate_high,
                     "forward_low": candidate_low,
                     "forward_close": observations[-1]["close"],
-                    "upward_excursion_points": candidate_high - candidate_initial,
-                    "downward_excursion_points": candidate_initial - candidate_low,
+                    "upward_excursion_points": upward_points,
+                    "downward_excursion_points": downward_points,
+                    "point_value_usd": point_value,
+                    "tick_size": tick_size,
+                    "available_quantities": quantities,
+                    "one_contract_upward_mfe_usd": (
+                        upward_points * float(point_value) if point_value is not None else None
+                    ),
+                    "one_contract_downward_mfe_usd": (
+                        downward_points * float(point_value) if point_value is not None else None
+                    ),
+                    "max_quantity_upward_mfe_usd": (
+                        upward_points * float(point_value) * max_quantity
+                        if point_value is not None and max_quantity else None
+                    ),
+                    "max_quantity_downward_mfe_usd": (
+                        downward_points * float(point_value) * max_quantity
+                        if point_value is not None and max_quantity else None
+                    ),
+                    "decision_evidence": decision_evidence or None,
                 }
             record = {
                 "schema_version": "glitch.hermes.decision_episode.v2",
@@ -782,9 +830,12 @@ def collect_decision_episodes(
                 "correlated_episode_ids": [],
                 "reason": intent.get("reason"),
                 "decision_audit": intent.get("decision_audit"),
+                "prior_cognition": prior_cognition,
                 "pre_decision_state": {
                     "position": master,
-                    "position_building_context": book.get("position_building_context"),
+                    "position_building_context": DIRECT.selected_instrument_context(
+                        book, instrument_name
+                    ),
                     "available_quantities": book.get("valid_entry_quantities"),
                     "initial_price": initial,
                 },
@@ -960,7 +1011,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         ),
         "hourly": (
             "Supervise supplied completed trade and decision episodes. Do not double-count correlated route/master/follower implementations. Classify every supplied flat NOTHING episode exactly once and cite representative episode IDs in the summary. "
-            "Review only the current prompt_version evidence first; never mix prompting eras in one hourly batch. For each supplied independent opportunity group, return exactly one opportunity_review.results object with episode_id, correlated_episode_ids, classification (disciplined_abstention, missed_opportunity, or uncertain), conservative direction/entry/invalidation/objective when reconstructable, target_before_stop_chronology, one_contract_gross_opportunity_usd, mfe_usd, and reason. When reconstructable, use a conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective. A missed opportunity requires valid noise-aware geometry and target-before-stop chronology; same-bar ambiguity is uncertain. Do not invent fills or PnL; the absence of an actual trade does not exempt an opportunity from review. Mark correlated route copies as reviewed through the representative. Require at least two independent current-version opportunity groups before proposing a cognitive change. In opportunity_review.summary name repeated vetoes and representative IDs. Produce compact advisory guidance and propose at most one narrow cognitive clause only when repeated independent evidence and contradiction review support it."
+            "Review only the current prompt_version evidence first; never mix prompting eras in one hourly batch. For each supplied independent opportunity group, return exactly one opportunity_review.results object with episode_id, correlated_episode_ids, classification (disciplined_abstention, missed_opportunity, or uncertain), conservative direction/entry/invalidation/objective when reconstructable, target_before_stop_chronology, one_contract_gross_opportunity_usd, mfe_usd, and reason. Evaluate the strongest rejected candidate across candidate_forward_summaries and prior_cognition, not only the selected intent instrument; use that candidate's point_value_usd and available_quantities for opportunity dollars. When reconstructable, use a conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective. A missed opportunity requires valid noise-aware geometry and target-before-stop chronology; same-bar ambiguity is uncertain. Do not invent fills or PnL; the absence of an actual trade does not exempt an opportunity from review. Mark correlated route copies as reviewed through the representative, and do not count overlapping summaries of the same market move as independent evidence. Require at least two independent current-version opportunity groups before proposing a cognitive change. In opportunity_review.summary name repeated vetoes and representative IDs. Produce compact advisory guidance and propose at most one narrow cognitive clause only when repeated independent evidence and contradiction review support it."
         ),
         "planning": (
             "Create the next six-hour advisory plan from supplied regime, attributable outcomes, uncertainty, and current account state. "
@@ -1112,7 +1163,8 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
         "lesson_candidates": 3_500,
         "uncertainties": 3_500,
         "proposed_geometry": 3_500,
-        "candidate_forward_summaries": 6_000,
+        "candidate_forward_summaries": 8_000,
+        "prior_cognition": 8_000,
     }
     for key in (
         "schema_version", "episode_id", "recorded_utc", "intent_id", "cycle_id",
@@ -1125,7 +1177,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
         "market_behavior", "lesson_candidates", "uncertainties", "proposed_geometry",
         "forward_observation_count", "forward_high", "forward_low", "forward_close",
         "upward_excursion_points", "downward_excursion_points",
-        "candidate_forward_summaries",
+        "candidate_forward_summaries", "prior_cognition",
     ):
         if key in row:
             common[key] = (

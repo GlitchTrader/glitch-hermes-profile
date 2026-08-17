@@ -99,11 +99,13 @@ def test_compact_episode_preserves_prompt_and_opportunity_identity() -> None:
         "instrument_point_value_usd": 2,
         "instrument_tick_size": 0.25,
         "entry_range_supersession": {"favorable_supersession": True},
+        "prior_cognition": {"source_cycle_id": "prior"},
     })
     assert compact["prompt_version"] == "prompt-v2"
     assert compact["opportunity_group_id"] == "group-1"
     assert compact["correlated_episode_ids"] == ["episode-1", "episode-2"]
     assert compact["instrument_point_value_usd"] == 2
+    assert "prior" in compact["prior_cognition"]
 
 
 def test_rebuilt_decision_episode_uses_each_instruments_own_path(tmp_path, monkeypatch) -> None:
@@ -144,11 +146,23 @@ def test_rebuilt_decision_episode_uses_each_instruments_own_path(tmp_path, monke
             "route_id": "glitch",
             "exposure": [{"current_quantity_by_selected_scope": 0}],
             "position_building_context": {},
-            "valid_entry_quantities": [1],
+            "instrument_contexts": {"MES": {"instrument": "MES", "point_value_usd": 5}},
+            "valid_entry_quantities": [1, 4],
         }],
+    }
+    scenario["market"]["candidates"][0]["instrument_economics"] = {
+        "point_value_usd": 2, "tick_size": 0.25,
+    }
+    scenario["market"]["candidates"][1]["instrument_economics"] = {
+        "point_value_usd": 5, "tick_size": 0.25,
     }
     monkeypatch.setattr(LEARNING.DIRECT, "build_scenario", lambda _packet: scenario)
     monkeypatch.setattr(LEARNING.DIRECT, "receipt_classification", lambda _receipt: "successful")
+    monkeypatch.setattr(
+        LEARNING.DIRECT,
+        "latest_prior_cognition",
+        lambda *_args: {"source_cycle_id": "prior", "decisive_evidence": "MNQ bearish path"},
+    )
 
     episodes = LEARNING.collect_decision_episodes(tmp_path, exchange, supervisor, rebuild=True)
     assert len(episodes) == 1
@@ -157,6 +171,12 @@ def test_rebuilt_decision_episode_uses_each_instruments_own_path(tmp_path, monke
     assert episode["upward_excursion_points"] == 5
     assert episode["candidate_forward_summaries"]["MNQ"]["initial_price"] == 20000
     assert episode["candidate_forward_summaries"]["MES"]["initial_price"] == 5000
+    assert episode["candidate_forward_summaries"]["MNQ"]["point_value_usd"] == 2
+    assert episode["candidate_forward_summaries"]["MNQ"]["available_quantities"] == [1, 4]
+    assert episode["candidate_forward_summaries"]["MNQ"]["one_contract_upward_mfe_usd"] == 10
+    assert episode["candidate_forward_summaries"]["MNQ"]["max_quantity_upward_mfe_usd"] == 40
+    assert episode["pre_decision_state"]["position_building_context"]["instrument"] == "MES"
+    assert episode["prior_cognition"]["source_cycle_id"] == "prior"
 
 
 def test_correlated_account_outcomes_are_one_learning_idea() -> None:
@@ -216,6 +236,8 @@ def test_hourly_prompt_reviews_nothing_with_bounded_counterfactual_geometry() ->
     assert "target-before-stop chronology" in prompt
     assert "Classify every supplied flat NOTHING episode exactly once" in prompt
     assert "cite representative episode IDs" in prompt
+    assert "strongest rejected candidate" in prompt
+    assert "point_value_usd and available_quantities" in prompt
 
     review = LEARNING.output_template("hourly", ["review-1"])["records"][0][
         "opportunity_review"

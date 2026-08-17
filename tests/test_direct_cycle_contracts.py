@@ -590,6 +590,22 @@ def test_selection_ev_audit_number_formatting_cannot_cancel_valid_decision() -> 
     DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
 
 
+@pytest.mark.parametrize(
+    ("direction", "target", "wait_price"),
+    (("LONG", 110, 110), ("SHORT", 90, 89)),
+)
+def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
+    direction: str, target: float, wait_price: float
+) -> None:
+    value = (
+        f"direction={direction};entry=100;stop=95;target={target};risk_points=5;reward_points=10;"
+        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
+        f"now_ev=NEGATIVE;wait_price={wait_price};wait_ev=IMPROVES;decisive_reason=fixture"
+    )
+    with pytest.raises(ValueError, match="selection_ev_wait_consumes_target"):
+        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+
+
 def test_favorable_reassessment_request_carries_original_geometry(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"
     batch = {
@@ -819,6 +835,45 @@ def test_flat_invocation_uses_exact_completed_five_minute_boundaries(tmp_path: P
     assert DIRECT.invocation_reason(packet_at(6), scenario, tmp_path, None) is None
     assert DIRECT.invocation_reason(packet_at(6, 1), scenario, tmp_path, None) == "positioned"
     assert DIRECT.invocation_reason(packet_at(6), scenario, tmp_path, {"status": "pending"}) == "operator_directive"
+
+
+def test_held_trigger_nothing_gets_one_next_minute_full_followup(tmp_path: Path) -> None:
+    exchange = tmp_path
+    attempts = exchange / "hermes" / "model-attempts"
+    outbox = exchange / "hermes" / "outbox"
+    attempts.mkdir(parents=True)
+    outbox.mkdir(parents=True)
+    prior_cycle = "20260813T1206Z"
+    (attempts / f"{prior_cycle}.json").write_text(json.dumps({
+        "cycle_id": prior_cycle,
+        "status": "completed",
+        "decision_mode": "trigger_review",
+        "invocation_reason": "condition_change",
+    }), encoding="utf-8")
+    (outbox / f"{prior_cycle}.json").write_text(json.dumps({
+        "next_review_seconds": 60,
+        "decisions": [{"action": "NOTHING"}],
+    }), encoding="utf-8")
+    packet = {
+        "packet_id": "20260813T1207Z",
+        "window_close_utc": "2026-08-13T12:07:00Z",
+        "frames": [{"portfolio_snapshot": {"accounts": [{
+            "account": "Sim101", "positions": [],
+        }]}}],
+    }
+    scenario = {"books": [{"master_account": "Sim101"}]}
+
+    assert DIRECT.condition_followup_due(exchange, packet) is True
+    assert DIRECT.invocation_reason(packet, scenario, exchange, None) == "condition_followup"
+
+    (attempts / "20260813T1207Z.json").write_text(json.dumps({
+        "cycle_id": "20260813T1207Z",
+        "status": "completed",
+        "decision_mode": "flat_scan",
+        "invocation_reason": "condition_followup",
+    }), encoding="utf-8")
+    later = {**packet, "packet_id": "20260813T1208Z", "window_close_utc": "2026-08-13T12:08:00Z"}
+    assert DIRECT.condition_followup_due(exchange, later) is False
 
 
 def test_human_override_flat_is_audited_as_superseded_no_op(tmp_path: Path) -> None:

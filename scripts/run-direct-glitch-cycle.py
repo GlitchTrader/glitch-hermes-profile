@@ -40,7 +40,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v24-daily-capture-latency"
+DIRECT_PROMPT_REVISION = "direct-v25-decisive-followup"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
@@ -2298,15 +2298,36 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> Non
         raise ValueError(f"entry_geometry_evidence_incomplete:{index}:{source}:{','.join(missing)}")
 
 
-def validate_selection_ev(value: str, action: str, index: int, source: str) -> None:
-    """Require Hermes' EV conclusion without turning audit prose into an execution veto."""
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"selection_ev_missing:{index}:{source}")
+def _selection_ev_fields(value: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for part in value.split(";"):
         key, separator, raw = part.partition("=")
         if separator and key.strip():
             fields[key.strip().lower()] = raw.strip()
+    return fields
+
+
+def _first_unsigned_number(value: Any) -> float | None:
+    """Read one explicit price from flexible audit prose without policing its format."""
+    match = re.search(r"(?<![\d.])(?:\d+(?:[.,]\d*)?|[.,]\d+)", str(value or ""))
+    if not match:
+        return None
+    try:
+        parsed = float(match.group(0).replace(",", "."))
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _wait_claims_improvement(value: str) -> bool:
+    return bool(re.search(r"(?i)\b(?:positive|improv\w*|better|dominates?)\b", value))
+
+
+def validate_selection_ev(value: str, action: str, index: int, source: str) -> None:
+    """Require a self-consistent EV conclusion without choosing the trade in code."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"selection_ev_missing:{index}:{source}")
+    fields = _selection_ev_fields(value)
     required = {
         "direction", "entry", "stop", "target", "risk_points", "reward_points",
         "friction_points", "breakeven_target_first", "estimated_target_first_range",
@@ -2323,6 +2344,20 @@ def validate_selection_ev(value: str, action: str, index: int, source: str) -> N
         raise ValueError(f"selection_ev_entry_not_positive:{index}:{source}")
     if action == "NOTHING" and verdict == "POSITIVE":
         raise ValueError(f"selection_ev_nothing_positive:{index}:{source}")
+    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields["direction"])
+    target = _first_unsigned_number(fields["target"])
+    wait_price = _first_unsigned_number(fields["wait_price"])
+    if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields["wait_ev"]):
+        direction = direction_match.group(1).upper()
+        consumes_target = (
+            direction == "LONG" and wait_price >= target
+        ) or (
+            direction == "SHORT" and wait_price <= target
+        )
+        if consumes_target:
+            raise ValueError(f"selection_ev_wait_consumes_target:{index}:{source}")
+
+
 def validate_trigger_review(
     text: str,
     candidates: list[str] | set[str],
@@ -2361,6 +2396,10 @@ def validate_trigger_review(
         }
         if not status_tokens:
             raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
+    if re.search(r"(?i)\bFAILED\b", status_value) and not re.search(
+        r"(?i)\b(?:invalidat\w*|structural\s+contradiction)\b", status_value
+    ):
+        raise ValueError(f"trigger_review_failed_without_invalidation_or_contradiction:{index}")
     validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
@@ -3170,8 +3209,14 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "hermes_output_",
     "intent_contract_",
     "intent_unknown_fields:",
+    "selection_ev_",
     "trigger_review_",
     "wake_triggers_",
+)
+
+SEMANTIC_MODEL_CONTRACT_ERRORS = (
+    "selection_ev_wait_consumes_target",
+    "trigger_review_failed_without_invalidation_or_contradiction",
 )
 
 
@@ -3188,15 +3233,40 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         prior = output.strip()
     else:
         prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
-    return (
-        prompt
-        + "\nFORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, "
-        "prices, confidence, reasons, and audit evidence. Correct only JSON syntax and the "
-        "required field/nesting contract identified below. Return one JSON object only. "
-        "decision_audit ends after final_choice; wake_triggers is its decision-level sibling."
-        + "\nCONTRACT_ERROR=" + str(error)
-        + "\nPREVIOUS_RESPONSE=" + prior
-    )
+    error_text = str(error)
+    if error_text.startswith(SEMANTIC_MODEL_CONTRACT_ERRORS):
+        correction = (
+            "\nDECISION_CONSISTENCY_CORRECTION: Re-evaluate the same current packet and correct "
+            "the market judgment as needed. A WAIT price at or beyond the primary target cannot "
+            "be described as improving the opportunity, and a fired path cannot be FAILED unless "
+            "its named invalidation was reached or a specific structural contradiction emerged. "
+            "You may change action, instrument, prices, confidence, reasons, and audit evidence. "
+            "Return one fully consistent strict JSON object only."
+        )
+    else:
+        correction = (
+            "\nFORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, "
+            "prices, confidence, reasons, and audit evidence. Correct only JSON syntax and the "
+            "required field/nesting contract identified below. Return one JSON object only. "
+            "decision_audit ends after final_choice; wake_triggers is its decision-level sibling."
+        )
+    return prompt + correction + "\nCONTRACT_ERROR=" + error_text + "\nPREVIOUS_RESPONSE=" + prior
+
+
+def trigger_review_has_held_nothing(batch: dict[str, Any]) -> bool:
+    decisions = batch.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        return False
+    held = False
+    for decision in decisions:
+        if not isinstance(decision, dict) or decision.get("action") != "NOTHING":
+            return False
+        audit = decision.get("decision_audit")
+        evidence = str(audit.get("decisive_evidence") or "") if isinstance(audit, dict) else ""
+        match = re.search(r"(?mi)^PRIOR_TRIGGER_REVIEW\s*=\s*(.+?)\s*$", evidence)
+        status = match.group(1) if match else ""
+        held = held or bool(re.search(r"(?i)\bHELD\b", status))
+    return held
 
 
 def stamp_deterministic_intent_fields(
@@ -3259,6 +3329,8 @@ def invoke_validated_batch(
             directive,
             expected_decision_mode=decision_mode,
         )
+        if decision_mode == "trigger_review" and trigger_review_has_held_nothing(batch):
+            batch["next_review_seconds"] = 60
         return batch
 
     transport_retry_count = 0
@@ -3762,6 +3834,7 @@ def build_prompt(
         "Use coarse evidence-grounded probability ranges rather than fabricated precision. UNKNOWN is valid only when the supplied evidence is unusable. "
         "Maximize repeated risk-adjusted expected value and capital survival toward the user's evaluation objective. The objective is never a quota, entry trigger, size rule, or promise. "
         "Use account_context.ai_daily_capture_* as current-session progress context when available. Below the target, prioritize the strongest valid positive-asymmetry candidate and choose quantity only from valid_entry_quantities; state total planned risk and primary-target dollars for the chosen quantity. After the target is reached, protect progress and do not seek new exposure. "
+        "Ordinary partial-bar, stale-depth, latency, and noise uncertainty are bounded costs to price once, not decisive missing conditions by themselves. Reserve UNCERTAIN for a genuinely unusable or unbounded fact; otherwise make a POSITIVE or NEGATIVE judgment. "
         "Do not force activity, recover losses, use a fixed setup, fixed ATR rule, fixed reward/risk rule, or treat guidance as stronger than current evidence. "
     )
     if positioned_only:
@@ -3782,8 +3855,8 @@ def build_prompt(
             "Apply the injected SOUL, glitch-setup-state, glitch-order-flow, and glitch-build-intent exactly. "
             "This is a fast condition-change review, not a new full market scan. Evaluate every frozen fired trigger and its prior instrument ledger before defining any newer transition. "
             "A crossing is a reassessment event, not an automatic order, but it promotes the prior conditional path to active review. Do not require the same class of confirmation again at a newer extreme. "
-            "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. HELD preserves the hypothesis but supplies no extra directional evidence and does not lower the entry standard. "
-            "For the selected candidate compare NOW with WAIT. State entry, stop, primary target, risk points, reward points, friction points, break-even target-before-stop probability, estimated target-before-stop probability range, now_ev, wait price, wait_ev, and one decisive reason in SELECTION_EV. Enter only when now_ev is POSITIVE; choose NOTHING only when now_ev is NEGATIVE or UNCERTAIN. A confirmation at or beyond the primary objective is not a valid missing condition because it consumes the trade. Assess latency, noise, stale depth and partial flow once in this comparison, not as repeated vetoes. Otherwise choose NOTHING and identify top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. "
+            "Classify PRIOR_TRIGGER_REVIEW as HELD, FAILED, or EXPIRED and cite evidence observed after the frozen trigger. A reclaim or retest alone is HELD while the named invalidation remains intact; FAILED requires that invalidation or a specific structural contradiction. HELD preserves the hypothesis but supplies no extra directional evidence and does not lower the entry standard. "
+            "For the selected candidate compare NOW with WAIT. State entry, stop, primary target, risk points, reward points, friction points, break-even target-before-stop probability, estimated target-before-stop probability range, now_ev, wait price, wait_ev, and one decisive reason in SELECTION_EV. Enter only when now_ev is POSITIVE; choose NOTHING only when now_ev is NEGATIVE or irreducibly UNCERTAIN. WAIT is better only when its price remains before the primary target and its probability improvement compensates for lost room; confirmation at or beyond that target consumes the trade. Assess latency, noise, stale depth and partial flow once in this comparison, not as repeated vetoes. Otherwise choose NOTHING and identify top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. A HELD review that still chooses NOTHING receives exactly one fresh full scan on the next completed minute. "
             "Hermes must derive the current objective, genuine invalidation, and executable zone from supplied market structure, volatility, auction response, and flow; never defer because these interpretations were not prewritten or labeled authoritative. UNKNOWN is valid only when the underlying evidence is unusable. A confirmation transition is not automatically the primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
@@ -3797,7 +3870,7 @@ def build_prompt(
             "Apply the injected SOUL, glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs CURRENT_AUCTION containing regime, location, price/flow response, and material evidence quality; bullish and bearish paths; next transition; PRIOR_TRIGGER_REVIEW classified as HELD, FAILED, EXPIRED, or NOT_APPLICABLE only when no prior path exists; coarse next-five-to-ten-bar forecast; objective/invalidation; practical entry range; noise-aware geometry; and ASYMMETRY containing execution uncertainty, comparative rank, and rejection reason. "
             "Use each one-minute row's native_observations.last_completed_bar as the authoritative completed candle. Current OHLCV is live partial evidence and must remain labeled partial. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
-            "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. For the selected candidate compare NOW with WAIT and write SELECTION_EV with entry, stop, primary target, risk/reward points, friction, break-even target-before-stop probability, estimated target-before-stop range, now_ev, wait price, wait_ev, and one decisive reason. Enter only when now_ev is POSITIVE; choose NOTHING only when now_ev is NEGATIVE or UNCERTAIN. A confirmation at or beyond the primary objective is not a valid missing condition because it consumes the trade. NOTHING is valid when no candidate retains practical edge after that unified assessment; name the top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
+            "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. For the selected candidate compare NOW with WAIT and write SELECTION_EV with entry, stop, primary target, risk/reward points, friction, break-even target-before-stop probability, estimated target-before-stop range, now_ev, wait price, wait_ev, and one decisive reason. Enter only when now_ev is POSITIVE; choose NOTHING only when now_ev is NEGATIVE or irreducibly UNCERTAIN. WAIT is better only when its price remains before the primary target and its probability improvement compensates for lost room; confirmation at or beyond that target consumes the trade. NOTHING is valid when no candidate retains practical edge after that unified assessment; name the top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, an evidence method of at most 128 characters grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
@@ -4015,6 +4088,8 @@ def invocation_reason(
         return "operator_directive"
     if positioned:
         return "positioned"
+    if condition_followup_due(exchange, packet):
+        return "condition_followup"
     if window.minute % 5 == 0:
         return "scheduled"
     if fired_triggers is None:
@@ -4042,6 +4117,41 @@ def latest_prior_attempt(
             continue
         return prior_window, attempt
     return None
+
+
+def condition_followup_due(exchange: Path, packet: dict[str, Any]) -> bool:
+    """Run one full next-minute scan after a held trigger review chose NOTHING."""
+    prior = latest_prior_attempt(exchange, packet)
+    if prior is None:
+        return False
+    prior_window, attempt = prior
+    if (
+        attempt.get("status") not in {"completed", "decision_ready"}
+        or attempt.get("decision_mode") != "trigger_review"
+        or attempt.get("invocation_reason") != "condition_change"
+    ):
+        return False
+    elapsed = (packet_window_utc(packet) - prior_window).total_seconds()
+    if not 45 <= elapsed <= 135:
+        return False
+    prior_cycle = str(attempt.get("cycle_id") or prior_window.strftime("%Y%m%dT%H%MZ"))
+    outbox_path = exchange / "hermes" / "outbox" / f"{prior_cycle}.json"
+    if not outbox_path.is_file():
+        return False
+    try:
+        batch = read_json(outbox_path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    decisions = batch.get("decisions")
+    return (
+        batch.get("next_review_seconds") == 60
+        and isinstance(decisions, list)
+        and bool(decisions)
+        and all(
+            isinstance(decision, dict) and decision.get("action") == "NOTHING"
+            for decision in decisions
+        )
+    )
 
 
 def read_packet_after_imminent_rollover(packet_path: Path, wait_seconds: float) -> dict[str, Any]:

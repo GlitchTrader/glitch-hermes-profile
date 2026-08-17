@@ -322,7 +322,7 @@ def test_trigger_review_accepts_instrument_labeled_prior_statuses() -> None:
     for field in DIRECT.TRIGGER_REVIEW_FIELDS:
         value = "current evidence"
         if field == "PRIOR_TRIGGER_REVIEW":
-            value = "M2K=FAILED; MES=HELD; MNQ=HELD. Evidence follows."
+            value = "M2K=FAILED after invalidation 3050 broke; MES=HELD; MNQ=HELD. Evidence follows."
         elif field == "SELECTION_INSTRUMENT":
             value = "MNQ"
         elif field == "SELECTION_ACTION":
@@ -340,7 +340,7 @@ def test_trigger_review_accepts_natural_instrument_status_prose() -> None:
     for field in DIRECT.TRIGGER_REVIEW_FIELDS:
         value = "current evidence"
         if field == "PRIOR_TRIGGER_REVIEW":
-            value = "MNQ HELD through the retest; MES: FAILED; M2K EXPIRED"
+            value = "MNQ HELD through the retest; MES: FAILED after invalidation broke; M2K EXPIRED"
         elif field == "SELECTION_INSTRUMENT":
             value = "MNQ"
         elif field == "SELECTION_ACTION":
@@ -351,6 +351,51 @@ def test_trigger_review_accepts_natural_instrument_status_prose() -> None:
     DIRECT.validate_trigger_review(
         "\n".join(lines), {"M2K", "MES", "MNQ"}, "MNQ", "NOTHING", 0
     )
+
+
+def test_trigger_review_rejects_failed_status_without_invalidation_or_contradiction() -> None:
+    lines = [DIRECT.TRIGGER_REVIEW_MARKER]
+    for field in DIRECT.TRIGGER_REVIEW_FIELDS:
+        value = "current evidence"
+        if field == "PRIOR_TRIGGER_REVIEW":
+            value = "FAILED because price reclaimed the trigger"
+        elif field == "SELECTION_INSTRUMENT":
+            value = "MNQ"
+        elif field == "SELECTION_ACTION":
+            value = "NOTHING"
+        lines.append(f"{field}={value}")
+    lines.insert(-1, "SELECTION_EV=direction=SHORT;entry=100;stop=105;target=90;risk_points=5;reward_points=10;friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;now_ev=NEGATIVE;wait_price=95;wait_ev=NEGATIVE;decisive_reason=fixture")
+
+    try:
+        DIRECT.validate_trigger_review("\n".join(lines), {"MNQ"}, "MNQ", "NOTHING", 0)
+    except ValueError as error:
+        assert str(error) == "trigger_review_failed_without_invalidation_or_contradiction:0"
+    else:
+        raise AssertionError("a trigger reclaim incorrectly invalidated the frozen path")
+
+
+def test_semantic_contract_repair_allows_market_judgment_to_change() -> None:
+    prompt = DIRECT.contract_repair_prompt(
+        "ORIGINAL",
+        {"decisions": []},
+        ValueError("selection_ev_wait_consumes_target:0:trigger_review"),
+    )
+    assert "DECISION_CONSISTENCY_CORRECTION" in prompt
+    assert "You may change action, instrument, prices" in prompt
+    assert "FORMAT_CORRECTION_ONLY" not in prompt
+
+
+def test_held_trigger_nothing_requests_one_minute_review() -> None:
+    batch = {
+        "next_review_seconds": 300,
+        "decisions": [{
+            "action": "NOTHING",
+            "decision_audit": {
+                "decisive_evidence": "TRIGGER_REVIEW_V1\nPRIOR_TRIGGER_REVIEW=HELD: invalidation intact"
+            },
+        }],
+    }
+    assert DIRECT.trigger_review_has_held_nothing(batch) is True
 
 
 def test_trigger_review_rejects_deferring_setup_derivation_to_packet() -> None:

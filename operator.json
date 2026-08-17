@@ -15,7 +15,7 @@
   "loops": [
     {
       "id": "core_decision",
-      "cadence": "every 5 minutes while flat; every minute while a scoped master is positioned; one-cycle operator directives may wake it",
+      "cadence": "every 5 minutes while flat; one price-cross trigger review plus one next-minute full scan when a held trigger remains unentered; every minute while positioned; one-cycle operator directives may wake it",
       "model": "gpt-5.6-luna",
       "provider": "openai-codex",
       "reasoning_effort": "medium",
