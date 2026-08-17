@@ -2,6 +2,9 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +16,49 @@ SPEC = importlib.util.spec_from_file_location(
 LEARNING = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(LEARNING)
+
+
+def test_deferred_learner_retries_inside_the_same_scheduled_worker(tmp_path, monkeypatch) -> None:
+    args = SimpleNamespace(glitch_data=tmp_path, dry_run=False)
+    status_path = tmp_path / "learning-worker-status.json"
+    refreshes = []
+
+    def run_once(_args, *, refresh_derived=True):
+        refreshes.append(refresh_derived)
+        if len(refreshes) == 1:
+            raise LEARNING.LearningDeferred("trading_decision_waiting")
+        return {"hourly": True}
+
+    monkeypatch.setattr(LEARNING, "run_once", run_once)
+    monkeypatch.setattr(LEARNING, "ai_trading_is_paused", lambda _path: False)
+    monkeypatch.setattr(LEARNING.time, "sleep", lambda _seconds: None)
+
+    result = LEARNING.run_with_defer_retries(args, status_path)
+
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert result == {"hourly": True}
+    assert refreshes == [True, False]
+    assert status["status"] == "deferred"
+    assert status["retrying"] is True
+    assert status["retry_count"] == 1
+
+
+def test_deferred_learner_does_not_retry_while_ai_is_paused(tmp_path, monkeypatch) -> None:
+    args = SimpleNamespace(glitch_data=tmp_path, dry_run=False)
+    status_path = tmp_path / "learning-worker-status.json"
+    def defer(_args, *, refresh_derived=True):
+        del refresh_derived
+        raise LEARNING.LearningDeferred("hermes_profile_busy")
+
+    monkeypatch.setattr(LEARNING, "run_once", defer)
+    monkeypatch.setattr(LEARNING, "ai_trading_is_paused", lambda _path: True)
+    slept = []
+    monkeypatch.setattr(LEARNING.time, "sleep", slept.append)
+
+    with pytest.raises(LEARNING.LearningDeferred, match="hermes_profile_busy"):
+        LEARNING.run_with_defer_retries(args, status_path)
+
+    assert slept == []
 
 
 def test_entry_context_uses_the_selected_instruments_price_and_economics(tmp_path, monkeypatch) -> None:

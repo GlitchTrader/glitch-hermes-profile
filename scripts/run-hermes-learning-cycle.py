@@ -56,6 +56,8 @@ MAX_PLANNING_REVIEWS = 6
 MAX_PLANNING_EPISODES = 12
 MAX_PROMPT_CHARS = 320_000
 LEARNING_REPAIR_PROMPT_RESERVE_CHARS = 2_000
+LEARNING_DEFER_RETRY_SECONDS = 5
+LEARNING_DEFER_RETRY_WINDOW_SECONDS = 600
 
 # Only market/geometry/capacity decisions belong in cognitive evidence. Missing
 # services, stale state, policy/auth failures, and native API faults remain code
@@ -1672,6 +1674,44 @@ def performance_summary(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def ai_trading_is_paused(glitch_data: Path) -> bool:
+    state = DIRECT.read_optional_json(glitch_data / "hermes" / "control-state.json")
+    return isinstance(state, dict) and state.get("trading_paused") is True
+
+
+def run_with_defer_retries(
+    args: argparse.Namespace,
+    status_path: Path,
+) -> dict[str, Any]:
+    """Yield immediately to trading, then resume this same scheduled learner."""
+    started = time.monotonic()
+    retry_count = 0
+    refresh_derived = True
+    while True:
+        try:
+            return run_once(args, refresh_derived=refresh_derived)
+        except LearningDeferred as deferred:
+            elapsed = time.monotonic() - started
+            if (
+                args.dry_run
+                or ai_trading_is_paused(args.glitch_data.resolve())
+                or elapsed >= LEARNING_DEFER_RETRY_WINDOW_SECONDS
+            ):
+                raise
+            retry_count += 1
+            DIRECT.write_json_atomic(status_path, {
+                "schema_version": "glitch.hermes.learning_worker_status.v1",
+                "recorded_utc": utc_now(),
+                "status": "deferred",
+                "reason": str(deferred),
+                "retrying": True,
+                "retry_count": retry_count,
+                "retry_after_seconds": LEARNING_DEFER_RETRY_SECONDS,
+            })
+            refresh_derived = False
+            time.sleep(LEARNING_DEFER_RETRY_SECONDS)
+
+
 def non_debrief_loop_due(
     state: dict[str, Any],
     supervisor: Path,
@@ -1716,7 +1756,7 @@ def non_debrief_loop_due(
     return len(daily) - int(state.get("weekly_daily_count", 0) or 0) >= 7
 
 
-def run_once(args) -> dict[str, Any]:
+def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
     glitch_data = args.glitch_data.resolve()
     exchange = glitch_data / "hermes" / "exchange"
     supervisor = exchange / "hermes" / "supervisor"
@@ -1724,7 +1764,7 @@ def run_once(args) -> dict[str, Any]:
     feed_fresh = DIRECT.feed_observation_is_fresh(glitch_data)
     state_path = supervisor / "learning-state.json"
     state = DIRECT.read_optional_json(state_path) or {"schema_version": "glitch.hermes.learning_state.v1"}
-    if feed_fresh and not args.dry_run:
+    if feed_fresh and not args.dry_run and refresh_derived:
         DIRECT.reconcile_completed_outcomes(glitch_data, exchange, timeout_seconds=120)
         decision_episodes = collect_decision_episodes(glitch_data, exchange, supervisor)
     else:
@@ -2045,7 +2085,7 @@ def main() -> int:
                     "decision_episodes": len(records),
                 }
             else:
-                result = run_once(args)
+                result = run_with_defer_retries(args, status_path)
         except LearningDeferred as deferred:
             DIRECT.write_json_atomic(status_path, {
                 "schema_version": "glitch.hermes.learning_worker_status.v1",
