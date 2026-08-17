@@ -583,6 +583,12 @@ def test_selection_ev_audit_number_formatting_cannot_cancel_valid_decision() -> 
     )
     DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
+    inconsistent_audit = value.replace(
+        "breakeven_target_first=about 33.3%",
+        "breakeven_target_first=62% after qualitative discount",
+    ).replace("now_ev=NEGATIVE", "now_ev=NEGATIVE (wait dominates)")
+    DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
+
 
 def test_favorable_reassessment_request_carries_original_geometry(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"

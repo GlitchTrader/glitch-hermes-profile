@@ -2298,30 +2298,8 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> Non
         raise ValueError(f"entry_geometry_evidence_incomplete:{index}:{source}:{','.join(missing)}")
 
 
-def _selection_ev_number(raw: str) -> float | None:
-    """Parse a compact EV scalar when possible; audit prose must not veto an intent."""
-    text = str(raw or "").strip()
-    if text.upper() in {"NA", "N/A", "UNKNOWN"}:
-        return None
-    match = re.match(
-        r"(?i)^\s*(?:(?:about|approx(?:imately)?)\s+|[~≈])?"
-        r"([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))\s*"
-        r"(%|points?|pts?)?(?=\s|$|\()",
-        text.replace("−", "-"),
-    )
-    if not match:
-        return None
-    try:
-        parsed = float(match.group(1).replace(",", "."))
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(parsed):
-        return None
-    return parsed / 100.0 if match.group(2) == "%" else parsed
-
-
 def validate_selection_ev(value: str, action: str, index: int, source: str) -> None:
-    """Check Hermes' selected-candidate EV arithmetic without choosing the trade in code."""
+    """Require Hermes' EV conclusion without turning audit prose into an execution veto."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"selection_ev_missing:{index}:{source}")
     fields: dict[str, str] = {}
@@ -2337,30 +2315,14 @@ def validate_selection_ev(value: str, action: str, index: int, source: str) -> N
     missing = sorted(key for key in required if not fields.get(key))
     if missing:
         raise ValueError(f"selection_ev_fields_missing:{index}:{source}:{','.join(missing)}")
-    verdict = fields["now_ev"].upper()
-    if verdict not in {"POSITIVE", "NEGATIVE", "UNCERTAIN"}:
+    verdict_match = re.match(r"(?i)^\s*(POSITIVE|NEGATIVE|UNCERTAIN)\b", fields["now_ev"])
+    if not verdict_match:
         raise ValueError(f"selection_ev_verdict_invalid:{index}:{source}")
+    verdict = verdict_match.group(1).upper()
     if action in {"ENTER_LONG", "ENTER_SHORT"} and verdict != "POSITIVE":
         raise ValueError(f"selection_ev_entry_not_positive:{index}:{source}")
     if action == "NOTHING" and verdict == "POSITIVE":
         raise ValueError(f"selection_ev_nothing_positive:{index}:{source}")
-    numeric: dict[str, float] = {}
-    for key in ("risk_points", "reward_points", "friction_points", "breakeven_target_first"):
-        parsed = _selection_ev_number(fields[key])
-        if parsed is not None:
-            numeric[key] = parsed
-    risk = numeric.get("risk_points")
-    reward = numeric.get("reward_points")
-    friction = numeric.get("friction_points", 0.0)
-    reported = numeric.get("breakeven_target_first")
-    if risk is not None and reward is not None and reported is not None:
-        if risk <= 0 or reward <= 0 or friction < 0:
-            raise ValueError(f"selection_ev_geometry_invalid:{index}:{source}")
-        expected = (risk + friction) / (risk + reward + friction)
-        if abs(expected - reported) > 0.035:
-            raise ValueError(f"selection_ev_breakeven_mismatch:{index}:{source}")
-
-
 def validate_trigger_review(
     text: str,
     candidates: list[str] | set[str],
