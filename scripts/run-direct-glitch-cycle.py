@@ -2298,6 +2298,28 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> Non
         raise ValueError(f"entry_geometry_evidence_incomplete:{index}:{source}:{','.join(missing)}")
 
 
+def _selection_ev_number(raw: str) -> float | None:
+    """Parse a compact EV scalar when possible; audit prose must not veto an intent."""
+    text = str(raw or "").strip()
+    if text.upper() in {"NA", "N/A", "UNKNOWN"}:
+        return None
+    match = re.match(
+        r"(?i)^\s*(?:(?:about|approx(?:imately)?)\s+|[~≈])?"
+        r"([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))\s*"
+        r"(%|points?|pts?)?(?=\s|$|\()",
+        text.replace("−", "-"),
+    )
+    if not match:
+        return None
+    try:
+        parsed = float(match.group(1).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed / 100.0 if match.group(2) == "%" else parsed
+
+
 def validate_selection_ev(value: str, action: str, index: int, source: str) -> None:
     """Check Hermes' selected-candidate EV arithmetic without choosing the trade in code."""
     if not isinstance(value, str) or not value.strip():
@@ -2324,16 +2346,9 @@ def validate_selection_ev(value: str, action: str, index: int, source: str) -> N
         raise ValueError(f"selection_ev_nothing_positive:{index}:{source}")
     numeric: dict[str, float] = {}
     for key in ("risk_points", "reward_points", "friction_points", "breakeven_target_first"):
-        raw = fields[key]
-        if raw.upper() in {"NA", "N/A", "UNKNOWN"}:
-            continue
-        try:
-            parsed = float(raw.rstrip("%"))
-        except (TypeError, ValueError):
-            raise ValueError(f"selection_ev_number_invalid:{index}:{source}:{key}")
-        if not math.isfinite(parsed):
-            raise ValueError(f"selection_ev_number_invalid:{index}:{source}:{key}")
-        numeric[key] = parsed / 100.0 if raw.endswith("%") else parsed
+        parsed = _selection_ev_number(fields[key])
+        if parsed is not None:
+            numeric[key] = parsed
     risk = numeric.get("risk_points")
     reward = numeric.get("reward_points")
     friction = numeric.get("friction_points", 0.0)
@@ -2378,17 +2393,11 @@ def validate_trigger_review(
     allowed_statuses = {"HELD", "FAILED", "EXPIRED"}
     status = status_value.split(maxsplit=1)[0].rstrip(":.,;").upper()
     if status not in allowed_statuses:
-        labeled_statuses = re.findall(
-            r"\b([A-Za-z0-9._-]+)\s*=\s*([A-Za-z]+)\b", status_value
-        )
-        if (
-            not labeled_statuses
-            or any(
-                instrument_root(instrument) not in expected
-                or labeled_status.upper() not in allowed_statuses
-                for instrument, labeled_status in labeled_statuses
-            )
-        ):
+        status_tokens = {
+            token.upper()
+            for token in re.findall(r"(?i)\b(?:HELD|FAILED|EXPIRED)\b", status_value)
+        }
+        if not status_tokens:
             raise ValueError(f"trigger_review_status_invalid:{index}:{status[:32]}")
     validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:

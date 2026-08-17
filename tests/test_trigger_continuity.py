@@ -335,6 +335,24 @@ def test_trigger_review_accepts_instrument_labeled_prior_statuses() -> None:
     )
 
 
+def test_trigger_review_accepts_natural_instrument_status_prose() -> None:
+    lines = [DIRECT.TRIGGER_REVIEW_MARKER]
+    for field in DIRECT.TRIGGER_REVIEW_FIELDS:
+        value = "current evidence"
+        if field == "PRIOR_TRIGGER_REVIEW":
+            value = "MNQ HELD through the retest; MES: FAILED; M2K EXPIRED"
+        elif field == "SELECTION_INSTRUMENT":
+            value = "MNQ"
+        elif field == "SELECTION_ACTION":
+            value = "NOTHING"
+        lines.append(f"{field}={value}")
+    lines.insert(-1, "SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12 points;reward_points=12 pts;friction_points=negligible;breakeven_target_first=50%;estimated_target_first_range=35-45%;now_ev=NEGATIVE;wait_price=5012;wait_ev=NEGATIVE;decisive_reason=fixture")
+
+    DIRECT.validate_trigger_review(
+        "\n".join(lines), {"M2K", "MES", "MNQ"}, "MNQ", "NOTHING", 0
+    )
+
+
 def test_trigger_review_rejects_deferring_setup_derivation_to_packet() -> None:
     lines = [DIRECT.TRIGGER_REVIEW_MARKER]
     for field in DIRECT.TRIGGER_REVIEW_FIELDS:

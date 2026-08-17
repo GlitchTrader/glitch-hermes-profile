@@ -573,6 +573,17 @@ def test_selection_ev_contract_rejects_positive_nothing() -> None:
         DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
 
+def test_selection_ev_audit_number_formatting_cannot_cancel_valid_decision() -> None:
+    value = (
+        "direction=LONG;entry=100;stop=95;target=110;"
+        "risk_points=approximately 5 points (20 ticks);reward_points=10 pts;"
+        "friction_points=not material;breakeven_target_first=about 33.3%;"
+        "estimated_target_first_range=40-50%;now_ev=NEGATIVE;wait_price=105;"
+        "wait_ev=NEGATIVE;decisive_reason=fixture"
+    )
+    DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+
+
 def test_favorable_reassessment_request_carries_original_geometry(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"
     batch = {
