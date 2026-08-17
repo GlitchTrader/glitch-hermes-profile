@@ -313,3 +313,49 @@ def test_compact_review_preserves_structured_opportunity_accountability() -> Non
     }
 
     assert LEARNING.compact_review(value)["opportunity_review"] == value["opportunity_review"]
+
+
+def test_planning_episode_projection_drops_raw_packet_repetition() -> None:
+    value = {
+        "episode_id": "episode-1",
+        "instrument": "MNQ",
+        "action": "NOTHING",
+        "reason": "r" * 20_000,
+        "pre_decision_state": {"raw": "x" * 100_000},
+        "forward_observations": [{"raw": "x" * 100_000}],
+        "candidate_forward_summaries": {"MNQ": {"objective": "x" * 20_000}},
+        "proposed_geometry": {"entry": 100, "stop": 90, "target": 120},
+        "instrument_point_value_usd": 2,
+    }
+
+    compact = LEARNING.compact_planning_episode(value)
+    encoded = json.dumps(compact, separators=(",", ":"), ensure_ascii=False)
+
+    assert "pre_decision_state" not in compact
+    assert "forward_observations" not in compact
+    assert compact["instrument_point_value_usd"] == 2
+    assert len(encoded) < 15_000
+
+
+def test_planning_evidence_keeps_newest_rows_inside_repair_budget(tmp_path, monkeypatch) -> None:
+    rows = [{"episode_id": f"episode-{index}"} for index in range(3)]
+    monkeypatch.setattr(LEARNING, "MAX_PROMPT_CHARS", 100)
+    monkeypatch.setattr(LEARNING, "LEARNING_REPAIR_PROMPT_RESERVE_CHARS", 10)
+    monkeypatch.setattr(LEARNING, "compact_review", lambda row: row)
+    monkeypatch.setattr(LEARNING, "compact_planning_episode", lambda row: row)
+    monkeypatch.setattr(LEARNING, "performance_summary", lambda _rows: {})
+    monkeypatch.setattr(LEARNING.DIRECT, "read_optional_json", lambda _path: {})
+    monkeypatch.setattr(LEARNING, "continuity", lambda _supervisor: {})
+    monkeypatch.setattr(LEARNING, "output_template", lambda *_args: {})
+    monkeypatch.setattr(
+        LEARNING,
+        "build_prompt",
+        lambda _loop, evidence, _template, _continuity: "x" * (60 + 20 * len(evidence["recent_episodes"])),
+    )
+
+    evidence, review_ids = LEARNING.fit_planning_evidence(
+        [{"review_id": "review-1"}], rows, [], tmp_path, "plan-1"
+    )
+
+    assert [row["episode_id"] for row in evidence["recent_episodes"]] == ["episode-2"]
+    assert review_ids == ["review-1"]

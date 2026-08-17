@@ -1278,6 +1278,69 @@ def compact_review(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def compact_planning_episode(row: dict[str, Any]) -> dict[str, Any]:
+    """Project planning evidence without repeating raw packet data."""
+    compact: dict[str, Any] = {}
+    scalar_fields = (
+        "schema_version", "episode_id", "recorded_utc", "intent_id", "cycle_id",
+        "decision_utc", "window_close_utc", "route_id", "master_account",
+        "instrument", "action", "prompt_version", "cognitive_bundle_hash",
+        "instrument_point_value_usd", "instrument_tick_size", "opportunity_group_id",
+        "evidence_kind", "classification", "classification_owner",
+        "forward_observation_count", "forward_high", "forward_low", "forward_close",
+        "upward_excursion_points", "downward_excursion_points",
+    )
+    for key in scalar_fields:
+        if key in row:
+            compact[key] = row[key]
+    for key, max_chars in {
+        "reason": 1_000,
+        "entry_range_supersession": 1_200,
+        "proposed_geometry": 1_800,
+        "candidate_forward_summaries": 3_000,
+        "prior_cognition": 2_000,
+        "counterfactual_pnl": 1_200,
+    }.items():
+        if key in row:
+            compact[key] = compact_json_fragment(row[key], max_chars)
+    if "correlated_episode_ids" in row:
+        compact["correlated_episode_ids"] = row["correlated_episode_ids"]
+    return compact
+
+
+def fit_planning_evidence(
+    review_batch: list[dict[str, Any]],
+    recent_episode_rows: list[dict[str, Any]],
+    eligible: list[dict[str, Any]],
+    supervisor: Path,
+    plan_id: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Keep the newest planning evidence inside the model and repair budgets."""
+    reviews = list(review_batch)
+    episodes = list(recent_episode_rows)
+    while True:
+        evidence = {
+            "reviews": [compact_review(row) for row in reviews],
+            "recent_episodes": [compact_planning_episode(row) for row in episodes],
+            "performance_summary": performance_summary(eligible),
+            "active_plan": DIRECT.read_optional_json(supervisor / "current-plan.json"),
+        }
+        prompt = build_prompt(
+            "planning",
+            evidence,
+            output_template("planning", [plan_id]),
+            continuity(supervisor),
+        )
+        if len(prompt) <= MAX_PROMPT_CHARS - LEARNING_REPAIR_PROMPT_RESERVE_CHARS:
+            return evidence, [str(row["review_id"]) for row in reviews]
+        if len(episodes) > 1:
+            episodes.pop(0)
+        elif len(reviews) > 1:
+            reviews.pop(0)
+        else:
+            raise ValueError("learning_prompt_too_large:planning:single_review")
+
+
 def cognitive_evidence(supervisor: Path) -> list[dict[str, Any]]:
     rows = read_jsonl(supervisor / "trade-episodes.jsonl") + read_jsonl(
         supervisor / "decision-episodes.jsonl"
@@ -1936,15 +1999,16 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
                 if review_batch:
                     plan_id = stable_id("plan", "|".join(review_ids))
                     if not args.dry_run:
-                        records = invoke_loop(args, "planning", {
-                            "reviews": [compact_review(row) for row in review_batch],
-                            "recent_episodes": [
-                                compact_episode(row)
-                                for row in all_evidence[-MAX_PLANNING_EPISODES:]
-                            ],
-                            "performance_summary": performance_summary(eligible),
-                            "active_plan": DIRECT.read_optional_json(supervisor / "current-plan.json"),
-                        }, [plan_id], supervisor)
+                        planning_evidence, review_ids = fit_planning_evidence(
+                            review_batch,
+                            all_evidence[-MAX_PLANNING_EPISODES:],
+                            eligible,
+                            supervisor,
+                            plan_id,
+                        )
+                        records = invoke_loop(
+                            args, "planning", planning_evidence, [plan_id], supervisor
+                        )
                         trade_count = len(episodes)
                         records[0]["trading_influence"] = "outcome_backed" if trade_count >= 2 else "observational"
                         records[0]["decision_prompt_version"] = DIRECT.DIRECT_PROMPT_VERSION
