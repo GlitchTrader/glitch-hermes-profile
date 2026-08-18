@@ -57,7 +57,9 @@ def launch(args) -> dict[str, object]:
                 existing = candidate
         except (OSError, json.JSONDecodeError):
             existing = None
-    if not existing or existing.get("kind") != "favorable_entry_supersession":
+    if not existing or existing.get("kind") not in {
+        "entry_range_supersession", "favorable_entry_supersession",
+    }:
         write_json_atomic(request_path, {
             "schema_version": "glitch.hermes.direct_cycle_request.v1",
             "requested_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

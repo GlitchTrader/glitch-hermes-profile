@@ -2542,8 +2542,9 @@ def validate_batch(
             "next_review_seconds",
             "decisions",
             "account_groups_tsv",
-            # Hermes-only marker used to suppress a second favorable-entry
-            # reassessment follow-up. It is stripped before API submission.
+            # Hermes-only markers used to suppress a second entry-range
+            # reassessment follow-up. They are stripped before API submission.
+            "supersession_reassessment_requested",
             "favorable_reassessment_requested",
         }
     )
@@ -2553,6 +2554,10 @@ def validate_batch(
         raise ValueError("batch_schema_version_invalid")
     if "account_groups_tsv" in batch and not isinstance(batch["account_groups_tsv"], str):
         raise ValueError("account_groups_manifest_invalid")
+    if "supersession_reassessment_requested" in batch and not isinstance(
+        batch["supersession_reassessment_requested"], bool
+    ):
+        raise ValueError("supersession_reassessment_requested_invalid")
     if "favorable_reassessment_requested" in batch and not isinstance(
         batch["favorable_reassessment_requested"], bool
     ):
@@ -3577,6 +3582,16 @@ def apply_entry_revalidation(
             and ((intent.get("action") == "ENTER_LONG" and current_price < low)
                  or (intent.get("action") == "ENTER_SHORT" and current_price > high))
         )
+        reassessment_eligible = (
+            not accepted and latest_fresh and current_price is not None
+            and all(math.isfinite(value) for value in (low, high, stop, target))
+            and geometry_valid
+        )
+        supersession_direction = (
+            "better_price" if favorable
+            else "targetward" if reassessment_eligible
+            else None
+        )
         status = "accepted_current_price_in_range" if accepted else "superseded"
         reason = None if accepted else (
             "latest_market_unavailable" if current_price is None or not latest_fresh
@@ -3601,41 +3616,41 @@ def apply_entry_revalidation(
             "target": target if math.isfinite(target) else None,
             "geometry_valid": geometry_valid,
             "favorable_supersession": favorable,
+            "reassessment_eligible": reassessment_eligible,
+            "supersession_direction": supersession_direction,
         }
         superseded = superseded or not accepted
     return superseded
 
 
-def favorable_supersession_exists(batch: dict[str, Any]) -> bool:
-    return any(
-        isinstance(intent, dict)
-        and isinstance(intent.get("entry_revalidation"), dict)
-        and intent["entry_revalidation"].get("favorable_supersession") is True
-        for intent in batch.get("decisions", [])
-    )
-
-
-def maybe_request_favorable_reassessment(
+def maybe_request_supersession_reassessment(
     batch: dict[str, Any], exchange: Path, source_packet: dict[str, Any], latest_packet: dict[str, Any],
     *, suppress_followup: bool = False,
 ) -> bool:
-    if suppress_followup or batch.get("favorable_reassessment_requested") is True:
+    if (
+        suppress_followup
+        or batch.get("supersession_reassessment_requested") is True
+        or batch.get("favorable_reassessment_requested") is True
+    ):
         return False
     intent = next((
         value for value in batch.get("decisions", [])
         if isinstance(value, dict)
         and isinstance(value.get("entry_revalidation"), dict)
-        and value["entry_revalidation"].get("favorable_supersession") is True
+        and (
+            value["entry_revalidation"].get("reassessment_eligible") is True
+            or value["entry_revalidation"].get("favorable_supersession") is True
+        )
     ), None)
     if not isinstance(intent, dict):
         return False
     evidence = intent["entry_revalidation"]
-    batch["favorable_reassessment_requested"] = True
+    batch["supersession_reassessment_requested"] = True
     request_immediate_cycle(
         exchange,
         {
-            "kind": "favorable_entry_supersession",
-            "suppress_favorable_followup": True,
+            "kind": "entry_range_supersession",
+            "suppress_supersession_followup": True,
             "reassessment_context": {
                 "original_action": intent.get("action"),
                 "instrument": intent.get("instrument"),
@@ -3647,6 +3662,7 @@ def maybe_request_favorable_reassessment(
                 "latest_price": evidence.get("latest_price"),
                 "source_packet_id": evidence.get("source_packet_id") or source_packet.get("packet_id"),
                 "latest_packet_id": evidence.get("latest_packet_id") or latest_packet.get("packet_id"),
+                "supersession_direction": evidence.get("supersession_direction"),
             },
         },
     )
@@ -3959,6 +3975,7 @@ def build_prompt(
         "Maximize repeated risk-adjusted expected value and capital survival toward the user's evaluation objective. The objective is never a quota, entry trigger, size rule, or promise. "
         "Use account_context.ai_daily_capture_* as current-session progress context when available. Below the target, prioritize the strongest valid positive-asymmetry candidate and choose quantity only from valid_entry_quantities; state total planned risk and primary-target dollars for the chosen quantity. After the target is reached, protect progress and do not seek new exposure. "
         "Ordinary partial-bar, stale-depth, latency, and noise uncertainty are bounded costs to price once, not decisive missing conditions by themselves. Reserve UNCERTAIN for a genuinely unusable or unbounded fact; otherwise make a POSITIVE or NEGATIVE judgment. "
+        "Acceptance, confirmation, and a retest are probability evidence, not sequential prerequisites. If current location, a setup-specific invalidation beyond ordinary noise, and a probabilistic objective already yield positive expected value after costs, enter now; do not wait for both acceptance and a retest or substitute remote structure that manufactures negative geometry. "
         "Do not force activity, recover losses, use a fixed setup, fixed ATR rule, fixed reward/risk rule, or treat guidance as stronger than current evidence. "
     )
     if positioned_only:
@@ -4353,14 +4370,14 @@ def run_once(
             allow_entry_revalidation=True,
         )
         apply_entry_revalidation(pending_batch, original_packet, packet)
-        favorable_reassessment = maybe_request_favorable_reassessment(
+        supersession_reassessment = maybe_request_supersession_reassessment(
             pending_batch, exchange, original_packet, packet
         )
         if not args.dry_run:
             write_json_atomic(pending_path, pending_batch)
-        if favorable_reassessment:
+        if supersession_reassessment:
             if args.dry_run:
-                print(json.dumps({"cycle_id": pending_id, "submitted": False, "favorable_reassessment": True}))
+                print(json.dumps({"cycle_id": pending_id, "submitted": False, "supersession_reassessment": True}))
             return 0
         if args.dry_run:
             print(json.dumps({
@@ -4392,14 +4409,14 @@ def run_once(
         validate_batch(batch, scenario, allow_entry_revalidation=True)
         current_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, current_packet)
-        favorable_reassessment = maybe_request_favorable_reassessment(
+        supersession_reassessment = maybe_request_supersession_reassessment(
             batch, exchange, packet, current_packet
         )
         if not args.dry_run:
             write_json_atomic(outbox_path, batch)
-        if favorable_reassessment:
+        if supersession_reassessment:
             if args.dry_run:
-                print(json.dumps({"cycle_id": packet_id, "submitted": False, "favorable_reassessment": True}))
+                print(json.dumps({"cycle_id": packet_id, "submitted": False, "supersession_reassessment": True}))
             return 0
         if args.dry_run:
             print(json.dumps({
@@ -4460,11 +4477,11 @@ def run_once(
     directive = read_operator_directive(exchange)
     reassessment_request = (
         direct_request if isinstance(direct_request, dict)
-        and direct_request.get("kind") == "favorable_entry_supersession"
+        and direct_request.get("kind") in {"entry_range_supersession", "favorable_entry_supersession"}
         else None
     )
     reason = (
-        "favorable_entry_supersession"
+        "entry_range_supersession"
         if reassessment_request is not None
         else invocation_reason(packet, scenario, exchange, directive)
     )
@@ -4539,9 +4556,12 @@ def run_once(
         )
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
-        favorable_reassessment = maybe_request_favorable_reassessment(
+        supersession_reassessment = maybe_request_supersession_reassessment(
             batch, exchange, packet, latest_packet,
-            suppress_followup=bool((reassessment_request or {}).get("suppress_favorable_followup")),
+            suppress_followup=bool(
+                (reassessment_request or {}).get("suppress_supersession_followup")
+                or (reassessment_request or {}).get("suppress_favorable_followup")
+            ),
         )
         if not args.dry_run:
             if decision_mode == "flat_scan":
@@ -4599,7 +4619,7 @@ def run_once(
     if args.dry_run:
         print(json.dumps({"cycle_id": packet_id, "decision_count": len(batch["decisions"]), "submitted": False}))
         return 0
-    if favorable_reassessment:
+    if supersession_reassessment:
         return 0
     receipt = submit_batch(batch, glitch_data, exchange)
     mark_attempt_from_receipt(exchange, packet_id, receipt)

@@ -80,14 +80,14 @@ def test_validator_canonicalizes_offset_bearing_created_utc() -> None:
     assert batch["decisions"][0]["created_utc"] == "2026-08-03T07:02:41.0414987Z"
 
 
-def test_favorable_reassessment_marker_is_validated_as_hermes_batch_metadata() -> None:
+def test_supersession_reassessment_marker_is_validated_as_hermes_batch_metadata() -> None:
     batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
-    batch["favorable_reassessment_requested"] = True
+    batch["supersession_reassessment_requested"] = True
 
     DIRECT.validate_batch(batch, scenario)
 
-    batch["favorable_reassessment_requested"] = "true"
-    with pytest.raises(ValueError, match="favorable_reassessment_requested_invalid"):
+    batch["supersession_reassessment_requested"] = "true"
+    with pytest.raises(ValueError, match="supersession_reassessment_requested_invalid"):
         DIRECT.validate_batch(batch, scenario)
 
 
@@ -617,33 +617,40 @@ def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
         DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
 
-def test_favorable_reassessment_request_carries_original_geometry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("supersession_direction", ["better_price", "targetward"])
+def test_supersession_reassessment_request_carries_original_geometry(
+    tmp_path: Path, supersession_direction: str,
+) -> None:
     exchange = tmp_path / "exchange"
+    better_price = supersession_direction == "better_price"
     batch = {
         "decisions": [{
             "action": "ENTER_SHORT",
             "instrument": "MNQ",
             "entry_revalidation": {
-                "favorable_supersession": True,
+                "favorable_supersession": better_price,
+                "reassessment_eligible": True,
+                "supersession_direction": supersession_direction,
                 "entry_range_low": 100,
                 "entry_range_high": 101,
                 "stop": 105,
                 "target": 95,
                 "source_price": 100.5,
-                "latest_price": 99.75,
+                "latest_price": 101.25 if better_price else 99.75,
                 "source_packet_id": "source",
                 "latest_packet_id": "latest",
             },
         }],
     }
-    assert DIRECT.maybe_request_favorable_reassessment(
+    assert DIRECT.maybe_request_supersession_reassessment(
         batch, exchange, {"packet_id": "source"}, {"packet_id": "latest"}
     ) is True
     request = DIRECT.read_json(exchange / "hermes" / "direct-cycle-request.json")
-    assert request["kind"] == "favorable_entry_supersession"
-    assert request["suppress_favorable_followup"] is True
+    assert request["kind"] == "entry_range_supersession"
+    assert request["suppress_supersession_followup"] is True
     assert request["reassessment_context"]["target"] == 95
     assert request["reassessment_context"]["source_packet_id"] == "source"
+    assert request["reassessment_context"]["supersession_direction"] == supersession_direction
 
 
 def test_coalesced_request_claim_preserves_newer_launcher_marker(

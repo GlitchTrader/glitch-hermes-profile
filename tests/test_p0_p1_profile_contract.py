@@ -150,6 +150,15 @@ def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeyp
     prices[id(latest)] = 107.0
     assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
     assert batch["decisions"][0]["entry_revalidation"]["reason"] == "latest_price_outside_entry_range"
+    assert batch["decisions"][0]["entry_revalidation"]["reassessment_eligible"] is True
+    assert batch["decisions"][0]["entry_revalidation"]["favorable_supersession"] is False
+    assert batch["decisions"][0]["entry_revalidation"]["supersession_direction"] == "targetward"
+
+    prices[id(latest)] = 103.0
+    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    assert batch["decisions"][0]["entry_revalidation"]["reassessment_eligible"] is True
+    assert batch["decisions"][0]["entry_revalidation"]["favorable_supersession"] is True
+    assert batch["decisions"][0]["entry_revalidation"]["supersession_direction"] == "better_price"
 
 
 def test_partial_multibook_supersession_does_not_request_a_duplicate_cycle() -> None:
