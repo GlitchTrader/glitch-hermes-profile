@@ -2536,7 +2536,16 @@ def validate_batch(
         else set()
     )
     unknown_batch_fields = set(batch).difference(
-        {"schema_version", "cycle_id", "next_review_seconds", "decisions", "account_groups_tsv"}
+        {
+            "schema_version",
+            "cycle_id",
+            "next_review_seconds",
+            "decisions",
+            "account_groups_tsv",
+            # Hermes-only marker used to suppress a second favorable-entry
+            # reassessment follow-up. It is stripped before API submission.
+            "favorable_reassessment_requested",
+        }
     )
     if unknown_batch_fields:
         raise ValueError("batch_unknown_fields:" + ",".join(sorted(unknown_batch_fields)))
@@ -2544,6 +2553,10 @@ def validate_batch(
         raise ValueError("batch_schema_version_invalid")
     if "account_groups_tsv" in batch and not isinstance(batch["account_groups_tsv"], str):
         raise ValueError("account_groups_manifest_invalid")
+    if "favorable_reassessment_requested" in batch and not isinstance(
+        batch["favorable_reassessment_requested"], bool
+    ):
+        raise ValueError("favorable_reassessment_requested_invalid")
     if batch.get("cycle_id") != scenario["cycle_id"]:
         raise ValueError("cycle_id_mismatch")
     if batch.get("next_review_seconds", 300) not in {60, 300}:

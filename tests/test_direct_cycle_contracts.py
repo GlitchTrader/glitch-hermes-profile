@@ -80,6 +80,17 @@ def test_validator_canonicalizes_offset_bearing_created_utc() -> None:
     assert batch["decisions"][0]["created_utc"] == "2026-08-03T07:02:41.0414987Z"
 
 
+def test_favorable_reassessment_marker_is_validated_as_hermes_batch_metadata() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    batch["favorable_reassessment_requested"] = True
+
+    DIRECT.validate_batch(batch, scenario)
+
+    batch["favorable_reassessment_requested"] = "true"
+    with pytest.raises(ValueError, match="favorable_reassessment_requested_invalid"):
+        DIRECT.validate_batch(batch, scenario)
+
+
 def test_normalize_wake_triggers_repairs_model_shape() -> None:
     batch, _ = valid_batch("2026-08-03T07:02:41.0414987Z")
     intent = batch["decisions"][0]
