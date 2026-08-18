@@ -293,6 +293,17 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert "multiple one-minute packets during model and transport delay" not in prompt
     assert "stop-distance points times the packet point_value_usd" in prompt
     assert "never defer because these interpretations were not prewritten" in prompt
+    assert "separate the broader path invalidation from the immediate entry invalidation" in prompt
+    assert "nearest setup-specific structural level" in prompt
+    assert "both falsifies the immediate entry and survives ordinary horizon noise" in prompt
+    assert "Use the broader path invalidation as the stop only when no nearer noise-surviving structural level exists" in prompt
+    assert "an unconsumed objective produce positive target-before-stop expected value after costs" in prompt
+    assert "entry is permitted without completed-bar acceptance or a retest" in prompt
+    # Preserve the genuine abstention and latency boundaries while correcting
+    # the inherited-invalidation false veto seen in the 14:06 trigger review.
+    assert "Enter only when now_ev is POSITIVE" in prompt
+    assert "choose NOTHING only when now_ev is NEGATIVE or irreducibly UNCERTAIN" in prompt
+    assert "confirmation at or beyond that target consumes the trade" in prompt
     assert "confirmation transition is not automatically the primary profit objective" in prompt
     assert "construct the strongest fresh compact setup" in prompt
     assert "condition-change wake is consumed once" in prompt
