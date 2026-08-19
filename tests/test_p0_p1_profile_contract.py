@@ -134,6 +134,29 @@ def test_entry_rejects_geometry_evidence_that_hides_a_tiny_denominator() -> None
         raise AssertionError("entry without explicit horizon and economic geometry was accepted")
 
 
+def test_entry_accepts_prompt_approved_horizon_noise_wording() -> None:
+    variants = (
+        "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency",
+        "12 points, 48 ticks, one-minute ATR 5 and five-minute ATR 11, $24 risk after latency",
+        "12 points, 48 ticks, one- and five-minute ATR are 5 and 11, $24 risk after latency",
+        "12 points, 48 ticks, supplied horizon noise is 5 and 11, $24 risk after latency",
+    )
+    for geometry in variants:
+        DIRECT.validate_entry_geometry_evidence(geometry, 0, "candidate_comparison")
+
+
+def test_entry_rejects_one_sided_atr_evidence() -> None:
+    geometry = "12 points, 48 ticks, one-minute ATR 5, $24 risk after latency"
+    try:
+        DIRECT.validate_entry_geometry_evidence(geometry, 0, "candidate_comparison")
+    except ValueError as error:
+        assert str(error) == (
+            "entry_geometry_evidence_incomplete:0:candidate_comparison:horizon_noise"
+        )
+    else:
+        raise AssertionError("entry with only one-minute ATR evidence was accepted")
+
+
 def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeypatch) -> None:
     batch, _ = entry_batch()
     source = {"packet_id": "source"}

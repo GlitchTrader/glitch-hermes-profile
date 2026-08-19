@@ -2429,13 +2429,28 @@ def validate_candidate_comparison(
 def validate_entry_geometry_evidence(value: str, index: int, source: str) -> None:
     """Require explicit geometry evidence without imposing a numeric strategy gate."""
     lowered = value.lower()
+    normalized = re.sub(r"[\u2010-\u2015]", "-", lowered)
+    numeric_atr_pair = (
+        re.search(r"\b1\s*(?:m|min(?:ute)?s?)\b", normalized)
+        and re.search(r"\b5\s*(?:m|min(?:ute)?s?)\b", normalized)
+    )
+    written_atr_pair = (
+        re.search(r"\bone(?:\s*-\s*|\s+)minute\b", normalized)
+        and re.search(r"\bfive(?:\s*-\s*|\s+)minute\b", normalized)
+    )
+    coordinated_atr_pair = re.search(
+        r"\bone\s*-\s*and\s+five\s*-\s*minute\b", normalized
+    )
     dimensions = {
         "points": "point" in lowered,
         "ticks": "tick" in lowered,
         "dollars": "$" in value or "usd" in lowered or "dollar" in lowered,
         "horizon_noise": (
             "horizon noise" in lowered
-            or ("atr" in lowered and "1m" in lowered and "5m" in lowered)
+            or (
+                "atr" in lowered
+                and bool(numeric_atr_pair or written_atr_pair or coordinated_atr_pair)
+            )
         ),
         "latency": "latency" in lowered or "delay" in lowered,
     }
