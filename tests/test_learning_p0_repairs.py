@@ -65,6 +65,14 @@ def test_deferred_learner_retry_window_spans_a_full_scheduler_interval() -> None
     assert LEARNING.LEARNING_DEFER_RETRY_WINDOW_SECONDS >= 3600
 
 
+def test_eval_profit_lock_is_not_cognitive_failure_evidence() -> None:
+    result = {
+        "http_status": 422,
+        "body": {"failed_check_code": "eval_target_locked"},
+    }
+    assert LEARNING.is_cognitive_rejection(result) is False
+
+
 def test_entry_context_uses_the_selected_instruments_price_and_economics(tmp_path, monkeypatch) -> None:
     packet_path = tmp_path / "hermes" / "exchange" / "glitch" / "decision-packets" / "cycle-1.json"
     packet_path.parent.mkdir(parents=True)

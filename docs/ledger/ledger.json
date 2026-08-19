@@ -22,7 +22,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.61"
+        "distribution.yaml version 0.0.2.62"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."
@@ -76,7 +76,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-      "distribution_version": "0.0.2.61"
+      "distribution_version": "0.0.2.62"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

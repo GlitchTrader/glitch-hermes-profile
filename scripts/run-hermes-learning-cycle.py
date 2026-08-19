@@ -77,7 +77,6 @@ COGNITIVE_FIREWALL_REJECTIONS = {
     "max_contracts_exceeded",
     "apex_liquidation_buffer_exceeded",
     "account_risk_locked",
-    "eval_target_locked",
 }
 COGNITIVE_EXECUTOR_REJECTIONS = {
     "group_structural_geometry_invalid_at_decision",
