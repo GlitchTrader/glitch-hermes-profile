@@ -1,10 +1,12 @@
-# Glitch Hermes Profile v0.0.2.60
+# Glitch Hermes Profile v0.0.2.61
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
 Glitch/NinjaTrader remains the market, account, configured-policy, execution, bracket, replication, and journal authority. Hermes proposes structured intent for the master accounts selected by the user in Glitch. The profile does not distinguish paper from live accounts and makes no profitability, unattended-operation, or live-readiness claim.
 
 The profile is intelligence-first. It supplies evidence vocabulary, time-sequence context, strict output construction, and attributable learning. It does not encode a fixed trading strategy, daily profit target, account-size recipe, preferred setup, geometric template, or hidden action gate. Capacity and supported actions come from the current Glitch packet and user configuration.
+
+Local cognitive lessons require independent cross-session discovery, later completed master-trade confirmation, exact overlay attribution, contradiction review, and periodic revalidation before they can influence Hermes. They expire without revalidation. A locally promoted lesson creates only a human-review distribution candidate; it never installs itself into the product or changes Glitch execution.
 
 ## Requirements
 

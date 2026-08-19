@@ -41,6 +41,8 @@ ENTRY_FIELD_ALIASES = {
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
 DIRECT_PROMPT_REVISION = "direct-v27-immediate-result-continuity"
+COGNITIVE_GATE_VERSION = "glitch.hermes.cognitive_gate.v2"
+COGNITIVE_OVERLAY_VERSION_MARKER = "+overlay-"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "SOUL.md",
@@ -139,6 +141,46 @@ def cognitive_bundle_hash() -> str:
 
 
 DIRECT_PROMPT_VERSION = f"{DIRECT_PROMPT_REVISION}-{cognitive_bundle_hash()}"
+
+
+def base_prompt_version(value: Any) -> str:
+    return str(value or "").partition(COGNITIVE_OVERLAY_VERSION_MARKER)[0]
+
+
+def cognitive_bundle_hash_from_prompt_version(value: Any) -> str:
+    return base_prompt_version(value).rsplit("-", 1)[-1]
+
+
+def cognitive_overlay_is_current(
+    overlay: dict[str, Any] | None,
+    now: datetime | None = None,
+) -> bool:
+    if not isinstance(overlay, dict):
+        return False
+    if (
+        overlay.get("status") not in {"active", "promoted"}
+        or overlay.get("gate_version") != COGNITIVE_GATE_VERSION
+        or overlay.get("activation_evidence_kind") != "completed_master_outcomes"
+        or overlay.get("decision_prompt_version") != DIRECT_PROMPT_VERSION
+        or not overlay.get("replacement_text")
+    ):
+        return False
+    try:
+        expires = datetime.fromisoformat(str(overlay.get("expires_utc") or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return expires.astimezone(timezone.utc) > (now or datetime.now(timezone.utc))
+
+
+def effective_prompt_version(overlay: dict[str, Any] | None) -> str:
+    if not cognitive_overlay_is_current(overlay):
+        return DIRECT_PROMPT_VERSION
+    identity = "|".join((
+        str(overlay.get("candidate_id") or ""),
+        str(overlay.get("expected_old_sha256") or ""),
+        str(overlay.get("replacement_text") or ""),
+    ))
+    return f"{DIRECT_PROMPT_VERSION}{COGNITIVE_OVERLAY_VERSION_MARKER}{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}"
 
 
 def resolve_instrument_economics(instrument: dict[str, Any]) -> dict[str, Any]:
@@ -908,7 +950,10 @@ def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[dict[s
         row for row in _jsonl_tail(intents / "decisions.jsonl", max_lines * 4)
         if (
             row.get("intent") if isinstance(row.get("intent"), dict) else row
-        ).get("prompt_version") == DIRECT_PROMPT_VERSION
+        ).get("prompt_version") is not None
+        and base_prompt_version(
+            (row.get("intent") if isinstance(row.get("intent"), dict) else row).get("prompt_version")
+        ) == DIRECT_PROMPT_VERSION
     ]
     unique_decisions: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for row in recent_decisions:
@@ -971,13 +1016,7 @@ def read_trading_learning_artifact(path: Path, schema_version: str) -> dict[str,
 def learning_context(exchange: Path) -> dict[str, Any]:
     supervisor = exchange / "hermes" / "supervisor"
     overlay = read_optional_json(supervisor / "active-cognitive-overlay.json")
-    if (
-        not overlay
-        or overlay.get("status") not in {"active", "promoted"}
-        or overlay.get("activation_evidence_kind") != "completed_master_outcomes"
-        or overlay.get("decision_prompt_version") != DIRECT_PROMPT_VERSION
-        or not (overlay.get("replacement_text") or overlay.get("instruction"))
-    ):
+    if not cognitive_overlay_is_current(overlay):
         overlay = None
     return {
         "current_plan": read_trading_learning_artifact(
@@ -991,7 +1030,7 @@ def learning_context(exchange: Path) -> dict[str, Any]:
 
 
 def apply_cognitive_overlay(prompt: str, overlay: dict[str, Any] | None) -> str:
-    if not isinstance(overlay, dict) or overlay.get("status") not in {"active", "promoted"}:
+    if not cognitive_overlay_is_current(overlay):
         return prompt
     if overlay.get("operation") != "replace" or overlay.get("target") != "core_prompt":
         return prompt
@@ -2852,6 +2891,15 @@ def stamp_decision_created_utc(batch: dict[str, Any]) -> dict[str, Any]:
     return batch
 
 
+def stamp_decision_prompt_version(batch: dict[str, Any], prompt_version: str) -> dict[str, Any]:
+    decisions = batch.get("decisions")
+    if isinstance(decisions, list):
+        for intent in decisions:
+            if isinstance(intent, dict):
+                intent["prompt_version"] = prompt_version
+    return batch
+
+
 def _attach_observation_layers(instrument: dict[str, Any]) -> None:
     """Label native NT observations separately from legacy heuristic context."""
     economics = resolve_instrument_economics(instrument)
@@ -3435,20 +3483,24 @@ def invoke_validated_batch(
     timeout_seconds: int,
     decision_mode: str = "flat_scan",
     prior_cognition: dict[str, Any] | None = None,
+    prompt_version: str = DIRECT_PROMPT_VERSION,
 ) -> tuple[dict[str, Any], int, int]:
     """Make one bounded Luna call plus at most one contract-only correction."""
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = decision_mode == "trigger_review"
 
     def prepare(value: dict[str, Any]) -> dict[str, Any]:
-        batch = stamp_decision_created_utc(
-            stamp_deterministic_intent_fields(
-                normalize_batch(
-                    expand_shared_flat_decision(value, scenario),
+        batch = stamp_decision_prompt_version(
+            stamp_decision_created_utc(
+                stamp_deterministic_intent_fields(
+                    normalize_batch(
+                        expand_shared_flat_decision(value, scenario),
+                        scenario,
+                    ),
                     scenario,
-                ),
-                scenario,
-            )
+                )
+            ),
+            prompt_version,
         )
         backfill_constant_comparison_fields(
             batch,
@@ -4519,6 +4571,7 @@ def run_once(
     journals = journal_tail(glitch_data)
     journals.update(learning_context(exchange))
     journals["active_trade_state"] = trade_state
+    prompt_version = effective_prompt_version(journals.get("active_cognitive_overlay"))
     prompt = build_prompt(
         packet,
         scenario,
@@ -4535,8 +4588,8 @@ def run_once(
         "status": "started",
         "model": CORE_MODEL,
         "provider": CORE_PROVIDER,
-        "prompt_version": DIRECT_PROMPT_VERSION,
-        "cognitive_bundle_hash": DIRECT_PROMPT_VERSION.rsplit("-", 1)[-1],
+        "prompt_version": prompt_version,
+        "cognitive_bundle_hash": cognitive_bundle_hash_from_prompt_version(prompt_version),
         "decision_mode": decision_mode,
         "prior_cognition_source_cycle_id": (
             prior_cognition.get("source_cycle_id") if prior_cognition else None
@@ -4553,6 +4606,7 @@ def run_once(
             args.timeout_seconds,
             decision_mode,
             prior_cognition,
+            prompt_version,
         )
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
@@ -4575,8 +4629,8 @@ def run_once(
             "status": "decision_ready",
             "model": CORE_MODEL,
             "provider": CORE_PROVIDER,
-            "prompt_version": DIRECT_PROMPT_VERSION,
-            "cognitive_bundle_hash": DIRECT_PROMPT_VERSION.rsplit("-", 1)[-1],
+            "prompt_version": prompt_version,
+            "cognitive_bundle_hash": cognitive_bundle_hash_from_prompt_version(prompt_version),
             "decision_mode": decision_mode,
             "prior_cognition_source_cycle_id": (
                 prior_cognition.get("source_cycle_id") if prior_cognition else None

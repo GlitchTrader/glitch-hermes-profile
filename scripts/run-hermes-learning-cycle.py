@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,10 @@ LEARNING_DEFER_RETRY_SECONDS = 5
 # the next scheduler interval; it still releases Hermes immediately to every
 # live decision and exits as soon as AI is paused for maintenance.
 LEARNING_DEFER_RETRY_WINDOW_SECONDS = 3_600
+MIN_COGNITIVE_EVIDENCE_GROUPS = 2
+MIN_COGNITIVE_EVIDENCE_SESSIONS = 2
+COGNITIVE_PROPOSAL_TTL_DAYS = 14
+COGNITIVE_OVERLAY_TTL_DAYS = 7
 
 # Only market/geometry/capacity decisions belong in cognitive evidence. Missing
 # services, stale state, policy/auth failures, and native API faults remain code
@@ -287,6 +292,31 @@ def market_path(glitch_data: Path, entry: datetime, exit_time: datetime, instrum
     return list(reversed(values[-90:]))
 
 
+def market_evidence_context(candidate: dict[str, Any], decision_utc: Any) -> dict[str, Any]:
+    one_minute = next((
+        row for row in candidate.get("timeframe_bars", [])
+        if isinstance(row, dict) and int(row.get("minutes", 0) or 0) == 1
+    ), {})
+    descriptive = one_minute.get("descriptive_state") or candidate.get("descriptive_state")
+    state = descriptive.get("descriptive_state") if isinstance(descriptive, dict) else None
+    if not isinstance(state, dict) and isinstance(descriptive, dict):
+        state = descriptive
+    quality = state.get("quality") if isinstance(state, dict) and isinstance(state.get("quality"), dict) else {}
+    try:
+        session_date = parse_utc(decision_utc).astimezone(EASTERN).date().isoformat()
+    except (TypeError, ValueError):
+        session_date = None
+    value = {
+        "session_date_et": session_date,
+        "session_phase": state.get("session_phase") if isinstance(state, dict) else None,
+        "path": state.get("path") if isinstance(state, dict) else None,
+        "atr_1m": (one_minute.get("indicators") or {}).get("atr"),
+        "order_flow_status": quality.get("order_flow_status"),
+        "depth_status": quality.get("depth_status"),
+    }
+    return {key: item for key, item in value.items() if item is not None}
+
+
 def entry_decision_context(
     glitch_data: Path,
     outcome: dict[str, Any],
@@ -376,6 +406,8 @@ def entry_decision_context(
         "intent_id": str(entry_intent.get("intent_id") or outcome.get("intent_id") or ""),
         "master_account": str(outcome.get("master_account") or ""),
         "cycle_id": cycle_id,
+        "decision_utc": entry_intent.get("created_utc"),
+        "prompt_version": entry_intent.get("prompt_version"),
         "packet_hash": packet.get("packet_hash"),
         "snapshot_hash": entry_intent.get("snapshot_hash") or scenario["market"].get("snapshot_hash"),
         "rationale": {
@@ -384,6 +416,7 @@ def entry_decision_context(
         },
         "pre_entry": book.get("position_building_context"),
         "decision_reference_price": decision_reference_price,
+        "evidence_context": market_evidence_context(selected_candidate, entry_intent.get("created_utc")),
         "actual_entry_vwap": actual_entry_vwap,
         "selected_plan": {
             "action": entry_intent.get("action"),
@@ -824,7 +857,9 @@ def collect_decision_episodes(
                 "instrument": intent.get("instrument"),
                 "action": action,
                 "prompt_version": intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION,
-                "cognitive_bundle_hash": str(intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION).rsplit("-", 1)[-1],
+                "cognitive_bundle_hash": DIRECT.cognitive_bundle_hash_from_prompt_version(
+                    intent.get("prompt_version") or DIRECT.DIRECT_PROMPT_VERSION
+                ),
                 "instrument_point_value_usd": economics.get("point_value_usd") if isinstance(economics, dict) else None,
                 "instrument_tick_size": economics.get("tick_size") if isinstance(economics, dict) else None,
                 "opportunity_group_id": opportunity_group_id(
@@ -834,6 +869,9 @@ def collect_decision_episodes(
                     intent.get("created_utc"),
                 ),
                 "correlated_episode_ids": [],
+                "evidence_context": market_evidence_context(
+                    selected_candidate, intent.get("created_utc")
+                ),
                 "reason": intent.get("reason"),
                 "decision_audit": intent.get("decision_audit"),
                 "prior_cognition": prior_cognition,
@@ -950,7 +988,9 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                     "guidance": {"summary": "REPLACE", "consider": ["REPLACE"], "avoid": ["REPLACE"]},
                     "cognitive_change_decision": {
                         "candidate_id": "COPY_ACTIVE_ID_OR_EMPTY", "action": "none",
-                        "evidence_episode_ids": [], "contradiction_review": "REPLACE_OR_EMPTY",
+                        "evidence_episode_ids": [], "contradiction_reviewed_episode_ids": [],
+                        "contradiction_review": "REPLACE_OR_EMPTY",
+                        "metric_assessment": "REPLACE_OR_EMPTY",
                         "reason": "REPLACE_OR_EMPTY",
                     },
                     "cognitive_change_candidate": {
@@ -982,7 +1022,9 @@ def output_template(loop_id: str, record_ids: list[str], extra: dict[str, Any] |
                     "memory_updates": ["REPLACE_OR_EMPTY"],
                     "cognitive_change_decision": {
                         "candidate_id": "COPY_ACTIVE_ID_OR_EMPTY", "action": "none",
-                        "evidence_episode_ids": [], "contradiction_review": "REPLACE_OR_EMPTY",
+                        "evidence_episode_ids": [], "contradiction_reviewed_episode_ids": [],
+                        "contradiction_review": "REPLACE_OR_EMPTY",
+                        "metric_assessment": "REPLACE_OR_EMPTY",
                         "reason": "REPLACE_OR_EMPTY",
                     },
                     "cognitive_change_candidate": {
@@ -1017,7 +1059,7 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
         ),
         "hourly": (
             "Supervise supplied completed trade and decision episodes. Do not double-count correlated route/master/follower implementations. Classify every supplied flat NOTHING episode exactly once and cite representative episode IDs in the summary. "
-            "Review only the current prompt_version evidence first; never mix prompting eras in one hourly batch. For each supplied independent opportunity group, return exactly one opportunity_review.results object with episode_id, correlated_episode_ids, classification (disciplined_abstention, missed_opportunity, or uncertain), conservative direction/entry/invalidation/objective when reconstructable, target_before_stop_chronology, one_contract_gross_opportunity_usd, mfe_usd, and reason. Evaluate the strongest rejected candidate across candidate_forward_summaries and prior_cognition, not only the selected intent instrument; use that candidate's point_value_usd and available_quantities for opportunity dollars. Independently reconstruct the nearest setup-specific invalidation that both survives ordinary noise and falsifies the candidate, plus a probabilistic objective supported by pre-decision evidence; do not inherit a remote invalidation, consumed objective, or acceptance/retest prerequisite merely because the rejected rationale used it. Ordinary partial bars, stale depth, or incomplete flow are uncertainty costs, not proof that abstention was disciplined. When reconstructable, use a conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective. A missed opportunity requires valid noise-aware geometry and target-before-stop chronology; same-bar ambiguity is uncertain. Do not invent fills or PnL; the absence of an actual trade does not exempt an opportunity from review. Mark correlated route copies as reviewed through the representative, and do not count overlapping summaries of the same market move as independent evidence. Require at least two independent current-version opportunity groups before proposing a cognitive change. In opportunity_review.summary name repeated vetoes and representative IDs. Produce compact advisory guidance and propose at most one narrow cognitive clause only when repeated independent evidence and contradiction review support it."
+            "Review only the current prompt_version evidence first; never mix prompting eras in one hourly batch. For each supplied independent opportunity group, return exactly one opportunity_review.results object with episode_id, correlated_episode_ids, classification (disciplined_abstention, missed_opportunity, or uncertain), conservative direction/entry/invalidation/objective when reconstructable, target_before_stop_chronology, one_contract_gross_opportunity_usd, mfe_usd, and reason. Evaluate the strongest rejected candidate across candidate_forward_summaries and prior_cognition, not only the selected intent instrument; use that candidate's point_value_usd and available_quantities for opportunity dollars. Independently reconstruct the nearest setup-specific invalidation that both survives ordinary noise and falsifies the candidate, plus a probabilistic objective supported by pre-decision evidence; do not inherit a remote invalidation, consumed objective, or acceptance/retest prerequisite merely because the rejected rationale used it. Ordinary partial bars, stale depth, or incomplete flow are uncertainty costs, not proof that abstention was disciplined. When reconstructable, use a conservative noise-aware counterfactual zone, genuine invalidation, and probabilistic objective. A missed opportunity requires valid noise-aware geometry and target-before-stop chronology; same-bar ambiguity is uncertain. Do not invent fills or PnL; the absence of an actual trade does not exempt an opportunity from review. Mark correlated route copies as reviewed through the representative, and do not count overlapping summaries of the same market move as independent evidence. Require at least two independent current-version opportunity groups across at least two sessions before proposing a cognitive change. Every activate, continue, promote, or rollback decision must cite the reviewed evidence IDs, contradiction-reviewed IDs, and its assessment of the candidate's declared metric. In opportunity_review.summary name repeated vetoes and representative IDs. Produce compact advisory guidance and propose at most one narrow cognition-only clause only when repeated independent evidence and contradiction review support it; never encode an instrument, direction, time, fixed threshold, sizing, geometry, quota, risk, or execution rule."
         ),
         "planning": (
             "Create the next six-hour advisory plan from supplied regime, attributable outcomes, uncertainty, and current account state. "
@@ -1118,12 +1160,29 @@ def attach_fact_envelopes(
     enriched = []
     for record, facts in zip(records, evidence):
         canonical = json.dumps(facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        enriched.append({
+        entry_context = facts.get("entry_decision_context") if isinstance(facts, dict) else None
+        master_outcome = facts.get("master_outcome") if isinstance(facts, dict) else None
+        prompt_version = entry_context.get("prompt_version") if isinstance(entry_context, dict) else None
+        decision_utc = entry_context.get("decision_utc") if isinstance(entry_context, dict) else None
+        instrument = master_outcome.get("instrument") if isinstance(master_outcome, dict) else record.get("instrument")
+        action = master_outcome.get("action") if isinstance(master_outcome, dict) else None
+        value = {
             **record,
             "schema_version": "glitch.hermes.trade_episode.v2",
             "facts": facts,
             "facts_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
-        })
+        }
+        if prompt_version and decision_utc and instrument and action:
+            value.update({
+                "decision_utc": decision_utc,
+                "prompt_version": prompt_version,
+                "cognitive_bundle_hash": DIRECT.cognitive_bundle_hash_from_prompt_version(prompt_version),
+                "opportunity_group_id": opportunity_group_id(
+                    str(prompt_version), DIRECT.instrument_root(instrument), str(action), decision_utc
+                ),
+                "evidence_context": entry_context.get("evidence_context") or {},
+            })
+        enriched.append(value)
     return enriched
 
 
@@ -1171,6 +1230,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
         "proposed_geometry": 3_500,
         "candidate_forward_summaries": 8_000,
         "prior_cognition": 8_000,
+        "evidence_context": 2_000,
     }
     for key in (
         "schema_version", "episode_id", "recorded_utc", "intent_id", "cycle_id",
@@ -1183,7 +1243,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
         "market_behavior", "lesson_candidates", "uncertainties", "proposed_geometry",
         "forward_observation_count", "forward_high", "forward_low", "forward_close",
         "upward_excursion_points", "downward_excursion_points",
-        "candidate_forward_summaries", "prior_cognition",
+        "candidate_forward_summaries", "prior_cognition", "evidence_context",
     ):
         if key in row:
             common[key] = (
@@ -1230,7 +1290,8 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
         entry_context_compact: dict[str, Any] = {}
         if isinstance(entry_context, dict):
             for key in (
-                "status", "reason", "cycle_id", "packet_hash", "pre_entry",
+                "status", "reason", "cycle_id", "decision_utc", "prompt_version",
+                "packet_hash", "pre_entry", "evidence_context",
                 "intent_id", "master_account", "snapshot_hash", "rationale",
                 "decision_reference_price", "actual_entry_vwap", "selected_plan",
                 "native_entry_facts", "normalized_outcome", "canonical_outcome_layers",
@@ -1286,6 +1347,7 @@ def compact_planning_episode(row: dict[str, Any]) -> dict[str, Any]:
         "decision_utc", "window_close_utc", "route_id", "master_account",
         "instrument", "action", "prompt_version", "cognitive_bundle_hash",
         "instrument_point_value_usd", "instrument_tick_size", "opportunity_group_id",
+        "evidence_context",
         "evidence_kind", "classification", "classification_owner",
         "forward_observation_count", "forward_high", "forward_low", "forward_close",
         "upward_excursion_points", "downward_excursion_points",
@@ -1451,6 +1513,162 @@ def later_evidence_ids(value: dict[str, Any], episode_ids: list[str]) -> set[str
     return set(episode_ids[cursor:])
 
 
+def evidence_session_date(row: dict[str, Any]) -> str:
+    context = row.get("evidence_context")
+    if isinstance(context, dict) and context.get("session_date_et"):
+        return str(context["session_date_et"])
+    facts = row.get("facts")
+    entry_context = facts.get("entry_decision_context") if isinstance(facts, dict) else None
+    if isinstance(entry_context, dict):
+        nested = entry_context.get("evidence_context")
+        if isinstance(nested, dict) and nested.get("session_date_et"):
+            return str(nested["session_date_et"])
+    for value in (
+        row.get("decision_utc"),
+        (facts.get("master_outcome") or {}).get("entry_utc") if isinstance(facts, dict) else None,
+        row.get("recorded_utc"),
+    ):
+        try:
+            return parse_utc(value).astimezone(EASTERN).date().isoformat()
+        except (TypeError, ValueError):
+            continue
+    return ""
+
+
+def evidence_gate(
+    supervisor: Path,
+    evidence_ids: list[Any],
+    *,
+    allowed_ids: set[str] | None = None,
+    expected_prompt_version: str,
+    exact_prompt_version: bool,
+    trade_only: bool,
+) -> dict[str, Any] | None:
+    selected_ids = list(dict.fromkeys(str(value) for value in evidence_ids if value))
+    if len(selected_ids) < MIN_COGNITIVE_EVIDENCE_GROUPS:
+        return None
+    if allowed_ids is not None and any(value not in allowed_ids for value in selected_ids):
+        return None
+    rows_by_id = {
+        str(row.get("episode_id")): row
+        for row in cognitive_evidence(supervisor)
+        if row.get("episode_id")
+    }
+    if any(value not in rows_by_id for value in selected_ids):
+        return None
+    if trade_only and any(value not in set(trade_evidence_ids(supervisor)) for value in selected_ids):
+        return None
+    rows = [rows_by_id[value] for value in selected_ids]
+    prompt_matches = all(
+        str(row.get("prompt_version") or "") == expected_prompt_version
+        if exact_prompt_version
+        else DIRECT.base_prompt_version(row.get("prompt_version")) == expected_prompt_version
+        for row in rows
+    )
+    groups = sorted({str(row.get("opportunity_group_id") or "") for row in rows if row.get("opportunity_group_id")})
+    sessions = sorted({evidence_session_date(row) for row in rows if evidence_session_date(row)})
+    if (
+        not prompt_matches
+        or len(groups) < MIN_COGNITIVE_EVIDENCE_GROUPS
+        or len(sessions) < MIN_COGNITIVE_EVIDENCE_SESSIONS
+    ):
+        return None
+    contexts = [
+        row.get("evidence_context")
+        for row in rows
+        if isinstance(row.get("evidence_context"), dict)
+    ]
+    return {
+        "evidence_episode_ids": selected_ids,
+        "opportunity_group_ids": groups,
+        "session_dates_et": sessions,
+        "instruments": sorted({DIRECT.instrument_root(row.get("instrument")) for row in rows}),
+        "observed_contexts": contexts,
+        "prompt_version": expected_prompt_version,
+        "prompt_match": "exact" if exact_prompt_version else "base",
+        "completed_master_outcomes_only": trade_only,
+    }
+
+
+def expires_utc(days: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat().replace("+00:00", "Z")
+
+
+def artifact_is_unexpired(value: dict[str, Any] | None) -> bool:
+    if not isinstance(value, dict):
+        return False
+    try:
+        return parse_utc(value.get("expires_utc")) > datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+
+
+def substantive_text(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and text.upper() not in {
+        "REPLACE", "REPLACE_OR_EMPTY", "GENERATE_OR_EMPTY", "MINIMAL_REPLACEMENT_OR_EMPTY",
+    })
+
+
+def cognitive_candidate_is_general(expected_old_text: str, replacement_text: str) -> bool:
+    forbidden_patterns = (
+        r"\b(?:MES|MNQ|ES|NQ|YM|RTY|CL|GC)\b",
+        r"\b\d{1,2}:\d{2}\b",
+        r"\b\d+(?:\.\d+)?\s*(?:ticks?|points?|contracts?)\b",
+        r"\b(?:always|never)\s+(?:enter|exit|buy|sell|go\s+long|go\s+short)\b",
+        r"\b(?:long|short)[ -]only\b",
+        r"\b(?:daily|weekly)\s+(?:profit|loss|trade)\s+(?:target|limit|quota)\b",
+        r"\bfixed\s+(?:stop|target|size|quantity|risk|reward)\b",
+    )
+    if any(re.search(pattern, replacement_text, flags=re.IGNORECASE) for pattern in forbidden_patterns):
+        return False
+    old = expected_old_text.lower()
+    new = replacement_text.lower()
+    protected_terms = (
+        "schema_version", "intent_id", "operator_profile", "authorization",
+        "firewall", "position limit", "account limit", "execution contract",
+    )
+    return not any(term in new and term not in old for term in protected_terms)
+
+
+def decision_review_is_complete(decision: dict[str, Any], evidence_ids: list[str]) -> bool:
+    reviewed = {str(value) for value in decision.get("contradiction_reviewed_episode_ids", []) if value}
+    return (
+        set(evidence_ids).issubset(reviewed)
+        and substantive_text(decision.get("contradiction_review"))
+        and substantive_text(decision.get("metric_assessment"))
+    )
+
+
+def append_distribution_candidate(supervisor: Path, active: dict[str, Any], gate: dict[str, Any]) -> None:
+    candidate_id = str(active.get("candidate_id") or "")
+    distribution_id = stable_id(
+        "cognitive-distribution-candidate",
+        candidate_id + "|" + "|".join(gate["evidence_episode_ids"]),
+    )
+    append_unique(supervisor / "distribution-candidates.jsonl", [{
+        "schema_version": "glitch.hermes.distribution_candidate.v1",
+        "distribution_candidate_id": distribution_id,
+        "recorded_utc": utc_now(),
+        "candidate_id": candidate_id,
+        "gate_version": DIRECT.COGNITIVE_GATE_VERSION,
+        "status": "human_review_required",
+        "auto_install": False,
+        "validation_scope": "single_installation_local",
+        "required_next_gate": [
+            "scope_neutrality_review",
+            "cross_regime_or_multi_installation_validation",
+            "explicit_product_approval",
+        ],
+        "expected_old_sha256": active.get("expected_old_sha256"),
+        "replacement_text": active.get("replacement_text"),
+        "expected_effect": active.get("expected_effect"),
+        "evaluation_metric": active.get("evaluation_metric"),
+        "rollback_condition": active.get("rollback_condition"),
+        "local_validation_evidence": gate,
+    }], "distribution_candidate_id")
+
+
 def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_ids: list[str]) -> None:
     active_path = supervisor / "active-cognitive-overlay.json"
     active = DIRECT.read_optional_json(active_path)
@@ -1458,21 +1676,23 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
     if not isinstance(decision, dict):
         return
     action = str(decision.get("action") or "").lower()
-    contradiction_review = str(decision.get("contradiction_review") or "").strip()
     if (
-        active
-        and active.get("status") in {"active", "promoted"}
-        and active.get("replacement_text")
+        DIRECT.cognitive_overlay_is_current(active)
         and str(decision.get("candidate_id")) == str(active.get("candidate_id"))
     ):
-        later_episode_ids = later_evidence_ids(active, episode_ids).intersection(
-            trade_evidence_ids(supervisor)
+        later_episode_ids = later_evidence_ids(active, episode_ids)
+        gate = evidence_gate(
+            supervisor,
+            decision.get("evidence_episode_ids", []),
+            allowed_ids=later_episode_ids,
+            expected_prompt_version=str(active.get("effective_prompt_version") or ""),
+            exact_prompt_version=True,
+            trade_only=True,
         )
-        later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
         if (
-            len(set(later)) < 1
+            gate is None
             or action not in {"continue", "promote", "rollback"}
-            or not contradiction_review
+            or not decision_review_is_complete(decision, gate["evidence_episode_ids"])
         ):
             return
         active["status"] = {"continue": "active", "promote": "promoted", "rollback": "rolled_back"}[action]
@@ -1480,14 +1700,19 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
         active["evaluation_episode_count"] = len(episode_ids)
         active["baseline_evidence_ids"] = list(episode_ids)
         active["evaluation"] = decision
+        active["evaluation_evidence"] = gate
         if action == "rollback":
             active.pop("replacement_text", None)
+        else:
+            active["expires_utc"] = expires_utc(COGNITIVE_OVERLAY_TTL_DAYS)
         DIRECT.write_json_atomic(active_path, active)
+        if action == "promote":
+            append_distribution_candidate(supervisor, active, gate)
         event = {
             **active,
             "change_event_id": stable_id(
                 "cognitive-change-event",
-                str(active["candidate_id"]) + "|" + action + "|" + "|".join(sorted(set(later))),
+                str(active["candidate_id"]) + "|" + action + "|" + "|".join(gate["evidence_episode_ids"]),
             ),
             "event": "evaluated",
         }
@@ -1499,20 +1724,28 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
     if (
         not proposed
         or proposed.get("status") != "proposed"
+        or proposed.get("gate_version") != DIRECT.COGNITIVE_GATE_VERSION
+        or not artifact_is_unexpired(proposed)
         or not proposed.get("replacement_text")
         or str(decision.get("candidate_id")) != str(proposed.get("candidate_id"))
         or action not in {"activate", "rollback"}
     ):
         return
-    later_episode_ids = later_evidence_ids(proposed, episode_ids).intersection(
-        trade_evidence_ids(supervisor)
+    later_episode_ids = later_evidence_ids(proposed, episode_ids)
+    gate = evidence_gate(
+        supervisor,
+        decision.get("evidence_episode_ids", []),
+        allowed_ids=later_episode_ids,
+        expected_prompt_version=DIRECT.DIRECT_PROMPT_VERSION,
+        exact_prompt_version=True,
+        trade_only=True,
     )
-    later = [value for value in decision.get("evidence_episode_ids", []) if value in later_episode_ids]
-    if len(set(later)) < 1 or not contradiction_review:
+    if gate is None or not decision_review_is_complete(decision, gate["evidence_episode_ids"]):
         return
     proposed["status"] = "activated" if action == "activate" else "rolled_back"
     proposed["evaluated_utc"] = utc_now()
     proposed["evaluation"] = decision
+    proposed["evaluation_evidence"] = gate
     if action == "rollback":
         proposed.pop("replacement_text", None)
     DIRECT.write_json_atomic(proposed_path, proposed)
@@ -1522,17 +1755,20 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
             "status": "active",
             "activated_utc": utc_now(),
             "activation_evidence_kind": "completed_master_outcomes",
-            "activation_trade_episode_ids": sorted(set(later)),
+            "activation_trade_episode_ids": gate["evidence_episode_ids"],
+            "activation_evidence": gate,
             "baseline_episode_count": len(episode_ids),
             "evaluation_episode_count": len(episode_ids),
             "baseline_evidence_ids": list(episode_ids),
+            "expires_utc": expires_utc(COGNITIVE_OVERLAY_TTL_DAYS),
         }
+        active["effective_prompt_version"] = DIRECT.effective_prompt_version(active)
         DIRECT.write_json_atomic(active_path, active)
     event = {
         **proposed,
         "change_event_id": stable_id(
             "cognitive-change-event",
-            str(proposed["candidate_id"]) + "|" + action + "|" + "|".join(sorted(set(later))),
+            str(proposed["candidate_id"]) + "|" + action + "|" + "|".join(gate["evidence_episode_ids"]),
         ),
         "event": "activated" if action == "activate" else "proposal_rolled_back",
     }
@@ -1546,11 +1782,16 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
     if candidate.get("propose") is not True:
         return
     current = DIRECT.read_optional_json(supervisor / "active-cognitive-overlay.json")
-    if current and current.get("status") in {"active", "promoted"} and current.get("replacement_text"):
+    if DIRECT.cognitive_overlay_is_current(current):
         return
     proposed_path = supervisor / "proposed-cognitive-overlay.json"
     proposed = DIRECT.read_optional_json(proposed_path)
-    if proposed and proposed.get("status") == "proposed" and proposed.get("replacement_text"):
+    if (
+        proposed
+        and proposed.get("status") == "proposed"
+        and proposed.get("replacement_text")
+        and artifact_is_unexpired(proposed)
+    ):
         return
     target = str(candidate.get("target") or "")
     operation = str(candidate.get("operation") or "")
@@ -1558,24 +1799,34 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
     replacement_text = str(candidate.get("replacement_text") or "").strip()
     evidence_ids = [str(value) for value in candidate.get("evidence_episode_ids", [])]
     episode_ids = cognitive_evidence_ids(supervisor)
-    known_episode_ids = set(episode_ids)
     if target != "core_prompt" or operation != "replace":
         return
+    gate = evidence_gate(
+        supervisor,
+        evidence_ids,
+        expected_prompt_version=DIRECT.DIRECT_PROMPT_VERSION,
+        exact_prompt_version=True,
+        trade_only=False,
+    )
     if (
         not expected_old_text
         or not replacement_text
         or expected_old_text == replacement_text
         or len(expected_old_text) > 600
         or len(replacement_text) > 600
-        or len(set(evidence_ids)) < 1
-        or any(value not in known_episode_ids for value in evidence_ids)
+        or gate is None
+        or not substantive_text(candidate.get("expected_effect"))
+        or not substantive_text(candidate.get("evaluation_metric"))
+        or not substantive_text(candidate.get("rollback_condition"))
+        or not cognitive_candidate_is_general(expected_old_text, replacement_text)
     ):
         return
     candidate_id = str(candidate.get("candidate_id") or stable_id(
         "cognitive-change", target + "|" + expected_old_text + "|" + replacement_text
     ))
     value = {
-        "schema_version": "glitch.hermes.cognitive_overlay.v1",
+        "schema_version": "glitch.hermes.cognitive_overlay.v2",
+        "gate_version": DIRECT.COGNITIVE_GATE_VERSION,
         "candidate_id": candidate_id,
         "recorded_utc": utc_now(),
         "baseline_episode_count": len(episode_ids),
@@ -1585,13 +1836,16 @@ def activate_cognitive_candidate(record: dict[str, Any], supervisor: Path) -> No
         "expected_old_text": expected_old_text,
         "expected_old_sha256": hashlib.sha256(expected_old_text.encode("utf-8")).hexdigest(),
         "replacement_text": replacement_text,
-        "evidence_episode_ids": evidence_ids,
+        "evidence_episode_ids": gate["evidence_episode_ids"],
+        "proposal_evidence": gate,
         "expected_effect": candidate.get("expected_effect"),
         "evaluation_metric": candidate.get("evaluation_metric"),
         "rollback_condition": candidate.get("rollback_condition"),
         "status": "proposed",
+        "expires_utc": expires_utc(COGNITIVE_PROPOSAL_TTL_DAYS),
         "activation_scope": "configured_glitch_scope",
         "decision_prompt_version": DIRECT.DIRECT_PROMPT_VERSION,
+        "auto_install": False,
     }
     value["change_event_id"] = stable_id("cognitive-change-event", candidate_id + "|proposed")
     value["event"] = "proposed"
@@ -1905,7 +2159,7 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
         all_evidence = cognitive_evidence(supervisor)
         current_evidence = [
             row for row in all_evidence
-            if str(row.get("prompt_version") or "") == DIRECT.DIRECT_PROMPT_VERSION
+            if DIRECT.base_prompt_version(row.get("prompt_version")) == DIRECT.DIRECT_PROMPT_VERSION
         ]
         episode_ids = [str(row["episode_id"]) for row in current_evidence]
         reviewed_ids = {
