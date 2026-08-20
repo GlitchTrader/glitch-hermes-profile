@@ -106,11 +106,36 @@ def test_entry_context_uses_the_selected_instruments_price_and_economics(tmp_pat
             "quantity": 1,
             "take_profit_1": 5010,
             "snapshot_hash": "snapshot-1",
+            "decision_audit": {
+                "decisive_evidence": (
+                    "SELECTION_EV=direction=LONG;entry=5000;stop=4995;target=5010;"
+                    "risk_points=5;reward_points=10;friction_points=0;"
+                    "breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
+                    "now_ev=POSITIVE;wait_price=5001;wait_ev=NEGATIVE;decisive_reason=fixture"
+                )
+            },
         },
         None,
     )
     assert context["decision_reference_price"] == 5000
     assert captured == {"reference_price": 5000, "economics": {"point_value_usd": 5}}
+    assert context["selection_ev_arithmetic"]["status"] == "reconciled"
+
+
+def test_selection_ev_arithmetic_mismatch_is_audit_only() -> None:
+    audit = LEARNING.selection_ev_arithmetic_audit({
+        "decisive_evidence": (
+            "SELECTION_EV=direction=LONG;entry=7740;stop=7737.5;target=7746;"
+            "risk_points=2.5;reward_points=6;friction_points=0.25;"
+            "breakeven_target_first=0.50;estimated_target_first_range=55-65%;"
+            "now_ev=POSITIVE;wait_price=7741;wait_ev=NEGATIVE;decisive_reason=fixture"
+        )
+    })
+
+    assert audit["status"] == "mismatch"
+    assert audit["effect"] == "audit_only_no_execution_effect"
+    assert audit["deterministic_breakeven_target_first"] == 0.32352941
+    assert audit["absolute_error_percentage_points"] == 17.6471
 
 
 def test_completed_bar_observation_uses_authoritative_last_completed_bar() -> None:
@@ -157,12 +182,17 @@ def test_compact_episode_preserves_prompt_and_opportunity_identity() -> None:
         "instrument_point_value_usd": 2,
         "instrument_tick_size": 0.25,
         "entry_range_supersession": {"favorable_supersession": True},
+        "selection_ev_arithmetic": {
+            "status": "mismatch",
+            "effect": "audit_only_no_execution_effect",
+        },
         "prior_cognition": {"source_cycle_id": "prior"},
     })
     assert compact["prompt_version"] == "prompt-v2"
     assert compact["opportunity_group_id"] == "group-1"
     assert compact["correlated_episode_ids"] == ["episode-1", "episode-2"]
     assert compact["instrument_point_value_usd"] == 2
+    assert compact["selection_ev_arithmetic"]["status"] == "mismatch"
     assert "prior" in compact["prior_cognition"]
 
 

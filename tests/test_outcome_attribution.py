@@ -116,6 +116,15 @@ def build_reconciliation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "point_value_usd=2|tick_size=0.25"
             ),
         },
+        {
+            "recorded_utc": exit_utc.isoformat().replace("+00:00", "Z"),
+            "intent_id": intent_id,
+            "code": "master_exit_fill_observed",
+            "message": (
+                "account=Master|contract=MNQ 09-26|fill=102|signed_quantity=-1|"
+                "execution_id=native-exit-master"
+            ),
+        },
     ])
     decision_root.mkdir(parents=True)
     (decision_root / "cycle-1.json").write_text(json.dumps({
@@ -244,6 +253,7 @@ def test_reconcile_uses_native_fallback_and_keeps_missing_follower_unknown(
     assert outcome["origin"] == "ai"
     assert outcome["master_learning_eligible"] is True
     assert outcome["learning_eligible"] is True
+    assert outcome["native_outcome_reconciliation"]["status"] == "reconciled"
     assert outcome["attribution_status"] == "complete"
     account_outcomes = {row["account"]: row for row in outcome["account_outcomes"]}
     assert set(account_outcomes) == {"Master", "FollowerA", "FollowerB"}
@@ -260,6 +270,51 @@ def test_reconcile_uses_native_fallback_and_keeps_missing_follower_unknown(
         "status": "follower_protection_evidence_unknown",
         "learning_role": "replication_only",
     }]
+
+
+def test_reconcile_quarantines_trade_ledger_exit_that_conflicts_with_native_terminal(
+    tmp_path: Path,
+) -> None:
+    glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
+    executions = [
+        json.loads(line)
+        for line in (glitch_data / "intents" / "executions.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    terminal = next(row for row in executions if row["code"] == "master_exit_fill_observed")
+    terminal["code"] = "master_stop_exit_fill_observed"
+    terminal["recorded_utc"] = "2026-08-03T12:51:00Z"
+    terminal["message"] = (
+        "account=Master|contract=MNQ 09-26|fill=99|signed_quantity=-1|"
+        "execution_id=native-stop-master|entry=100|point_value_usd=2|realized_pnl_usd=-2"
+    )
+    write_jsonl(glitch_data / "intents" / "executions.jsonl", executions)
+
+    outcome = RECONCILER.reconcile(
+        glitch_data, None, output_path, decision_root=decision_root
+    )[0]
+
+    assert outcome["master_learning_eligible"] is False
+    assert outcome["learning_eligible"] is False
+    assert outcome["master_attribution_status"] == "native_outcome_unreconciled"
+    assert outcome["native_outcome_reconciliation"]["status"] == "quarantined"
+    assert set(outcome["native_outcome_reconciliation"]["discrepancies"]) >= {
+        "native_exit_price_mismatch",
+        "native_close_kind_mismatch",
+        "native_realized_pnl_mismatch",
+    }
+
+
+def test_close_kind_accepts_native_compact_stop_and_target_roles() -> None:
+    assert RECONCILER.infer_close_kind({
+        "exit_type": "TP",
+        "exit_signal": "GL1-GABC-HT0-L1",
+    }) == "target"
+    assert RECONCILER.infer_close_kind({
+        "exit_type": "SL",
+        "exit_signal": "GL1-GABC-HS0-L1",
+    }) == "stop"
 
 
 def test_manual_master_trade_preserves_snapshot_and_ai_comparison(tmp_path: Path) -> None:

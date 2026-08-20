@@ -28,6 +28,8 @@ def episode(episode_id: str, group_id: str, session_date: str, prompt_version: s
         "prompt_version": prompt_version,
         "opportunity_group_id": group_id,
         "evidence_context": {"session_date_et": session_date, "session_phase": "observed"},
+        "master_learning_eligible": True,
+        "native_outcome_reconciliation_status": "reconciled",
     }
 
 
@@ -182,6 +184,35 @@ def test_activation_and_distribution_require_new_exactly_attributed_master_evide
     assert dossiers[0]["status"] == "human_review_required"
     assert dossiers[0]["auto_install"] is False
     assert dossiers[0]["validation_scope"] == "single_installation_local"
+
+
+def test_unreconciled_trade_episode_cannot_activate_a_lesson(tmp_path) -> None:
+    supervisor = tmp_path / "supervisor"
+    supervisor.mkdir()
+    discovery = [
+        episode("idea-1", "group-1", "2026-08-15", DIRECT.DIRECT_PROMPT_VERSION),
+        episode("idea-2", "group-2", "2026-08-16", DIRECT.DIRECT_PROMPT_VERSION),
+    ]
+    write_rows(supervisor / "decision-episodes.jsonl", discovery)
+    LEARNING.activate_cognitive_candidate(candidate(["idea-1", "idea-2"]), supervisor)
+
+    reconciled = episode(
+        "trade-1", "trade-group-1", "2026-08-17", DIRECT.DIRECT_PROMPT_VERSION
+    )
+    quarantined = episode(
+        "trade-2", "trade-group-2", "2026-08-18", DIRECT.DIRECT_PROMPT_VERSION
+    )
+    quarantined["master_learning_eligible"] = False
+    quarantined["native_outcome_reconciliation_status"] = "quarantined"
+    write_rows(supervisor / "trade-episodes.jsonl", [reconciled, quarantined])
+
+    assert LEARNING.trade_evidence_ids(supervisor) == ["trade-1"]
+    LEARNING.apply_cognitive_decision(
+        decision("candidate-1", "activate", ["trade-1", "trade-2"]),
+        supervisor,
+        LEARNING.cognitive_evidence_ids(supervisor),
+    )
+    assert not (supervisor / "active-cognitive-overlay.json").exists()
 
 
 def test_expired_or_legacy_overlay_cannot_change_prompt_or_prompt_identity() -> None:

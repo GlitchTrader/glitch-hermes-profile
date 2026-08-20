@@ -316,6 +316,52 @@ def market_evidence_context(candidate: dict[str, Any], decision_utc: Any) -> dic
     return {key: item for key, item in value.items() if item is not None}
 
 
+def selection_ev_arithmetic_audit(decision_audit: Any) -> dict[str, Any]:
+    """Derive break-even arithmetic for evidence only; never alter an intent."""
+    result: dict[str, Any] = {
+        "schema_version": "glitch.hermes.selection_ev_arithmetic.v1",
+        "status": "unavailable",
+        "effect": "audit_only_no_execution_effect",
+        "formula": "(risk_points + friction_points) / (risk_points + reward_points)",
+    }
+    if not isinstance(decision_audit, dict):
+        result["reason"] = "decision_audit_missing"
+        return result
+    evidence = str(decision_audit.get("decisive_evidence") or "")
+    match = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", evidence)
+    if not match:
+        result["reason"] = "selection_ev_missing"
+        return result
+    fields = DIRECT._selection_ev_fields(match.group(1))
+    risk = DIRECT._first_unsigned_number(fields.get("risk_points"))
+    reward = DIRECT._first_unsigned_number(fields.get("reward_points"))
+    friction = DIRECT._first_unsigned_number(fields.get("friction_points"))
+    declared = DIRECT._first_unsigned_number(fields.get("breakeven_target_first"))
+    if declared is not None and ("%" in fields.get("breakeven_target_first", "") or declared > 1):
+        declared /= 100
+    if (
+        risk is None or reward is None or friction is None or declared is None
+        or risk <= 0 or reward <= 0 or friction < 0 or not 0 <= declared <= 1
+    ):
+        result["reason"] = "selection_ev_numeric_inputs_unavailable"
+        return result
+    deterministic = (risk + friction) / (risk + reward)
+    error = abs(declared - deterministic)
+    result.update({
+        "status": "reconciled" if error <= 0.01 else "mismatch",
+        "inputs": {
+            "risk_points": risk,
+            "reward_points": reward,
+            "friction_points": friction,
+        },
+        "declared_breakeven_target_first": declared,
+        "deterministic_breakeven_target_first": round(deterministic, 8),
+        "absolute_error_percentage_points": round(error * 100, 4),
+        "tolerance_percentage_points": 1.0,
+    })
+    return result
+
+
 def entry_decision_context(
     glitch_data: Path,
     outcome: dict[str, Any],
@@ -413,6 +459,9 @@ def entry_decision_context(
             "reason": entry_intent.get("reason"),
             "decision_audit": entry_intent.get("decision_audit"),
         },
+        "selection_ev_arithmetic": selection_ev_arithmetic_audit(
+            entry_intent.get("decision_audit")
+        ),
         "pre_entry": book.get("position_building_context"),
         "decision_reference_price": decision_reference_price,
         "evidence_context": market_evidence_context(selected_candidate, entry_intent.get("created_utc")),
@@ -589,6 +638,7 @@ def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[
                 "master_learning_eligible", "evidence", "snapshot_reference", "ai_comparison",
                 "decision_geometry", "native_geometry", "execution_diagnostics",
                 "normalized_outcome", "forecast_outcome", "attribution",
+                "native_outcome_reconciliation",
             )
         }
         evidence.append({
@@ -873,6 +923,9 @@ def collect_decision_episodes(
                 ),
                 "reason": intent.get("reason"),
                 "decision_audit": intent.get("decision_audit"),
+                "selection_ev_arithmetic": selection_ev_arithmetic_audit(
+                    intent.get("decision_audit")
+                ),
                 "prior_cognition": prior_cognition,
                 "pre_decision_state": {
                     "position": master,
@@ -1171,6 +1224,12 @@ def attach_fact_envelopes(
             "facts": facts,
             "facts_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         }
+        if isinstance(master_outcome, dict):
+            reconciliation = master_outcome.get("native_outcome_reconciliation")
+            value["master_learning_eligible"] = master_outcome.get("master_learning_eligible") is True
+            value["native_outcome_reconciliation_status"] = (
+                reconciliation.get("status") if isinstance(reconciliation, dict) else None
+            )
         if prompt_version and decision_utc and instrument and action:
             value.update({
                 "decision_utc": decision_utc,
@@ -1237,6 +1296,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
         "instrument", "action", "prompt_version", "cognitive_bundle_hash",
         "opportunity_group_id", "correlated_episode_ids", "instrument_point_value_usd",
         "instrument_tick_size", "entry_range_supersession", "reason", "evidence_kind", "classification",
+        "master_learning_eligible", "native_outcome_reconciliation_status",
         "entry_assessment", "exit_assessment", "what_went_well", "what_went_wrong",
         "geometry_assessment", "management_assessment", "quantity_assessment",
         "market_behavior", "lesson_candidates", "uncertainties", "proposed_geometry",
@@ -1252,6 +1312,9 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
     audit = row.get("decision_audit")
     if isinstance(audit, dict):
         common["decision_audit"] = compact_decision_audit(audit)
+    selection_ev = row.get("selection_ev_arithmetic")
+    if isinstance(selection_ev, dict):
+        common["selection_ev_arithmetic"] = selection_ev
     pre_decision = row.get("pre_decision_state")
     if isinstance(pre_decision, dict):
         common["pre_decision_state"] = compact_json_fragment(pre_decision, 6_000)
@@ -1282,7 +1345,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
                 "decision_audit", "master_realized_pnl_usd", "master_attribution_status",
                 "master_learning_eligible", "decision_geometry", "native_geometry",
                 "execution_diagnostics", "normalized_outcome", "forecast_outcome",
-                "attribution",
+                "attribution", "native_outcome_reconciliation",
             )
             if isinstance(master_outcome, dict) and key in master_outcome
         }
@@ -1294,6 +1357,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
                 "intent_id", "master_account", "snapshot_hash", "rationale",
                 "decision_reference_price", "actual_entry_vwap", "selected_plan",
                 "native_entry_facts", "normalized_outcome", "canonical_outcome_layers",
+                "selection_ev_arithmetic",
             ):
                 if key not in entry_context:
                     continue
@@ -1361,6 +1425,7 @@ def compact_planning_episode(row: dict[str, Any]) -> dict[str, Any]:
         "candidate_forward_summaries": 3_000,
         "prior_cognition": 2_000,
         "counterfactual_pnl": 1_200,
+        "selection_ev_arithmetic": 1_200,
     }.items():
         if key in row:
             compact[key] = compact_json_fragment(row[key], max_chars)
@@ -1402,10 +1467,26 @@ def fit_planning_evidence(
             raise ValueError("learning_prompt_too_large:planning:single_review")
 
 
+def trade_episode_is_learning_eligible(row: dict[str, Any]) -> bool:
+    reconciliation_status = row.get("native_outcome_reconciliation_status")
+    eligible = row.get("master_learning_eligible") is True
+    if reconciliation_status is None:
+        facts = row.get("facts") if isinstance(row.get("facts"), dict) else {}
+        outcome = facts.get("master_outcome") if isinstance(facts.get("master_outcome"), dict) else {}
+        reconciliation = outcome.get("native_outcome_reconciliation")
+        reconciliation_status = (
+            reconciliation.get("status") if isinstance(reconciliation, dict) else None
+        )
+        eligible = outcome.get("master_learning_eligible") is True
+    return eligible and reconciliation_status == "reconciled"
+
+
 def cognitive_evidence(supervisor: Path) -> list[dict[str, Any]]:
-    rows = read_jsonl(supervisor / "trade-episodes.jsonl") + read_jsonl(
-        supervisor / "decision-episodes.jsonl"
-    )
+    trade_rows = [
+        row for row in read_jsonl(supervisor / "trade-episodes.jsonl")
+        if trade_episode_is_learning_eligible(row)
+    ]
+    rows = trade_rows + read_jsonl(supervisor / "decision-episodes.jsonl")
     rows.sort(key=lambda row: str(row.get("recorded_utc") or row.get("decision_utc") or ""))
     return [row for row in rows if row.get("episode_id")]
 
@@ -1500,7 +1581,7 @@ def trade_evidence_ids(supervisor: Path) -> list[str]:
     return [
         str(row.get("episode_id"))
         for row in read_jsonl(supervisor / "trade-episodes.jsonl")
-        if row.get("episode_id")
+        if row.get("episode_id") and trade_episode_is_learning_eligible(row)
     ]
 
 
@@ -2154,7 +2235,10 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
             checkpoint_state(state_path, state)
         result["debriefed"] = len(new_outcomes)
     else:
-        episodes = read_jsonl(supervisor / "trade-episodes.jsonl")
+        episodes = [
+            row for row in read_jsonl(supervisor / "trade-episodes.jsonl")
+            if trade_episode_is_learning_eligible(row)
+        ]
         all_evidence = cognitive_evidence(supervisor)
         current_evidence = [
             row for row in all_evidence
