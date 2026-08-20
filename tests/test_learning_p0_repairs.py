@@ -138,6 +138,28 @@ def test_selection_ev_arithmetic_mismatch_is_audit_only() -> None:
     assert audit["absolute_error_percentage_points"] == 17.6471
 
 
+def test_selection_ev_probability_and_verdict_mismatch_is_audit_only() -> None:
+    audit = LEARNING.selection_ev_arithmetic_audit(
+        {
+            "decisive_evidence": (
+                "SELECTION_EV=direction=LONG;entry=100;stop=95;target=110;"
+                "risk_points=5;reward_points=10;friction_points=0;"
+                "breakeven_target_first=0.333;estimated_target_first_range=20-30%;"
+                "now_ev=POSITIVE;wait_price=101;wait_ev=NEGATIVE;decisive_reason=fixture"
+            )
+        },
+        {"event": "STOP_BEFORE_PRIMARY_TARGET", "probability": 0.75},
+    )
+
+    assert audit["status"] == "mismatch"
+    assert audit["effect"] == "audit_only_no_execution_effect"
+    assert audit["arithmetic_status"] == "reconciled"
+    assert audit["forecast_range_status"] == "reconciled"
+    assert audit["range_vs_break_even"] == "below_break_even"
+    assert audit["expected_now_ev_from_range"] == "NEGATIVE"
+    assert audit["now_ev_status"] == "mismatch"
+
+
 def test_completed_bar_observation_uses_authoritative_last_completed_bar() -> None:
     frame = {
         "minute_id": "20260817T0531Z",

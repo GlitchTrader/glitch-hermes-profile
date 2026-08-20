@@ -389,6 +389,8 @@ def test_canonical_outcome_layers_normalize_first_touch_and_forecast() -> None:
         "instrument": "MNQ",
         "account": "Master",
         "quantity": 1,
+        "entry_range_low": 19999.5,
+        "entry_range_high": 20000.5,
         "stop_loss": 19990.0,
         "take_profit_1": 20020.0,
         "forecast": {
@@ -438,6 +440,14 @@ def test_canonical_outcome_layers_normalize_first_touch_and_forecast() -> None:
     assert layers["normalized_outcome"]["first_touch"] == "STOP_FIRST"
     assert layers["forecast_outcome"]["observed"] is True
     assert layers["forecast_outcome"]["brier_score"] == 0.5625
+    assert layers["decision_geometry"]["planned_entry_range_low"] == 19999.5
+    assert layers["decision_geometry"]["planned_entry_range_high"] == 20000.5
+    fill_quality = layers["execution_diagnostics"]["intent_fidelity"]["entry_range_fill_quality"]
+    assert fill_quality["status"] == "outside_declared_range"
+    assert fill_quality["range_relation"] == "adverse_beyond_range"
+    assert fill_quality["deviation_points"] == 0.5
+    assert fill_quality["deviation_ticks"] == 2.0
+    assert fill_quality["effect"] == "observation_only_no_execution_effect"
     assert layers["execution_diagnostics"]["intent_fidelity"]["timing"][
         "full_protection_acknowledgement_status"
     ] == "unavailable_native_receipt"

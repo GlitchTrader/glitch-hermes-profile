@@ -316,8 +316,25 @@ def market_evidence_context(candidate: dict[str, Any], decision_utc: Any) -> dic
     return {key: item for key, item in value.items() if item is not None}
 
 
-def selection_ev_arithmetic_audit(decision_audit: Any) -> dict[str, Any]:
-    """Derive break-even arithmetic for evidence only; never alter an intent."""
+def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
+    text = str(value or "").strip()
+    numbers = re.findall(r"(?:\d+(?:\.\d*)?|\.\d+)", text)
+    if len(numbers) < 2:
+        return None
+    low, high = sorted(float(number) for number in numbers[:2])
+    if "%" in text or high > 1:
+        low /= 100
+        high /= 100
+    if not 0 <= low <= high <= 1:
+        return None
+    return low, high
+
+
+def selection_ev_arithmetic_audit(
+    decision_audit: Any,
+    forecast: Any = None,
+) -> dict[str, Any]:
+    """Derive probability and EV consistency evidence; never alter an intent."""
     result: dict[str, Any] = {
         "schema_version": "glitch.hermes.selection_ev_arithmetic.v1",
         "status": "unavailable",
@@ -347,8 +364,49 @@ def selection_ev_arithmetic_audit(decision_audit: Any) -> dict[str, Any]:
         return result
     deterministic = (risk + friction) / (risk + reward)
     error = abs(declared - deterministic)
+    arithmetic_status = "reconciled" if error <= 0.01 else "mismatch"
+    estimated_range = _selection_ev_probability_range(
+        fields.get("estimated_target_first_range")
+    )
+    if estimated_range is None:
+        range_relation = None
+    elif estimated_range[0] > deterministic + 0.01:
+        range_relation = "above_break_even"
+    elif estimated_range[1] < deterministic - 0.01:
+        range_relation = "below_break_even"
+    else:
+        range_relation = "straddles_break_even"
+
+    target_first_probability = None
+    if (
+        isinstance(forecast, dict)
+        and forecast.get("event") == "STOP_BEFORE_PRIMARY_TARGET"
+        and isinstance(forecast.get("probability"), (int, float))
+        and 0 <= float(forecast["probability"]) <= 1
+    ):
+        target_first_probability = 1 - float(forecast["probability"])
+    forecast_range_status = "unavailable"
+    if estimated_range is not None and target_first_probability is not None:
+        forecast_range_status = (
+            "reconciled"
+            if estimated_range[0] - 0.01 <= target_first_probability <= estimated_range[1] + 0.01
+            else "mismatch"
+        )
+
+    declared_now_ev = str(fields.get("now_ev") or "").strip().upper()
+    expected_now_ev = {
+        "above_break_even": "POSITIVE",
+        "below_break_even": "NEGATIVE",
+        "straddles_break_even": "UNCERTAIN",
+    }.get(range_relation)
+    now_ev_status = (
+        "reconciled"
+        if expected_now_ev is not None and declared_now_ev == expected_now_ev
+        else "mismatch" if expected_now_ev is not None and declared_now_ev else "unavailable"
+    )
+    component_statuses = (arithmetic_status, forecast_range_status, now_ev_status)
     result.update({
-        "status": "reconciled" if error <= 0.01 else "mismatch",
+        "status": "mismatch" if "mismatch" in component_statuses else "reconciled",
         "inputs": {
             "risk_points": risk,
             "reward_points": reward,
@@ -358,6 +416,20 @@ def selection_ev_arithmetic_audit(decision_audit: Any) -> dict[str, Any]:
         "deterministic_breakeven_target_first": round(deterministic, 8),
         "absolute_error_percentage_points": round(error * 100, 4),
         "tolerance_percentage_points": 1.0,
+        "arithmetic_status": arithmetic_status,
+        "estimated_target_first_range": (
+            {"low": estimated_range[0], "high": estimated_range[1]}
+            if estimated_range is not None else None
+        ),
+        "target_first_probability_from_forecast": (
+            round(target_first_probability, 8)
+            if target_first_probability is not None else None
+        ),
+        "forecast_range_status": forecast_range_status,
+        "range_vs_break_even": range_relation,
+        "declared_now_ev": declared_now_ev or None,
+        "expected_now_ev_from_range": expected_now_ev,
+        "now_ev_status": now_ev_status,
     })
     return result
 
@@ -460,7 +532,7 @@ def entry_decision_context(
             "decision_audit": entry_intent.get("decision_audit"),
         },
         "selection_ev_arithmetic": selection_ev_arithmetic_audit(
-            entry_intent.get("decision_audit")
+            entry_intent.get("decision_audit"), entry_intent.get("forecast")
         ),
         "pre_entry": book.get("position_building_context"),
         "decision_reference_price": decision_reference_price,
@@ -924,7 +996,7 @@ def collect_decision_episodes(
                 "reason": intent.get("reason"),
                 "decision_audit": intent.get("decision_audit"),
                 "selection_ev_arithmetic": selection_ev_arithmetic_audit(
-                    intent.get("decision_audit")
+                    intent.get("decision_audit"), intent.get("forecast")
                 ),
                 "prior_cognition": prior_cognition,
                 "pre_decision_state": {

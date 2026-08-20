@@ -11,6 +11,7 @@ unknown, not failure, and never erases master learning.
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -402,6 +403,54 @@ def normalized_outcome(account_outcome):
     }
 
 
+def entry_range_fill_quality(intent, fill_price, tick_size):
+    result = {
+        "schema_version": "glitch.hermes.entry_range_fill_quality.v1",
+        "status": "unavailable",
+        "effect": "observation_only_no_execution_effect",
+        "declared_entry_range_low": intent.get("entry_range_low"),
+        "declared_entry_range_high": intent.get("entry_range_high"),
+        "native_fill_price": fill_price,
+    }
+    try:
+        low = float(intent.get("entry_range_low"))
+        high = float(intent.get("entry_range_high"))
+        fill = float(fill_price)
+        tick = float(tick_size)
+    except (TypeError, ValueError):
+        result["reason"] = "entry_range_or_native_fill_unavailable"
+        return result
+    if not all(math.isfinite(value) for value in (low, high, fill, tick)) or low >= high or tick <= 0:
+        result["reason"] = "entry_range_or_tick_size_invalid"
+        return result
+
+    if low <= fill <= high:
+        relation = "inside_declared_range"
+        deviation_points = 0.0
+    elif fill < low:
+        relation = (
+            "favorable_beyond_range"
+            if intent.get("action") == "ENTER_LONG" else "adverse_beyond_range"
+        )
+        deviation_points = low - fill
+    else:
+        relation = (
+            "adverse_beyond_range"
+            if intent.get("action") == "ENTER_LONG" else "favorable_beyond_range"
+        )
+        deviation_points = fill - high
+    result.update({
+        "status": (
+            "inside_declared_range"
+            if relation == "inside_declared_range" else "outside_declared_range"
+        ),
+        "range_relation": relation,
+        "deviation_points": round(deviation_points, 8),
+        "deviation_ticks": round(deviation_points / tick, 4),
+    })
+    return result
+
+
 def intent_fidelity(intent, account_outcome, submitted, bracket_event, market_reference, events):
     submit_fields = message_fields(submitted.get("message")) if isinstance(submitted, dict) else {}
     bracket_fields = message_fields(bracket_event.get("message")) if isinstance(bracket_event, dict) else {}
@@ -452,6 +501,7 @@ def intent_fidelity(intent, account_outcome, submitted, bracket_event, market_re
         "submission_price": _float(bracket_fields, "fill"),
         "native_fill_price": fill_price,
         "signed_adverse_drift_ticks": adverse_drift_ticks,
+        "entry_range_fill_quality": entry_range_fill_quality(intent, fill_price, tick_size),
         "timing": {
             "decision_to_submission_ms": _duration_ms(
                 market_reference.get("created_utc") if isinstance(market_reference, dict) else None,
@@ -521,6 +571,8 @@ def canonical_outcome_layers(intent, account_outcome, submitted, bracket_event, 
             "instrument": intent.get("instrument"),
             "quantity": intent.get("quantity"),
             "decision_price": market_reference.get("current_price") if isinstance(market_reference, dict) else None,
+            "planned_entry_range_low": intent.get("entry_range_low"),
+            "planned_entry_range_high": intent.get("entry_range_high"),
             "planned_stop": intent.get("stop_loss"),
             "planned_target": intent.get("take_profit_1"),
             "planned_stop_2": intent.get("stop_loss_2"),
