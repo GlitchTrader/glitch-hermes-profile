@@ -421,7 +421,7 @@ def test_trigger_review_accepts_natural_instrument_status_prose() -> None:
         elif field == "SELECTION_ACTION":
             value = "NOTHING"
         lines.append(f"{field}={value}")
-    lines.insert(-1, "SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12 points;reward_points=12 pts;friction_points=negligible;breakeven_target_first=50%;estimated_target_first_range=35-45%;now_ev=NEGATIVE;wait_price=5012;wait_ev=NEGATIVE;decisive_reason=fixture")
+    lines.insert(-1, "SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12 points;reward_points=12 pts;friction_points=0;breakeven_target_first=50%;estimated_target_first_range=35-45%;now_ev=NEGATIVE;wait_price=5012;wait_ev=NEGATIVE;decisive_reason=fixture")
 
     DIRECT.validate_trigger_review(
         "\n".join(lines), {"M2K", "MES", "MNQ"}, "MNQ", "NOTHING", 0
@@ -439,7 +439,7 @@ def test_trigger_review_rejects_failed_status_without_invalidation_or_contradict
         elif field == "SELECTION_ACTION":
             value = "NOTHING"
         lines.append(f"{field}={value}")
-    lines.insert(-1, "SELECTION_EV=direction=SHORT;entry=100;stop=105;target=90;risk_points=5;reward_points=10;friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;now_ev=NEGATIVE;wait_price=95;wait_ev=NEGATIVE;decisive_reason=fixture")
+    lines.insert(-1, "SELECTION_EV=direction=SHORT;entry=100;stop=105;target=90;risk_points=5;reward_points=10;friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=20-30%;now_ev=NEGATIVE;wait_price=95;wait_ev=NEGATIVE;decisive_reason=fixture")
 
     try:
         DIRECT.validate_trigger_review("\n".join(lines), {"MNQ"}, "MNQ", "NOTHING", 0)

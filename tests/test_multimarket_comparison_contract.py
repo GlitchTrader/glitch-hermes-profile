@@ -29,7 +29,7 @@ def comparison(action="NOTHING", selected="MNQ"):
         "RANKING=MNQ > MES > M2K",
         f"SELECTION_INSTRUMENT={selected}",
         f"SELECTION_ACTION={action}",
-        f"SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range=55-65%;now_ev={'POSITIVE' if action == 'ENTER_LONG' else 'NEGATIVE'};wait_price=5008;wait_ev=NEGATIVE;decisive_reason=fixture",
+        f"SELECTION_EV=direction=LONG;entry=5000;stop=4988;target=5012;risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range={'55-65%' if action == 'ENTER_LONG' else '35-45%'};now_ev={'POSITIVE' if action == 'ENTER_LONG' else 'NEGATIVE'};wait_price=5008;wait_ev=NEGATIVE;decisive_reason=fixture",
         "SELECTION_REASON=the complete comparison supports this bounded choice",
     ])
     return "\n".join(lines)

@@ -272,7 +272,7 @@ def test_reconcile_uses_native_fallback_and_keeps_missing_follower_unknown(
     }]
 
 
-def test_reconcile_quarantines_trade_ledger_exit_that_conflicts_with_native_terminal(
+def test_reconcile_keeps_native_master_truth_when_derived_ledger_conflicts(
     tmp_path: Path,
 ) -> None:
     glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
@@ -295,15 +295,156 @@ def test_reconcile_quarantines_trade_ledger_exit_that_conflicts_with_native_term
         glitch_data, None, output_path, decision_root=decision_root
     )[0]
 
-    assert outcome["master_learning_eligible"] is False
-    assert outcome["learning_eligible"] is False
-    assert outcome["master_attribution_status"] == "native_outcome_unreconciled"
-    assert outcome["native_outcome_reconciliation"]["status"] == "quarantined"
-    assert set(outcome["native_outcome_reconciliation"]["discrepancies"]) >= {
-        "native_exit_price_mismatch",
-        "native_close_kind_mismatch",
-        "native_realized_pnl_mismatch",
+    assert outcome["master_learning_eligible"] is True
+    assert outcome["learning_eligible"] is True
+    assert outcome["master_attribution_status"] == "complete"
+    reconciliation = outcome["native_outcome_reconciliation"]
+    assert reconciliation["status"] == "reconciled"
+    assert reconciliation["discrepancies"] == []
+    assert reconciliation["derived_trade_ledger"]["status"] == "mismatch"
+    assert set(reconciliation["derived_trade_ledger"]["discrepancies"]) >= {
+        "exit_price_mismatch",
+        "exit_time_mismatch",
+        "close_kind_mismatch",
     }
+    assert outcome["master_realized_pnl_usd"] == -2
+    assert outcome["account_outcomes"][0]["trade_evidence_source"] == (
+        "intent_bound_native_execution_receipts"
+    )
+
+
+def test_reconcile_restores_native_master_when_derived_ledger_is_missing(
+    tmp_path: Path,
+) -> None:
+    glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
+    ledger = (glitch_data / "TradeLedger.tsv").read_text(encoding="utf-8").splitlines()
+    (glitch_data / "TradeLedger.tsv").write_text(
+        "\n".join(line for line in ledger if "\tMaster\t" not in line) + "\n",
+        encoding="utf-8",
+    )
+
+    outcome = RECONCILER.reconcile(
+        glitch_data, None, output_path, decision_root=decision_root
+    )[0]
+
+    assert outcome["master_learning_eligible"] is True
+    assert outcome["native_outcome_reconciliation"]["derived_trade_ledger"] == {
+        "status": "missing",
+        "effect": "diagnostic_only_no_master_learning_effect",
+    }
+    master = next(
+        row for row in outcome["account_outcomes"] if row["account"] == "Master"
+    )
+    assert master["trade_id"] == "native-receipt:intent-1"
+
+
+def test_management_counterfactual_is_sampled_and_observational() -> None:
+    entry = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
+    decision = entry + timedelta(minutes=5, seconds=30)
+    exit_utc = entry + timedelta(minutes=10)
+    snapshots = [(entry + timedelta(minutes=5), {
+        "accounts": [{
+            "account": "Master",
+            "positions": [{"instrument_root": "MNQ", "unrealized_pnl": 10}],
+        }],
+    })]
+    intents = {"hold-1": {
+        "intent_id": "hold-1",
+        "_cycle_id": "cycle-hold",
+        "created_utc": decision.isoformat().replace("+00:00", "Z"),
+        "account": "Master",
+        "instrument": "MNQ",
+        "action": "HOLD",
+        "reason": "fixture hold",
+    }}
+
+    counterfactuals = RECONCILER.management_intent_counterfactuals(
+        intents, snapshots, "Master", "MNQ", entry, exit_utc, -5
+    )
+    rows = counterfactuals["representative_decisions"]
+
+    assert counterfactuals["summary"]["total_decisions"] == 1
+    assert rows[0]["sampled_exit_then_pnl_usd_before_costs"] == 10
+    assert rows[0]["sampled_exit_then_advantage_usd"] == 15
+    assert counterfactuals["summary"]["effect"] == (
+        "informational_only_not_execution_or_strategy_gate"
+    )
+
+
+def test_managed_exit_receipt_is_attributed_to_the_open_entry_intent(
+    tmp_path: Path,
+) -> None:
+    glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
+    executions = [
+        json.loads(line)
+        for line in (glitch_data / "intents" / "executions.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    entry_utc = datetime(2026, 8, 3, 12, 50, 49, 100000, tzinfo=timezone.utc)
+    executions.insert(2, {
+        "recorded_utc": entry_utc.isoformat().replace("+00:00", "Z"),
+        "intent_id": "intent-1",
+        "code": "master_entry_fill_observed",
+        "message": (
+            "account=Master|contract=MNQ 09-26|fill=100|signed_quantity=1|"
+            "execution_id=native-entry-master|native_order=GL1-GABC-HME"
+        ),
+    })
+    terminal = next(row for row in executions if row["code"] == "master_exit_fill_observed")
+    terminal["intent_id"] = "managed-exit-intent"
+    terminal["message"] = (
+        "account=Master|contract=MNQ 09-26|fill=102|signed_quantity=-1|"
+        "execution_id=native-managed-exit|native_order=GL1-GDEF-HMX"
+    )
+    write_jsonl(glitch_data / "intents" / "executions.jsonl", executions)
+
+    outcome = RECONCILER.reconcile(
+        glitch_data, None, output_path, decision_root=decision_root
+    )[0]
+
+    assert outcome["intent_id"] == "intent-1"
+    assert outcome["native_outcome_reconciliation"]["status"] == "reconciled"
+    terminal_receipt = outcome["native_outcome_reconciliation"]["native_terminal_events"][0]
+    assert terminal_receipt["source_intent_id"] == "managed-exit-intent"
+    assert outcome["master_realized_pnl_usd"] == 4
+
+
+def test_native_master_quantity_contradiction_remains_quarantined(
+    tmp_path: Path,
+) -> None:
+    glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
+    executions = [
+        json.loads(line)
+        for line in (glitch_data / "intents" / "executions.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    executions.insert(2, {
+        "recorded_utc": "2026-08-03T12:50:49.100000Z",
+        "intent_id": "intent-1",
+        "code": "master_entry_fill_observed",
+        "message": (
+            "account=Master|contract=MNQ 09-26|fill=100|signed_quantity=1|"
+            "execution_id=native-entry-master"
+        ),
+    })
+    terminal = next(row for row in executions if row["code"] == "master_exit_fill_observed")
+    terminal["message"] = (
+        "account=Master|contract=MNQ 09-26|fill=102|signed_quantity=-2|"
+        "execution_id=native-exit-master|entry=100|point_value_usd=2|realized_pnl_usd=8"
+    )
+    write_jsonl(glitch_data / "intents" / "executions.jsonl", executions)
+
+    outcome = RECONCILER.reconcile(
+        glitch_data, None, output_path, decision_root=decision_root
+    )[0]
+
+    assert outcome["master_learning_eligible"] is False
+    assert outcome["native_outcome_reconciliation"]["status"] == "quarantined"
+    assert "native_entry_exit_quantity_mismatch" in (
+        outcome["native_outcome_reconciliation"]["discrepancies"]
+    )
 
 
 def test_close_kind_accepts_native_compact_stop_and_target_roles() -> None:

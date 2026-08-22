@@ -310,7 +310,7 @@ def valid_decision(route: str, account: str, action: str) -> dict:
         "RANKING=MNQ",
         "SELECTION_INSTRUMENT=MNQ",
         f"SELECTION_ACTION={action}",
-        f"SELECTION_EV=direction={'LONG' if action == 'ENTER_LONG' else 'SHORT'};entry=5000;stop={'4988' if action == 'ENTER_LONG' else '5012'};target={'5012' if action == 'ENTER_LONG' else '4988'};risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range=55-65%;now_ev={'NEGATIVE' if action == 'NOTHING' else 'POSITIVE'};wait_price={'5008' if action == 'ENTER_LONG' else '4992'};wait_ev=NEGATIVE;decisive_reason=scoped fixture",
+        f"SELECTION_EV=direction={'LONG' if action == 'ENTER_LONG' else 'SHORT'};entry=5000;stop={'4988' if action == 'ENTER_LONG' else '5012'};target={'5012' if action == 'ENTER_LONG' else '4988'};risk_points=12;reward_points=12;friction_points=0;breakeven_target_first=0.5;estimated_target_first_range={'35-45%' if action == 'NOTHING' else '55-65%'};now_ev={'NEGATIVE' if action == 'NOTHING' else 'POSITIVE'};wait_price={'5008' if action == 'ENTER_LONG' else '4992'};wait_ev=NEGATIVE;decisive_reason=scoped fixture",
         "SELECTION_REASON=scoped fixture",
     ])
     decision = {

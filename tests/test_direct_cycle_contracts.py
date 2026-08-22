@@ -584,7 +584,7 @@ def test_selection_ev_contract_rejects_positive_nothing() -> None:
         DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
 
-def test_selection_ev_audit_number_formatting_cannot_cancel_valid_decision() -> None:
+def test_selection_ev_requires_numeric_arithmetic_and_rejects_mismatch() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;"
         "risk_points=approximately 5 points (20 ticks);reward_points=10 pts;"
@@ -592,13 +592,46 @@ def test_selection_ev_audit_number_formatting_cannot_cancel_valid_decision() -> 
         "estimated_target_first_range=40-50%;now_ev=NEGATIVE;wait_price=105;"
         "wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    with pytest.raises(ValueError, match="selection_ev_numeric_invalid"):
+        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
     inconsistent_audit = value.replace(
+        "friction_points=not material",
+        "friction_points=0",
+    ).replace(
         "breakeven_target_first=about 33.3%",
         "breakeven_target_first=62% after qualitative discount",
     ).replace("now_ev=NEGATIVE", "now_ev=NEGATIVE (wait dominates)")
-    DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
+    with pytest.raises(ValueError, match="selection_ev_arithmetic_mismatch"):
+        DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
+
+
+def test_selection_ev_reconciles_forecast_range_and_verdict() -> None:
+    value = (
+        "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
+        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
+        "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
+    )
+    forecast = {
+        "event": "STOP_BEFORE_PRIMARY_TARGET",
+        "probability": 0.55,
+        "method": "fixture",
+        "confidence": 0.7,
+    }
+    DIRECT.validate_selection_ev(value, "ENTER_LONG", 0, "test", forecast)
+
+    with pytest.raises(ValueError, match="selection_ev_forecast_range_mismatch"):
+        DIRECT.validate_selection_ev(
+            value, "ENTER_LONG", 0, "test", {**forecast, "probability": 0.8}
+        )
+    with pytest.raises(ValueError, match="selection_ev_verdict_range_mismatch"):
+        DIRECT.validate_selection_ev(
+            value.replace("40-50%", "20-30%"),
+            "ENTER_LONG",
+            0,
+            "test",
+            {**forecast, "probability": 0.75},
+        )
 
 
 @pytest.mark.parametrize(
@@ -609,8 +642,8 @@ def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
     direction: str, target: float, wait_price: float
 ) -> None:
     value = (
-        f"direction={direction};entry=100;stop=95;target={target};risk_points=5;reward_points=10;"
-        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
+        f"direction={direction};entry=100;stop={95 if direction == 'LONG' else 105};target={target};risk_points=5;reward_points=10;"
+        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=20-30%;"
         f"now_ev=NEGATIVE;wait_price={wait_price};wait_ev=IMPROVES;decisive_reason=fixture"
     )
     with pytest.raises(ValueError, match="selection_ev_wait_consumes_target"):

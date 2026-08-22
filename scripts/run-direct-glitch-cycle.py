@@ -2367,6 +2367,7 @@ def validate_candidate_comparison(
     selected_instrument: str,
     action: str,
     index: int,
+    forecast: dict[str, Any] | None = None,
 ) -> None:
     """Require a complete, symmetric setup ledger before any intent is valid."""
     if not isinstance(text, str) or CANDIDATE_COMPARISON_MARKER not in text:
@@ -2417,7 +2418,9 @@ def validate_candidate_comparison(
         raise ValueError(f"candidate_comparison_selection_instrument_mismatch:{index}")
     if selection_action.group(1).upper() != action:
         raise ValueError(f"candidate_comparison_selection_action_mismatch:{index}")
-    validate_selection_ev(selection_ev.group(1), action, index, "candidate_comparison")
+    validate_selection_ev(
+        selection_ev.group(1), action, index, "candidate_comparison", forecast
+    )
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
             section_values[instrument_root(selected_instrument)]["NOISE_AND_GEOMETRY"],
@@ -2480,11 +2483,44 @@ def _first_unsigned_number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _selection_ev_probability(value: Any) -> float | None:
+    number = _first_unsigned_number(value)
+    if number is None:
+        return None
+    text = str(value or "")
+    if "%" in text or number > 1:
+        number /= 100
+    return number if 0 <= number <= 1 else None
+
+
+def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
+    numbers = re.findall(r"(?<![\d.])(?:\d+(?:[.,]\d*)?|[.,]\d+)", str(value or ""))
+    if len(numbers) != 2:
+        return None
+    try:
+        low, high = (float(number.replace(",", ".")) for number in numbers)
+    except ValueError:
+        return None
+    text = str(value or "")
+    if "%" in text or max(low, high) > 1:
+        low /= 100
+        high /= 100
+    if not all(math.isfinite(number) and 0 <= number <= 1 for number in (low, high)):
+        return None
+    return (low, high) if low <= high else None
+
+
 def _wait_claims_improvement(value: str) -> bool:
     return bool(re.search(r"(?i)\b(?:positive|improv\w*|better|dominates?)\b", value))
 
 
-def validate_selection_ev(value: str, action: str, index: int, source: str) -> None:
+def validate_selection_ev(
+    value: str,
+    action: str,
+    index: int,
+    source: str,
+    forecast: dict[str, Any] | None = None,
+) -> None:
     """Require a self-consistent EV conclusion without choosing the trade in code."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"selection_ev_missing:{index}:{source}")
@@ -2506,10 +2542,61 @@ def validate_selection_ev(value: str, action: str, index: int, source: str) -> N
     if action == "NOTHING" and verdict == "POSITIVE":
         raise ValueError(f"selection_ev_nothing_positive:{index}:{source}")
     direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields["direction"])
+    if not direction_match:
+        raise ValueError(f"selection_ev_direction_invalid:{index}:{source}")
+    direction = direction_match.group(1).upper()
+    if action == "ENTER_LONG" and direction != "LONG":
+        raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
+    if action == "ENTER_SHORT" and direction != "SHORT":
+        raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
+
+    risk = _first_unsigned_number(fields["risk_points"])
+    reward = _first_unsigned_number(fields["reward_points"])
+    friction = _first_unsigned_number(fields["friction_points"])
+    entry = _first_unsigned_number(fields["entry"])
+    stop = _first_unsigned_number(fields["stop"])
     target = _first_unsigned_number(fields["target"])
+    declared_breakeven = _selection_ev_probability(fields["breakeven_target_first"])
+    estimated_range = _selection_ev_probability_range(fields["estimated_target_first_range"])
+    if (
+        risk is None or risk <= 0
+        or reward is None or reward <= 0
+        or friction is None or friction < 0
+        or entry is None or stop is None or target is None
+        or declared_breakeven is None
+        or estimated_range is None
+    ):
+        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
+    geometry_risk = entry - stop if direction == "LONG" else stop - entry
+    geometry_reward = target - entry if direction == "LONG" else entry - target
+    if (
+        geometry_risk <= 0 or geometry_reward <= 0
+        or abs(risk - geometry_risk) > 0.02
+        or abs(reward - geometry_reward) > 0.02
+    ):
+        raise ValueError(f"selection_ev_geometry_mismatch:{index}:{source}")
+    computed_breakeven = (risk + friction) / (risk + reward)
+    if not math.isfinite(computed_breakeven) or not 0 <= computed_breakeven <= 1:
+        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
+    if abs(declared_breakeven - computed_breakeven) > 0.01:
+        raise ValueError(f"selection_ev_arithmetic_mismatch:{index}:{source}")
+
+    range_low, range_high = estimated_range
+    if isinstance(forecast, dict) and forecast.get("event") == FORECAST_EVENT_STOP_BEFORE_PRIMARY_TARGET:
+        probability = forecast.get("probability")
+        if isinstance(probability, (int, float)) and not isinstance(probability, bool):
+            target_first = 1 - float(probability)
+            if target_first < range_low - 0.02 or target_first > range_high + 0.02:
+                raise ValueError(f"selection_ev_forecast_range_mismatch:{index}:{source}")
+
+    if (
+        (verdict == "POSITIVE" and range_high < computed_breakeven - 0.005)
+        or (verdict == "NEGATIVE" and range_low > computed_breakeven + 0.005)
+    ):
+        raise ValueError(f"selection_ev_verdict_range_mismatch:{index}:{source}")
+
     wait_price = _first_unsigned_number(fields["wait_price"])
     if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields["wait_ev"]):
-        direction = direction_match.group(1).upper()
         consumes_target = (
             direction == "LONG" and wait_price >= target
         ) or (
@@ -2525,6 +2612,7 @@ def validate_trigger_review(
     selected_instrument: str,
     action: str,
     index: int,
+    forecast: dict[str, Any] | None = None,
 ) -> None:
     if not isinstance(text, str) or TRIGGER_REVIEW_MARKER not in text:
         raise ValueError(f"trigger_review_missing:{index}")
@@ -2546,7 +2634,9 @@ def validate_trigger_review(
     ev_match = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
     if not ev_match:
         raise ValueError(f"trigger_review_selection_ev_missing:{index}")
-    validate_selection_ev(ev_match.group(1), action, index, "trigger_review")
+    validate_selection_ev(
+        ev_match.group(1), action, index, "trigger_review", forecast
+    )
     status_value = values["PRIOR_TRIGGER_REVIEW"]
     allowed_statuses = {"HELD", "FAILED", "EXPIRED"}
     status = status_value.split(maxsplit=1)[0].rstrip(":.,;").upper()
@@ -2710,6 +2800,7 @@ def validate_batch(
                     selected_instrument,
                     action,
                     index,
+                    intent.get("forecast"),
                 )
             else:
                 validate_candidate_comparison(
@@ -2718,6 +2809,7 @@ def validate_batch(
                     selected_instrument,
                     action,
                     index,
+                    intent.get("forecast"),
                 )
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
             if "protection_updates" in intent:
@@ -3403,6 +3495,12 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
 )
 
 SEMANTIC_MODEL_CONTRACT_ERRORS = (
+    "selection_ev_arithmetic_mismatch",
+    "selection_ev_direction_action_mismatch",
+    "selection_ev_forecast_range_mismatch",
+    "selection_ev_geometry_mismatch",
+    "selection_ev_numeric_invalid",
+    "selection_ev_verdict_range_mismatch",
     "selection_ev_wait_consumes_target",
     "trigger_review_failed_without_invalidation_or_contradiction",
 )
@@ -3425,7 +3523,9 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
     if error_text.startswith(SEMANTIC_MODEL_CONTRACT_ERRORS):
         correction = (
             "\nDECISION_CONSISTENCY_CORRECTION: Re-evaluate the same current packet and correct "
-            "the market judgment as needed. A WAIT price at or beyond the primary target cannot "
+            "the market judgment as needed. Keep numeric EV arithmetic, the target-first range, "
+            "the stop-first forecast, and the EV verdict internally consistent. A WAIT price at "
+            "or beyond the primary target cannot "
             "be described as improving the opportunity, and a fired path cannot be FAILED unless "
             "its named invalidation was reached or a specific structural contradiction emerged. "
             "You may change action, instrument, prices, confidence, reasons, and audit evidence. "

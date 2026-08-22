@@ -3,7 +3,8 @@
 The direct exchange outbox is the decision authority. NinjaTrader execution
 events prove the AI-owned master lifecycle; CopyEngine Journal events or
 NinjaTrader's durable daily order log can prove follower-native protection;
-TradeLedger.tsv proves each observed account round trip. A complete terminal
+intent-bound native fill receipts prove the master round trip. TradeLedger.tsv
+supplies derived follower round trips and master diagnostics. A complete native
 master trade is always attributable to Hermes. Missing follower evidence is
 unknown, not failure, and never erases master learning.
 """
@@ -81,12 +82,13 @@ def write_jsonl_atomic(path, rows):
 
 
 def read_trade_ledger(path):
-    """Read Glitch's authoritative completed round trips.
+    """Read Glitch's derived account round trips.
 
     Followers are owned by GlitchCopyEngine, not GlitchAiOrderExecutor, so the
     AI execution journal intentionally has one group-close event rather than a
     fabricated close event per follower. TradeLedger.tsv is the account-level
-    execution truth used to prove that every expected member actually closed.
+    execution evidence used for followers and as a diagnostic cross-check for
+    masters; intent-bound native master receipts remain the learning authority.
     """
     if not path.exists():
         return []
@@ -395,7 +397,7 @@ def normalized_outcome(account_outcome):
         "mae_r": (sampled_mae / risk) if isinstance(sampled_mae, (int, float)) and risk_complete else None,
         "first_touch": first_touch_state(account_outcome.get("close_kind")),
         "source_quality": {
-            "realized": "native_trade_ledger_and_native_economics" if risk_complete else "native_trade_ledger_or_incomplete_risk",
+            "realized": "intent_bound_native_receipt_and_native_economics" if risk_complete else "native_receipt_or_incomplete_risk",
             "mfe_mae": "minute_snapshot_sampled_not_exact",
             "first_touch": "native_exit_class_only_no_intrabar_order_claim",
         },
@@ -451,7 +453,10 @@ def entry_range_fill_quality(intent, fill_price, tick_size):
     return result
 
 
-def intent_fidelity(intent, account_outcome, submitted, bracket_event, market_reference, events):
+def intent_fidelity(
+    intent, account_outcome, submitted, bracket_event, market_reference, events,
+    management_history=None,
+):
     submit_fields = message_fields(submitted.get("message")) if isinstance(submitted, dict) else {}
     bracket_fields = message_fields(bracket_event.get("message")) if isinstance(bracket_event, dict) else {}
     decision_price = market_reference.get("current_price") if isinstance(market_reference, dict) else None
@@ -481,15 +486,19 @@ def intent_fidelity(intent, account_outcome, submitted, bracket_event, market_re
     else:
         native_state = "unknown"
 
-    management_history = []
+    native_management_events = []
     for event in events or []:
         code = str(event.get("code") or "")
         if any(token in code.lower() for token in ("move", "amend", "modify", "managed_exit")):
-            management_history.append({
+            native_management_events.append({
                 "code": code,
                 "recorded_utc": event.get("recorded_utc"),
                 "message": event.get("message"),
             })
+    counterfactuals = management_history if isinstance(management_history, dict) else {
+        "summary": {"total_decisions": len(management_history or [])},
+        "representative_decisions": list(management_history or []),
+    }
     return {
         "identity": {
             "intent_id": intent.get("intent_id"),
@@ -524,14 +533,16 @@ def intent_fidelity(intent, account_outcome, submitted, bracket_event, market_re
             "target_coverage_quantity": target_coverage,
             "unprotected_quantity": max(0, quantity - min(stop_coverage, target_coverage)),
             "native_state": native_state,
-            "source": "native_bracket_receipt_and_trade_ledger",
+            "source": "native_bracket_and_execution_receipts",
         },
         "native_state": {
             "protection_status": account_outcome.get("protection_status"),
             "protection_evidence": account_outcome.get("protection_evidence"),
             "submission_correlation": submit_fields.get("correlation"),
         },
-        "management_history": management_history,
+        "management_history": counterfactuals["representative_decisions"],
+        "management_counterfactual_summary": counterfactuals["summary"],
+        "native_management_events": native_management_events,
     }
 
 
@@ -558,11 +569,14 @@ def forecast_outcome(forecast, close_kind):
         "confidence": forecast.get("confidence"),
         "observed": observed,
         "brier_score": brier,
-        "observation_source": "native_trade_ledger_exit_type" if observed is not None else None,
+        "observation_source": "intent_bound_native_exit_receipt" if observed is not None else None,
     }
 
 
-def canonical_outcome_layers(intent, account_outcome, submitted, bracket_event, market_reference, events):
+def canonical_outcome_layers(
+    intent, account_outcome, submitted, bracket_event, market_reference, events,
+    management_history=None,
+):
     normalized = normalized_outcome(account_outcome)
     return {
         "decision_geometry": {
@@ -581,7 +595,7 @@ def canonical_outcome_layers(intent, account_outcome, submitted, bracket_event, 
             "planned_target_3": intent.get("take_profit_3"),
         },
         "native_geometry": {
-            "source": "native_execution_receipt_and_trade_ledger",
+            "source": "intent_bound_native_execution_receipts",
             "entry_price": account_outcome.get("entry_price"),
             "exit_price": account_outcome.get("exit_price"),
             "point_value_usd": account_outcome.get("point_value_usd"),
@@ -598,7 +612,8 @@ def canonical_outcome_layers(intent, account_outcome, submitted, bracket_event, 
         },
         "execution_diagnostics": {
             "intent_fidelity": intent_fidelity(
-                intent, account_outcome, submitted, bracket_event, market_reference, events
+                intent, account_outcome, submitted, bracket_event, market_reference, events,
+                management_history,
             ),
         },
         "normalized_outcome": normalized,
@@ -867,6 +882,102 @@ def excursion(snapshots, account, entry_utc, exit_utc, instrument_root, realized
     }
 
 
+def management_intent_counterfactuals(
+    intents, snapshots, account, instrument_root, entry_utc, exit_utc, realized_pnl
+):
+    """Attach sampled opportunity cost to in-trade decisions without prescribing action."""
+    rows = []
+    for intent in intents.values():
+        action = str(intent.get("action") or "").upper()
+        if action not in {"HOLD", "MOVE_STOP", "MOVE_TP", "EXIT"}:
+            continue
+        if str(intent.get("account") or "").lower() != account.lower():
+            continue
+        if _instrument_root(intent.get("instrument")) != instrument_root:
+            continue
+        try:
+            created_utc = parse_utc(intent.get("created_utc"))
+        except (TypeError, ValueError):
+            continue
+        if not entry_utc < created_utc < exit_utc:
+            continue
+
+        sampled = None
+        for stamp, snapshot in snapshots:
+            if stamp > created_utc:
+                break
+            account_row = account_at(snapshot, account)
+            if account_row is None:
+                continue
+            position = next((
+                value for value in account_row.get("positions", [])
+                if _instrument_root(value.get("instrument_root") or value.get("instrument")) == instrument_root
+            ), None)
+            if isinstance(position, dict):
+                sampled = (stamp, position.get("unrealized_pnl"))
+        sampled_pnl = sampled[1] if sampled is not None else None
+        advantage = None
+        if isinstance(sampled_pnl, (int, float)) and isinstance(realized_pnl, (int, float)):
+            advantage = float(sampled_pnl) - float(realized_pnl)
+        rows.append({
+            "intent_id": intent.get("intent_id"),
+            "cycle_id": intent.get("_cycle_id"),
+            "created_utc": created_utc.isoformat().replace("+00:00", "Z"),
+            "action": action,
+            "protection_updates": intent.get("protection_updates"),
+            "sampled_snapshot_utc": (
+                sampled[0].isoformat().replace("+00:00", "Z") if sampled is not None else None
+            ),
+            "sampled_exit_then_pnl_usd_before_costs": sampled_pnl,
+            "actual_terminal_pnl_usd_before_costs": realized_pnl,
+            "sampled_exit_then_advantage_usd": advantage,
+        })
+    rows.sort(key=lambda row: row["created_utc"])
+    action_counts = {
+        action: sum(1 for row in rows if row["action"] == action)
+        for action in ("HOLD", "MOVE_STOP", "MOVE_TP", "EXIT")
+        if any(row["action"] == action for row in rows)
+    }
+    numeric = [
+        row for row in rows
+        if isinstance(row.get("sampled_exit_then_advantage_usd"), (int, float))
+    ]
+    summary = {
+        "schema_version": "glitch.hermes.management_counterfactual_summary.v1",
+        "effect": "informational_only_not_execution_or_strategy_gate",
+        "total_decisions": len(rows),
+        "action_counts": action_counts,
+        "maximum_sampled_exit_advantage_usd": (
+            max(row["sampled_exit_then_advantage_usd"] for row in numeric) if numeric else None
+        ),
+        "minimum_sampled_exit_advantage_usd": (
+            min(row["sampled_exit_then_advantage_usd"] for row in numeric) if numeric else None
+        ),
+        "limitations": "minute_snapshot_samples_not_executable_fills_no_fees_or_slippage",
+    }
+    selected = []
+    candidates = []
+    if rows:
+        candidates.extend((rows[0], rows[-1]))
+    if numeric:
+        candidates.extend((
+            max(numeric, key=lambda row: row["sampled_exit_then_advantage_usd"]),
+            min(numeric, key=lambda row: row["sampled_exit_then_advantage_usd"]),
+        ))
+    for action in ("HOLD", "MOVE_STOP", "MOVE_TP", "EXIT"):
+        action_rows = [row for row in rows if row["action"] == action]
+        if action_rows:
+            candidates.extend((action_rows[0], action_rows[-1]))
+    for row in candidates + rows:
+        if row["intent_id"] in {value["intent_id"] for value in selected}:
+            continue
+        selected.append(row)
+        if len(selected) == 8:
+            break
+    selected.sort(key=lambda row: row["created_utc"])
+    return {"summary": summary, "representative_decisions": selected}
+
+
 def infer_close_kind(trade):
     exit_type = str(trade.get("exit_type") or "").strip().lower()
     exit_signal = str(trade.get("exit_signal") or "").strip()
@@ -888,13 +999,16 @@ def infer_close_kind(trade):
     return "unknown"
 
 
-def reconcile_native_master_outcome(events, trade, intent, master_account, tick_size):
-    """Require intent-bound native terminal facts before a master outcome can teach."""
+def native_master_trade_from_events(
+    events, intent, master_account, bracket_event, bracket_fields, derived_trade=None
+):
+    """Build and validate one master round trip from intent-bound native receipts."""
+    entry_events = []
     terminal_events = []
     seen_executions = set()
     for event in events:
         code = str(event.get("code") or "")
-        if code not in MASTER_TERMINAL_CODES:
+        if code != "master_entry_fill_observed" and code not in MASTER_TERMINAL_CODES:
             continue
         fields = message_fields(event.get("message"))
         if str(fields.get("account") or "").lower() != master_account.lower():
@@ -912,9 +1026,8 @@ def reconcile_native_master_outcome(events, trade, intent, master_account, tick_
             continue
         if signed_quantity == 0:
             continue
-        terminal_events.append({
+        parsed = {
             "code": code,
-            "close_kind": MASTER_TERMINAL_CODES[code],
             "recorded_utc": recorded_utc,
             "fill": fill,
             "signed_quantity": signed_quantity,
@@ -922,14 +1035,28 @@ def reconcile_native_master_outcome(events, trade, intent, master_account, tick_
             "point_value_usd": _float(fields, "point_value_usd"),
             "realized_pnl_usd": _float(fields, "realized_pnl_usd"),
             "execution_id": execution_id or None,
-        })
+            "native_order": fields.get("native_order") or None,
+            "source_intent_id": event.get("_source_intent_id") or event.get("intent_id"),
+        }
+        if code == "master_entry_fill_observed":
+            entry_events.append(parsed)
+        else:
+            parsed["close_kind"] = MASTER_TERMINAL_CODES[code]
+            terminal_events.append(parsed)
 
     audit = {
-        "schema_version": "glitch.hermes.native_outcome_reconciliation.v1",
+        "schema_version": "glitch.hermes.native_outcome_reconciliation.v2",
         "status": "quarantined",
         "learning_eligible": False,
-        "authority": "intent_bound_native_execution_receipts_vs_trade_ledger",
+        "authority": "intent_bound_native_execution_receipts",
         "discrepancies": [],
+        "native_entry_events": [
+            {
+                **{key: value for key, value in row.items() if key != "recorded_utc"},
+                "recorded_utc": row["recorded_utc"].isoformat().replace("+00:00", "Z"),
+            }
+            for row in entry_events
+        ],
         "native_terminal_events": [
             {
                 **{key: value for key, value in row.items() if key != "recorded_utc"},
@@ -937,70 +1064,161 @@ def reconcile_native_master_outcome(events, trade, intent, master_account, tick_
             }
             for row in terminal_events
         ],
-        "trade_ledger": {
-            "trade_id": trade.get("trade_id"),
-            "entry_utc": trade["entry_utc"].isoformat().replace("+00:00", "Z"),
-            "exit_utc": trade["exit_utc"].isoformat().replace("+00:00", "Z"),
-            "entry_price": trade.get("entry_price"),
-            "exit_price": trade.get("exit_price"),
-            "quantity": trade.get("contracts"),
-            "close_kind": infer_close_kind(trade),
-        },
     }
     if not terminal_events:
         audit["discrepancies"].append("native_terminal_event_missing")
-        return audit
+        return None, audit
 
-    expected_sign = -1 if intent.get("action") == "ENTER_LONG" else 1
-    if any((1 if row["signed_quantity"] > 0 else -1) != expected_sign for row in terminal_events):
+    entry_sign = 1 if intent.get("action") == "ENTER_LONG" else -1
+    exit_sign = -entry_sign
+    if entry_events and any(
+        (1 if row["signed_quantity"] > 0 else -1) != entry_sign for row in entry_events
+    ):
+        audit["discrepancies"].append("native_entry_side_mismatch")
+    if any((1 if row["signed_quantity"] > 0 else -1) != exit_sign for row in terminal_events):
         audit["discrepancies"].append("native_exit_side_mismatch")
-    native_quantity = sum(abs(row["signed_quantity"]) for row in terminal_events)
-    ledger_quantity = abs(float(trade.get("contracts") or 0))
-    if abs(native_quantity - ledger_quantity) > 1e-9:
-        audit["discrepancies"].append("native_exit_quantity_mismatch")
+
+    exit_quantity = sum(abs(row["signed_quantity"]) for row in terminal_events)
+    if entry_events:
+        entry_quantity = sum(abs(row["signed_quantity"]) for row in entry_events)
+        entry_price = sum(
+            row["fill"] * abs(row["signed_quantity"]) for row in entry_events
+        ) / entry_quantity
+        entry_utc = min(row["recorded_utc"] for row in entry_events)
+        entry_source = "native_master_entry_fill_receipt"
+        entry_signal = next((row["native_order"] for row in entry_events if row["native_order"]), None)
+    else:
+        entry_quantity = sum(
+            max(0.0, _float(bracket_fields, f"leg{index}_qty", 0.0) or 0.0)
+            for index in range(1, 4)
+        )
+        if entry_quantity <= 0:
+            entry_quantity = abs(float(intent.get("quantity") or 0))
+        entry_price = _float(bracket_fields, "fill")
+        try:
+            entry_utc = parse_utc(bracket_event.get("recorded_utc"))
+        except (AttributeError, TypeError, ValueError):
+            entry_utc = None
+        entry_source = "native_fill_anchored_bracket_receipt"
+        entry_signal = None
+    if entry_quantity <= 0 or entry_price is None or entry_utc is None:
+        audit["discrepancies"].append("native_entry_receipt_incomplete")
+        return None, audit
+    if abs(entry_quantity - exit_quantity) > 1e-9:
+        audit["discrepancies"].append("native_entry_exit_quantity_mismatch")
+
     native_exit_price = sum(
         row["fill"] * abs(row["signed_quantity"]) for row in terminal_events
-    ) / native_quantity
-    price_tolerance = max(float(tick_size or 0) / 2, 1e-8)
-    if abs(native_exit_price - float(trade["exit_price"])) > price_tolerance:
-        audit["discrepancies"].append("native_exit_price_mismatch")
+    ) / exit_quantity
     native_exit_utc = max(row["recorded_utc"] for row in terminal_events)
-    if abs((native_exit_utc - trade["exit_utc"]).total_seconds()) > NATIVE_OUTCOME_TIME_TOLERANCE_SECONDS:
-        audit["discrepancies"].append("native_exit_time_mismatch")
-
+    tick_size = _float(bracket_fields, "tick_size")
+    price_tolerance = max(float(tick_size or 0) / 2, 1e-8)
     native_entries = [row["entry"] for row in terminal_events if row["entry"] is not None]
     if native_entries and any(
-        abs(float(value) - float(trade["entry_price"])) > price_tolerance
+        abs(float(value) - entry_price) > price_tolerance
         for value in native_entries
     ):
         audit["discrepancies"].append("native_entry_price_mismatch")
     native_kinds = {row["close_kind"] for row in terminal_events}
-    if len(native_kinds) != 1 or infer_close_kind(trade) not in native_kinds:
-        audit["discrepancies"].append("native_close_kind_mismatch")
+    if len(native_kinds) != 1:
+        audit["discrepancies"].append("native_close_kind_ambiguous")
 
     native_pnls = [row["realized_pnl_usd"] for row in terminal_events]
-    if all(value is not None for value in native_pnls):
-        point_values = {
-            row["point_value_usd"]
-            for row in terminal_events
-            if row["point_value_usd"] is not None and row["point_value_usd"] > 0
-        }
-        if len(point_values) == 1:
-            point_value = next(iter(point_values))
-            ledger_gross = float(trade["pnl_points"]) * point_value
-            if abs(sum(float(value) for value in native_pnls) - ledger_gross) > 0.01:
-                audit["discrepancies"].append("native_realized_pnl_mismatch")
+    point_values = {
+        row["point_value_usd"]
+        for row in terminal_events
+        if row["point_value_usd"] is not None and row["point_value_usd"] > 0
+    }
+    bracket_point_value = _float(bracket_fields, "point_value_usd")
+    if not point_values and bracket_point_value is not None and bracket_point_value > 0:
+        point_values.add(bracket_point_value)
+    if len(point_values) > 1:
+        audit["discrepancies"].append("native_point_value_mismatch")
+    point_value = next(iter(point_values)) if len(point_values) == 1 else None
+    pnl_points = (native_exit_price - entry_price) * entry_sign * exit_quantity
+    geometry_pnl_usd = pnl_points * point_value if point_value is not None else None
+    receipt_pnl_usd = (
+        sum(float(value) for value in native_pnls)
+        if native_pnls and all(value is not None for value in native_pnls)
+        else None
+    )
+    if (
+        receipt_pnl_usd is not None and geometry_pnl_usd is not None
+        and abs(receipt_pnl_usd - geometry_pnl_usd) > 0.01
+    ):
+        audit["discrepancies"].append("native_realized_pnl_mismatch")
+
+    close_kind = next(iter(native_kinds)) if len(native_kinds) == 1 else "unknown"
+    exit_type = {"stop": "SL", "target": "TP", "managed_exit": "EXIT"}.get(close_kind, "Unknown")
+    close_reason = {
+        "stop": "Stop Loss", "target": "Take Profit", "managed_exit": "Managed Exit"
+    }.get(close_kind, "Unknown")
+    trade = {
+        "trade_id": f"native-receipt:{intent.get('intent_id')}",
+        "account": master_account,
+        "instrument": _instrument_root(intent.get("instrument")),
+        "side": "long" if entry_sign > 0 else "short",
+        "contracts": entry_quantity,
+        "entry_utc": entry_utc,
+        "exit_utc": native_exit_utc,
+        "entry_price": entry_price,
+        "exit_price": native_exit_price,
+        "pnl_points": pnl_points,
+        "realized_pnl_usd": receipt_pnl_usd if receipt_pnl_usd is not None else geometry_pnl_usd,
+        "point_value_usd": point_value,
+        "commission_total": 0.0,
+        "commission_status": "unavailable_not_assumed",
+        "trade_source": "Strategy",
+        "entry_type": "ENTRY",
+        "exit_type": exit_type,
+        "entry_signal": entry_signal,
+        "exit_signal": next((row["native_order"] for row in terminal_events if row["native_order"]), None),
+        "open_reason": "Hermes Entry",
+        "close_reason": close_reason,
+        "native_entry_source": entry_source,
+    }
 
     audit["native_aggregate"] = {
+        "entry_utc": entry_utc.isoformat().replace("+00:00", "Z"),
+        "entry_price": entry_price,
         "exit_utc": native_exit_utc.isoformat().replace("+00:00", "Z"),
         "exit_price": native_exit_price,
-        "quantity": native_quantity,
+        "quantity": exit_quantity,
         "close_kinds": sorted(native_kinds),
+        "realized_pnl_usd": trade["realized_pnl_usd"],
+        "point_value_usd": point_value,
+        "entry_source": entry_source,
     }
+    derived_discrepancies = []
+    if derived_trade is None:
+        audit["derived_trade_ledger"] = {
+            "status": "missing",
+            "effect": "diagnostic_only_no_master_learning_effect",
+        }
+    else:
+        try:
+            if abs(float(derived_trade.get("contracts") or 0) - entry_quantity) > 1e-9:
+                derived_discrepancies.append("quantity_mismatch")
+            if abs(float(derived_trade.get("entry_price")) - entry_price) > price_tolerance:
+                derived_discrepancies.append("entry_price_mismatch")
+            if abs(float(derived_trade.get("exit_price")) - native_exit_price) > price_tolerance:
+                derived_discrepancies.append("exit_price_mismatch")
+            if abs((derived_trade["exit_utc"] - native_exit_utc).total_seconds()) > NATIVE_OUTCOME_TIME_TOLERANCE_SECONDS:
+                derived_discrepancies.append("exit_time_mismatch")
+            if infer_close_kind(derived_trade) != close_kind:
+                derived_discrepancies.append("close_kind_mismatch")
+        except (KeyError, TypeError, ValueError):
+            derived_discrepancies.append("record_incomplete")
+        audit["derived_trade_ledger"] = {
+            "status": "matched" if not derived_discrepancies else "mismatch",
+            "effect": "diagnostic_only_no_master_learning_effect",
+            "trade_id": derived_trade.get("trade_id"),
+            "discrepancies": derived_discrepancies,
+        }
     if not audit["discrepancies"]:
         audit["status"] = "reconciled"
         audit["learning_eligible"] = True
-    return audit
+    return trade, audit
 
 
 def _float(fields, key, fallback=None):
@@ -1190,12 +1408,54 @@ def _match_ledger_trades(ledger, expected_accounts, bracket_by_account, intent, 
             price_distance = abs(trade["entry_price"] - bracket_fill) if bracket_fill is not None else 0
             candidates.append((delta_seconds, price_distance, trade["exit_utc"], trade["trade_id"], trade))
         if not candidates:
-            if account_key == master.lower():
-                return None
             continue
         candidates.sort(key=lambda item: item[:4])
         matched[account.lower()] = candidates[0][4]
     return matched, follower_protection
+
+
+def attribute_native_terminal_events(executions, by_intent):
+    """Bind EXIT-intent native fills back to the open ENTER lifecycle."""
+    open_entries = {}
+    seen_executions = set()
+    for row in sorted(executions, key=lambda value: str(value.get("recorded_utc") or "")):
+        code = str(row.get("code") or "")
+        if code != "master_entry_fill_observed" and code not in MASTER_TERMINAL_CODES:
+            continue
+        fields = message_fields(row.get("message"))
+        account = str(fields.get("account") or "").lower()
+        instrument = _instrument_root(fields.get("contract"))
+        execution_id = str(fields.get("execution_id") or "").strip()
+        if not account or not instrument:
+            continue
+        identity = (account, instrument, execution_id)
+        if execution_id and identity in seen_executions:
+            continue
+        if execution_id:
+            seen_executions.add(identity)
+        quantity = abs(_float(fields, "signed_quantity", 0) or 0)
+        if quantity <= 0:
+            continue
+        key = (account, instrument)
+        intent_id = str(row.get("intent_id") or "")
+        if code == "master_entry_fill_observed":
+            current = open_entries.get(key)
+            if current is None or current["intent_id"] != intent_id:
+                current = {"intent_id": intent_id, "quantity": 0.0}
+                open_entries[key] = current
+            current["quantity"] += quantity
+            continue
+
+        current = open_entries.get(key)
+        if current is None:
+            continue
+        if current["intent_id"] != intent_id:
+            attributed = dict(row)
+            attributed["_source_intent_id"] = intent_id
+            by_intent.setdefault(current["intent_id"], []).append(attributed)
+        current["quantity"] = max(0.0, current["quantity"] - quantity)
+        if current["quantity"] <= 1e-9:
+            open_entries.pop(key, None)
 
 
 def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decision_log=None):
@@ -1210,6 +1470,7 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
     by_intent = {}
     for row in executions:
         by_intent.setdefault(str(row.get("intent_id") or ""), []).append(row)
+    attribute_native_terminal_events(executions, by_intent)
 
     for intent_id, intent in intents.items():
         if intent.get("action") not in {"ENTER_LONG", "ENTER_SHORT"}:
@@ -1248,13 +1509,21 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
         matched = _match_ledger_trades(
             trade_ledger, expected_accounts, bracket_by_account, intent, correlation, journal
         )
-        if matched is None:
-            continue
         ledger_by_account, follower_protection = matched
 
-        master_trade = ledger_by_account.get(master.lower())
+        derived_master_trade = ledger_by_account.get(master.lower())
+        master_bracket_event, master_bracket_fields = bracket_by_account[master.lower()]
+        master_trade, native_outcome_reconciliation = native_master_trade_from_events(
+            events,
+            intent,
+            master,
+            master_bracket_event,
+            master_bracket_fields,
+            derived_master_trade,
+        )
         if master_trade is None:
             continue
+        ledger_by_account[master.lower()] = master_trade
         entry_utc = master_trade["entry_utc"]
         exit_utc = master_trade["exit_utc"]
         terminal_check_utc = max(row["exit_utc"] for row in ledger_by_account.values())
@@ -1288,11 +1557,14 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
             tick_size = _float(fields, "tick_size", _float(submit_fields, "tick_size"))
             # TradeLedger pnl_points is already quantity-weighted by
             # GlitchTradeInsightsService as each closing fill is accumulated.
-            pnl_usd = (
-                trade["pnl_points"] * point_value - trade["commission_total"]
-                if point_value is not None and point_value > 0
-                else None
-            )
+            if account.lower() == master.lower():
+                pnl_usd = trade.get("realized_pnl_usd")
+            else:
+                pnl_usd = (
+                    trade["pnl_points"] * point_value - trade["commission_total"]
+                    if point_value is not None and point_value > 0
+                    else None
+                )
             protection_legs, initial_risk_usd, risk_status = initial_native_risk(
                 entry_price, quantity, fields, point_value
             ) if has_account_bracket else ([], None, "native_follower_bracket_facts_missing")
@@ -1337,6 +1609,11 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
                 "risk_normalization_status": risk_status,
                 "risk_normalization_eligible": risk_status == "complete",
                 "trade_id": trade["trade_id"],
+                "trade_evidence_source": (
+                    "intent_bound_native_execution_receipts"
+                    if account.lower() == master.lower() else "derived_trade_ledger"
+                ),
+                "commission_status": trade.get("commission_status", "included_in_trade_ledger"),
                 "protection_evidence": protection_evidence,
                 "protection_status": protection_status,
                 "close_kind": infer_close_kind(trade),
@@ -1351,8 +1628,16 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
         master_outcome = next((row for row in account_outcomes if row["account"].lower() == master.lower()), None)
         if master_outcome is None:
             continue
-        master_bracket_event, _ = bracket_by_account[master.lower()]
         market_reference = market_snapshot_reference(glitch_data, entry_utc, instrument_root)
+        management_history = management_intent_counterfactuals(
+            intents,
+            snapshots,
+            master,
+            instrument_root,
+            entry_utc,
+            exit_utc,
+            master_outcome.get("realized_pnl_usd"),
+        )
         canonical_layers = canonical_outcome_layers(
             intent,
             master_outcome,
@@ -1360,13 +1645,7 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
             master_bracket_event,
             market_reference,
             events,
-        )
-        native_outcome_reconciliation = reconcile_native_master_outcome(
-            events,
-            master_trade,
-            intent,
-            master,
-            master_outcome.get("tick_size"),
+            management_history,
         )
         master_learning_eligible = native_outcome_reconciliation["learning_eligible"] is True
         canonical_layers["attribution"]["master_learning_eligible"] = master_learning_eligible
@@ -1413,7 +1692,7 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
                 if not master_learning_eligible
                 else "process_error" if process_error else "complete"
             ),
-            "learning_eligible": master_learning_eligible and not process_error,
+            "learning_eligible": master_learning_eligible,
             "native_outcome_reconciliation": native_outcome_reconciliation,
             "evidence": intent.get("_evidence_path"),
             "snapshot_reference": {
