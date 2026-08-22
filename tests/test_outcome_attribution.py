@@ -442,9 +442,97 @@ def test_native_master_quantity_contradiction_remains_quarantined(
 
     assert outcome["master_learning_eligible"] is False
     assert outcome["native_outcome_reconciliation"]["status"] == "quarantined"
-    assert "native_entry_exit_quantity_mismatch" in (
+    assert "native_exit_quantity_unattributed" in (
         outcome["native_outcome_reconciliation"]["discrepancies"]
     )
+
+
+def test_one_native_exit_is_fifo_allocated_across_open_entry_intents() -> None:
+    executions = [
+        {
+            "recorded_utc": "2026-08-03T12:00:00Z",
+            "intent_id": "entry-a",
+            "code": "master_entry_fill_observed",
+            "message": "account=Master|contract=M2K 09-26|fill=100|signed_quantity=1|execution_id=a",
+        },
+        {
+            "recorded_utc": "2026-08-03T12:01:00Z",
+            "intent_id": "entry-b",
+            "code": "master_entry_fill_observed",
+            "message": "account=Master|contract=M2K 09-26|fill=101|signed_quantity=1|execution_id=b",
+        },
+        {
+            "recorded_utc": "2026-08-03T12:02:00Z",
+            "intent_id": "exit-intent",
+            "code": "master_exit_fill_observed",
+            "message": "account=Master|contract=M2K 09-26|fill=102|signed_quantity=-2|execution_id=x",
+        },
+    ]
+    by_intent = {}
+    for row in executions:
+        by_intent.setdefault(row["intent_id"], []).append(row)
+
+    RECONCILER.attribute_native_terminal_events(executions, by_intent)
+
+    for intent_id in ("entry-a", "entry-b"):
+        terminal = next(
+            row for row in by_intent[intent_id]
+            if row["code"] == "master_exit_fill_observed"
+        )
+        assert terminal["_source_intent_id"] == "exit-intent"
+        assert terminal["_attributed_signed_quantity"] == -1
+
+
+def test_closed_ledger_episode_does_not_consume_a_later_native_exit() -> None:
+    executions = [
+        {
+            "recorded_utc": "2026-08-03T11:00:00Z",
+            "intent_id": "stale-entry",
+            "code": "master_entry_fill_observed",
+            "message": "account=Master|contract=M2K 09-26|fill=99|signed_quantity=1|execution_id=old|native_order=old-order",
+        },
+        {
+            "recorded_utc": "2026-08-03T12:00:00Z",
+            "intent_id": "entry-a",
+            "code": "master_entry_fill_observed",
+            "message": "account=Master|contract=M2K 09-26|fill=100|signed_quantity=1|execution_id=a|native_order=order-a",
+        },
+        {
+            "recorded_utc": "2026-08-03T12:01:00Z",
+            "intent_id": "entry-b",
+            "code": "master_entry_fill_observed",
+            "message": "account=Master|contract=M2K 09-26|fill=101|signed_quantity=1|execution_id=b|native_order=order-b",
+        },
+        {
+            "recorded_utc": "2026-08-03T12:02:00Z",
+            "intent_id": "exit-intent",
+            "code": "master_exit_fill_observed",
+            "message": "account=Master|contract=M2K 09-26|fill=102|signed_quantity=-2|execution_id=x",
+        },
+    ]
+    by_intent = {}
+    for row in executions:
+        by_intent.setdefault(row["intent_id"], []).append(row)
+    trade_ledger = [{
+        "account": "Master",
+        "instrument": "M2K 09-26",
+        "entry_signal": "old-order",
+        "entry_order_identity": "old-order",
+        "exit_utc": datetime(2026, 8, 3, 11, 5, tzinfo=timezone.utc),
+    }]
+
+    RECONCILER.attribute_native_terminal_events(executions, by_intent, trade_ledger)
+
+    assert not any(
+        row["code"] == "master_exit_fill_observed"
+        for row in by_intent["stale-entry"]
+    )
+    for intent_id in ("entry-a", "entry-b"):
+        terminal = next(
+            row for row in by_intent[intent_id]
+            if row["code"] == "master_exit_fill_observed"
+        )
+        assert terminal["_attributed_signed_quantity"] == -1
 
 
 def test_close_kind_accepts_native_compact_stop_and_target_roles() -> None:

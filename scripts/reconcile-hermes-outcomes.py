@@ -1021,7 +1021,10 @@ def native_master_trade_from_events(
         try:
             recorded_utc = parse_utc(event.get("recorded_utc"))
             fill = float(fields["fill"])
-            signed_quantity = float(fields["signed_quantity"])
+            native_signed_quantity = float(fields["signed_quantity"])
+            signed_quantity = float(
+                event.get("_attributed_signed_quantity", native_signed_quantity)
+            )
         except (KeyError, TypeError, ValueError):
             continue
         if signed_quantity == 0:
@@ -1031,6 +1034,10 @@ def native_master_trade_from_events(
             "recorded_utc": recorded_utc,
             "fill": fill,
             "signed_quantity": signed_quantity,
+            "native_execution_signed_quantity": native_signed_quantity,
+            "unallocated_native_quantity": abs(float(
+                event.get("_unallocated_signed_quantity", 0) or 0
+            )),
             "entry": _float(fields, "entry"),
             "point_value_usd": _float(fields, "point_value_usd"),
             "realized_pnl_usd": _float(fields, "realized_pnl_usd"),
@@ -1077,6 +1084,8 @@ def native_master_trade_from_events(
         audit["discrepancies"].append("native_entry_side_mismatch")
     if any((1 if row["signed_quantity"] > 0 else -1) != exit_sign for row in terminal_events):
         audit["discrepancies"].append("native_exit_side_mismatch")
+    if any(row["unallocated_native_quantity"] > 1e-9 for row in terminal_events):
+        audit["discrepancies"].append("native_exit_quantity_unattributed")
 
     exit_quantity = sum(abs(row["signed_quantity"]) for row in terminal_events)
     if entry_events:
@@ -1414,10 +1423,21 @@ def _match_ledger_trades(ledger, expected_accounts, bracket_by_account, intent, 
     return matched, follower_protection
 
 
-def attribute_native_terminal_events(executions, by_intent):
+def attribute_native_terminal_events(executions, by_intent, trade_ledger=None):
     """Bind EXIT-intent native fills back to the open ENTER lifecycle."""
     open_entries = {}
     seen_executions = set()
+    ledger_exit_by_entry = {}
+    for trade in trade_ledger or []:
+        account = str(trade.get("account") or "").lower()
+        instrument = _instrument_root(trade.get("instrument"))
+        exit_utc = trade.get("exit_utc")
+        if not account or not instrument or not isinstance(exit_utc, datetime):
+            continue
+        for field in ("entry_signal", "entry_order_identity"):
+            native_order = str(trade.get(field) or "").strip().lower()
+            if native_order:
+                ledger_exit_by_entry[(account, instrument, native_order)] = exit_utc
     for row in sorted(executions, key=lambda value: str(value.get("recorded_utc") or "")):
         code = str(row.get("code") or "")
         if code != "master_entry_fill_observed" and code not in MASTER_TERMINAL_CODES:
@@ -1439,22 +1459,58 @@ def attribute_native_terminal_events(executions, by_intent):
         key = (account, instrument)
         intent_id = str(row.get("intent_id") or "")
         if code == "master_entry_fill_observed":
-            current = open_entries.get(key)
-            if current is None or current["intent_id"] != intent_id:
-                current = {"intent_id": intent_id, "quantity": 0.0}
-                open_entries[key] = current
+            entries = open_entries.setdefault(key, [])
+            try:
+                entry_utc = parse_utc(row.get("recorded_utc"))
+            except (TypeError, ValueError):
+                entry_utc = None
+            if entry_utc is not None:
+                entries[:] = [
+                    entry for entry in entries
+                    if entry.get("ledger_exit_utc") is None
+                    or entry["ledger_exit_utc"] > entry_utc
+                ]
+            current = next(
+                (entry for entry in entries if entry["intent_id"] == intent_id), None
+            )
+            if current is None:
+                native_order = str(fields.get("native_order") or "").strip().lower()
+                current = {
+                    "intent_id": intent_id,
+                    "quantity": 0.0,
+                    "ledger_exit_utc": ledger_exit_by_entry.get(
+                        (account, instrument, native_order)
+                    ),
+                }
+                entries.append(current)
             current["quantity"] += quantity
             continue
 
-        current = open_entries.get(key)
-        if current is None:
+        entries = open_entries.get(key, [])
+        if not entries:
             continue
-        if current["intent_id"] != intent_id:
+        remaining = quantity
+        native_sign = 1 if (_float(fields, "signed_quantity", 0) or 0) > 0 else -1
+        last_attributed = None
+        while entries and remaining > 1e-9:
+            current = entries[0]
+            allocated = min(current["quantity"], remaining)
             attributed = dict(row)
             attributed["_source_intent_id"] = intent_id
-            by_intent.setdefault(current["intent_id"], []).append(attributed)
-        current["quantity"] = max(0.0, current["quantity"] - quantity)
-        if current["quantity"] <= 1e-9:
+            attributed["_attributed_signed_quantity"] = native_sign * allocated
+            if current["intent_id"] == intent_id:
+                row["_attributed_signed_quantity"] = native_sign * allocated
+                last_attributed = row
+            else:
+                by_intent.setdefault(current["intent_id"], []).append(attributed)
+                last_attributed = attributed
+            current["quantity"] -= allocated
+            remaining -= allocated
+            if current["quantity"] <= 1e-9:
+                entries.pop(0)
+        if remaining > 1e-9 and last_attributed is not None:
+            last_attributed["_unallocated_signed_quantity"] = native_sign * remaining
+        if not entries:
             open_entries.pop(key, None)
 
 
@@ -1470,7 +1526,7 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
     by_intent = {}
     for row in executions:
         by_intent.setdefault(str(row.get("intent_id") or ""), []).append(row)
-    attribute_native_terminal_events(executions, by_intent)
+    attribute_native_terminal_events(executions, by_intent, trade_ledger)
 
     for intent_id, intent in intents.items():
         if intent.get("action") not in {"ENTER_LONG", "ENTER_SHORT"}:
