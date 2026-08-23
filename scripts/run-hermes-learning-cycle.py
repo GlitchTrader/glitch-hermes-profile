@@ -730,6 +730,29 @@ def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[
     return evidence
 
 
+def fit_debrief_evidence(
+    glitch_data: Path,
+    outcomes: list[dict[str, Any]],
+    supervisor: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep the oldest complete debrief slice inside the model and repair budgets."""
+    batch = list(outcomes)
+    evidence = debrief_evidence(glitch_data, batch)
+    while batch:
+        ids = [stable_id("episode", str(row["intent_id"])) for row in batch]
+        prompt = build_prompt(
+            "debrief",
+            evidence,
+            output_template("debrief", ids),
+            continuity(supervisor),
+        )
+        if len(prompt) <= MAX_PROMPT_CHARS - LEARNING_REPAIR_PROMPT_RESERVE_CHARS:
+            return batch, evidence
+        batch.pop()
+        evidence.pop()
+    raise ValueError("learning_prompt_too_large:debrief:single_outcome")
+
+
 def _instrument_observation(frame: dict[str, Any], instrument_root_name: str | None = None) -> dict[str, Any] | None:
     market = frame.get("market_snapshot") if isinstance(frame, dict) else None
     instruments = market.get("instruments") if isinstance(market, dict) else None
@@ -2286,9 +2309,11 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
     # checkpoints immediately, preventing a later due loop from replaying work
     # or extending this process's ownership of the shared Hermes profile.
     if new_outcomes and not yield_debrief_to_supervision and args.force_loop in {None, "debrief"}:
-        ids = [stable_id("episode", str(row["intent_id"])) for row in new_outcomes]
         if not args.dry_run:
-            factual_evidence = debrief_evidence(glitch_data, new_outcomes)
+            new_outcomes, factual_evidence = fit_debrief_evidence(
+                glitch_data, new_outcomes, supervisor
+            )
+            ids = [stable_id("episode", str(row["intent_id"])) for row in new_outcomes]
             records = invoke_loop(args, "debrief", factual_evidence, ids, supervisor)
             validate_debrief_attribution(records, new_outcomes)
             append_unique(

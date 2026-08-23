@@ -312,6 +312,30 @@ def test_management_evidence_is_bounded_but_preserves_non_hold_actions() -> None
     assert any(row.get("intent", {}).get("action") == "MOVE_STOP" for row in bounded)
 
 
+def test_debrief_evidence_fits_oldest_complete_slice_with_repair_room(tmp_path, monkeypatch) -> None:
+    outcomes = [{"intent_id": f"intent-{index}"} for index in range(4)]
+
+    monkeypatch.setattr(LEARNING, "MAX_PROMPT_CHARS", 150)
+    monkeypatch.setattr(LEARNING, "LEARNING_REPAIR_PROMPT_RESERVE_CHARS", 20)
+    monkeypatch.setattr(
+        LEARNING,
+        "debrief_evidence",
+        lambda _glitch_data, rows: [{"intent_id": row["intent_id"]} for row in rows],
+    )
+    monkeypatch.setattr(LEARNING, "continuity", lambda _supervisor: {})
+    monkeypatch.setattr(LEARNING, "output_template", lambda *_args: {})
+    monkeypatch.setattr(
+        LEARNING,
+        "build_prompt",
+        lambda _loop, evidence, _template, _continuity: "x" * (10 + 40 * len(evidence)),
+    )
+
+    batch, evidence = LEARNING.fit_debrief_evidence(tmp_path, outcomes, tmp_path)
+
+    assert [row["intent_id"] for row in batch] == ["intent-0", "intent-1", "intent-2"]
+    assert [row["intent_id"] for row in evidence] == ["intent-0", "intent-1", "intent-2"]
+
+
 def test_hourly_evidence_fits_oldest_complete_slice_with_repair_room(tmp_path, monkeypatch) -> None:
     rows = [{"episode_id": f"episode-{index}", "payload": "x" * 40} for index in range(5)]
 
