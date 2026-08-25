@@ -1326,9 +1326,8 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
 
     assert "does not require the future target to have traded already" in prompt
     assert "learner guidance is deliberately excluded from flat entry cognition" in prompt
-    assert "(risk_points + friction_points) / (risk_points + reward_points)" in prompt
-    assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
-    assert "not a fixed probability or reward/risk rule" in prompt
+    assert "(risk_points + friction_points) / (risk_points + reward_points)" not in prompt
+    assert "reconcile 1 - forecast.probability with estimated_target_first_range" not in prompt
     assert "RECURSIVE_ABSTENTION_VETO" not in prompt
 
 
@@ -1388,7 +1387,7 @@ def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
-    assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
+    assert "reconcile 1 - forecast.probability with estimated_target_first_range" not in prompt
     assert "runtime deterministically supplies schema, intent ID, time, route, account" in prompt
     assert "decision_audit closes before wake_triggers" in prompt
 
