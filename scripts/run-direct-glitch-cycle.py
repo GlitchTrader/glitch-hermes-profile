@@ -2859,6 +2859,13 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
                 # repair or reinterpret any cognitive audit value.
                 misplaced = audit.pop("wake_triggers")
                 intent.setdefault("wake_triggers", misplaced)
+            if isinstance(audit, dict) and not str(intent.get("reason") or "").strip():
+                evidence = str(audit.get("decisive_evidence") or "")
+                selection_reason = re.search(
+                    r"(?mi)^SELECTION_REASON\s*=\s*(.+?)\s*$", evidence
+                )
+                if selection_reason:
+                    intent["reason"] = selection_reason.group(1).strip()
             if "wake_triggers" not in intent and "wake_trigger" in intent:
                 legacy = intent.pop("wake_trigger")
                 intent["wake_triggers"] = [] if legacy is None else [legacy]

@@ -139,6 +139,19 @@ def test_normalize_batch_relocates_misplaced_audit_wake_triggers() -> None:
     DIRECT.validate_batch(batch, scenario)
 
 
+def test_normalize_batch_recovers_duplicate_reason_from_model_audit() -> None:
+    batch, _ = valid_batch("2026-08-03T07:02:41.0414987Z")
+    intent = batch["decisions"][0]
+    intent.pop("reason")
+    intent["decision_audit"]["decisive_evidence"] = (
+        "INSTRUMENT_COMPARISON_V1\nSELECTION_REASON=Model-authored reason."
+    )
+
+    DIRECT.normalize_batch(batch)
+
+    assert intent["reason"] == "Model-authored reason."
+
+
 def test_extract_json_repairs_only_terminal_missing_decision_closer() -> None:
     malformed = (
         '{"schema_version":"glitch.intent.batch.v1","decisions":['
