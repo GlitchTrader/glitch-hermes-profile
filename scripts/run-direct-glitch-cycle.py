@@ -2483,33 +2483,6 @@ def _first_unsigned_number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _selection_ev_probability(value: Any) -> float | None:
-    number = _first_unsigned_number(value)
-    if number is None:
-        return None
-    text = str(value or "")
-    if "%" in text or number > 1:
-        number /= 100
-    return number if 0 <= number <= 1 else None
-
-
-def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
-    numbers = re.findall(r"(?<![\d.])(?:\d+(?:[.,]\d*)?|[.,]\d+)", str(value or ""))
-    if len(numbers) != 2:
-        return None
-    try:
-        low, high = (float(number.replace(",", ".")) for number in numbers)
-    except ValueError:
-        return None
-    text = str(value or "")
-    if "%" in text or max(low, high) > 1:
-        low /= 100
-        high /= 100
-    if not all(math.isfinite(number) and 0 <= number <= 1 for number in (low, high)):
-        return None
-    return (low, high) if low <= high else None
-
-
 def _wait_claims_improvement(value: str) -> bool:
     return bool(re.search(r"(?i)\b(?:positive|improv\w*|better|dominates?)\b", value))
 
@@ -2521,7 +2494,7 @@ def validate_selection_ev(
     source: str,
     forecast: dict[str, Any] | None = None,
 ) -> None:
-    """Require a self-consistent EV conclusion without choosing the trade in code."""
+    """Require explicit action coherence; numeric calibration remains audit-only."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"selection_ev_missing:{index}:{source}")
     fields = _selection_ev_fields(value)
@@ -2550,51 +2523,7 @@ def validate_selection_ev(
     if action == "ENTER_SHORT" and direction != "SHORT":
         raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
 
-    risk = _first_unsigned_number(fields["risk_points"])
-    reward = _first_unsigned_number(fields["reward_points"])
-    friction = _first_unsigned_number(fields["friction_points"])
-    entry = _first_unsigned_number(fields["entry"])
-    stop = _first_unsigned_number(fields["stop"])
     target = _first_unsigned_number(fields["target"])
-    declared_breakeven = _selection_ev_probability(fields["breakeven_target_first"])
-    estimated_range = _selection_ev_probability_range(fields["estimated_target_first_range"])
-    if (
-        risk is None or risk <= 0
-        or reward is None or reward <= 0
-        or friction is None or friction < 0
-        or entry is None or stop is None or target is None
-        or declared_breakeven is None
-        or estimated_range is None
-    ):
-        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
-    geometry_risk = entry - stop if direction == "LONG" else stop - entry
-    geometry_reward = target - entry if direction == "LONG" else entry - target
-    if (
-        geometry_risk <= 0 or geometry_reward <= 0
-        or abs(risk - geometry_risk) > 0.02
-        or abs(reward - geometry_reward) > 0.02
-    ):
-        raise ValueError(f"selection_ev_geometry_mismatch:{index}:{source}")
-    computed_breakeven = (risk + friction) / (risk + reward)
-    if not math.isfinite(computed_breakeven) or not 0 <= computed_breakeven <= 1:
-        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
-    if abs(declared_breakeven - computed_breakeven) > 0.01:
-        raise ValueError(f"selection_ev_arithmetic_mismatch:{index}:{source}")
-
-    range_low, range_high = estimated_range
-    if isinstance(forecast, dict) and forecast.get("event") == FORECAST_EVENT_STOP_BEFORE_PRIMARY_TARGET:
-        probability = forecast.get("probability")
-        if isinstance(probability, (int, float)) and not isinstance(probability, bool):
-            target_first = 1 - float(probability)
-            if target_first < range_low - 0.02 or target_first > range_high + 0.02:
-                raise ValueError(f"selection_ev_forecast_range_mismatch:{index}:{source}")
-
-    if (
-        (verdict == "POSITIVE" and range_high < computed_breakeven - 0.005)
-        or (verdict == "NEGATIVE" and range_low > computed_breakeven + 0.005)
-    ):
-        raise ValueError(f"selection_ev_verdict_range_mismatch:{index}:{source}")
-
     wait_price = _first_unsigned_number(fields["wait_price"])
     if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields["wait_ev"]):
         consumes_target = (
@@ -2774,11 +2703,7 @@ def validate_batch(
         action = intent.get("action")
         if action not in ACTIONS:
             raise ValueError(f"action_invalid:{index}")
-        validate_forecast(
-            intent.get("forecast"),
-            index,
-            required=action in {"ENTER_LONG", "ENTER_SHORT"},
-        )
+        validate_forecast(intent.get("forecast"), index)
         if audit["final_choice"] != action:
             raise ValueError(f"decision_audit_choice_mismatch:{index}")
         active_instruments = positioned_instruments(book)
@@ -2869,11 +2794,9 @@ def validate_batch(
                 )
 
 
-def validate_forecast(forecast: Any, index: int, *, required: bool = False) -> None:
-    """Validate calibration metadata without turning it into an action gate."""
+def validate_forecast(forecast: Any, index: int) -> None:
+    """Validate calibration metadata when present without gating the action."""
     if forecast is None:
-        if required:
-            raise ValueError(f"forecast_required:{index}")
         return
     if not isinstance(forecast, dict) or set(forecast) != FORECAST_FIELDS:
         raise ValueError(f"forecast_contract_invalid:{index}")
@@ -3495,12 +3418,7 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
 )
 
 SEMANTIC_MODEL_CONTRACT_ERRORS = (
-    "selection_ev_arithmetic_mismatch",
     "selection_ev_direction_action_mismatch",
-    "selection_ev_forecast_range_mismatch",
-    "selection_ev_geometry_mismatch",
-    "selection_ev_numeric_invalid",
-    "selection_ev_verdict_range_mismatch",
     "selection_ev_wait_consumes_target",
     "trigger_review_failed_without_invalidation_or_contradiction",
 )
