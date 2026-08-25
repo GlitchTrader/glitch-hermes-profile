@@ -119,19 +119,19 @@ def test_entry_requires_calibration_and_a_slippage_tolerant_range() -> None:
         raise AssertionError("missing entry range was accepted")
 
 
-def test_entry_observes_geometry_evidence_that_hides_a_tiny_denominator() -> None:
+def test_entry_rejects_geometry_evidence_that_hides_a_tiny_denominator() -> None:
     batch, scenario = entry_batch()
     batch["decisions"][0]["decision_audit"]["decisive_evidence"] = comparison("ENTER_LONG").replace(
         "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency",
         "small structural stop with attractive ratio",
     )
 
-    observations = DIRECT.validate_batch(batch, scenario)
-
-    assert any(
-        value.startswith("entry_geometry_evidence_incomplete:0:candidate_comparison:")
-        for value in observations
-    )
+    try:
+        DIRECT.validate_batch(batch, scenario)
+    except ValueError as error:
+        assert str(error).startswith("entry_geometry_evidence_incomplete:0:candidate_comparison:")
+    else:
+        raise AssertionError("entry without explicit horizon and economic geometry was accepted")
 
 
 def test_entry_accepts_prompt_approved_horizon_noise_wording() -> None:
@@ -142,16 +142,19 @@ def test_entry_accepts_prompt_approved_horizon_noise_wording() -> None:
         "12 points, 48 ticks, supplied horizon noise is 5 and 11, $24 risk after latency",
     )
     for geometry in variants:
-        assert DIRECT.validate_entry_geometry_evidence(
-            geometry, 0, "candidate_comparison"
-        ) == []
+        DIRECT.validate_entry_geometry_evidence(geometry, 0, "candidate_comparison")
 
 
-def test_entry_observes_one_sided_atr_evidence() -> None:
+def test_entry_rejects_one_sided_atr_evidence() -> None:
     geometry = "12 points, 48 ticks, one-minute ATR 5, $24 risk after latency"
-    assert DIRECT.validate_entry_geometry_evidence(
-        geometry, 0, "candidate_comparison"
-    ) == ["entry_geometry_evidence_incomplete:0:candidate_comparison:horizon_noise"]
+    try:
+        DIRECT.validate_entry_geometry_evidence(geometry, 0, "candidate_comparison")
+    except ValueError as error:
+        assert str(error) == (
+            "entry_geometry_evidence_incomplete:0:candidate_comparison:horizon_noise"
+        )
+    else:
+        raise AssertionError("entry with only one-minute ATR evidence was accepted")
 
 
 def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeypatch) -> None:

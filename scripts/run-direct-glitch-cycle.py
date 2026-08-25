@@ -2426,16 +2426,16 @@ def validate_candidate_comparison(
         [f"selection_ev_missing:{index}:candidate_comparison"]
     )
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
-        observations.extend(validate_entry_geometry_evidence(
+        validate_entry_geometry_evidence(
             section_values[instrument_root(selected_instrument)]["NOISE_AND_GEOMETRY"],
             index,
             "candidate_comparison",
-        ))
+        )
     return observations
 
 
-def validate_entry_geometry_evidence(value: str, index: int, source: str) -> list[str]:
-    """Observe incomplete geometry prose without suppressing the authored intent."""
+def validate_entry_geometry_evidence(value: str, index: int, source: str) -> None:
+    """Require explicit geometry evidence without imposing a numeric strategy gate."""
     lowered = value.lower()
     normalized = re.sub(r"[\u2010-\u2015]", "-", lowered)
     numeric_atr_pair = (
@@ -2463,10 +2463,8 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> lis
         "latency": "latency" in lowered or "delay" in lowered,
     }
     missing = [name for name, present in dimensions.items() if not present]
-    return (
-        [f"entry_geometry_evidence_incomplete:{index}:{source}:{','.join(missing)}"]
-        if missing else []
-    )
+    if missing:
+        raise ValueError(f"entry_geometry_evidence_incomplete:{index}:{source}:{','.join(missing)}")
 
 
 def _selection_ev_fields(value: str) -> dict[str, str]:
@@ -2601,11 +2599,11 @@ def validate_trigger_review(
         )
     validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
-        observations.extend(validate_entry_geometry_evidence(
+        validate_entry_geometry_evidence(
             values["ENTRY_RANGE_NOISE_GEOMETRY"],
             index,
             "trigger_review",
-        ))
+        )
     return observations
 
 

@@ -510,7 +510,7 @@ def test_trigger_review_rejects_deferring_setup_derivation_to_packet() -> None:
         raise AssertionError("trigger review deferred setup interpretation back to the packet")
 
 
-def test_trigger_entry_observes_incomplete_horizon_and_economic_geometry() -> None:
+def test_trigger_entry_requires_explicit_horizon_and_economic_geometry() -> None:
     def review(geometry: str) -> str:
         lines = [DIRECT.TRIGGER_REVIEW_MARKER]
         for field in DIRECT.TRIGGER_REVIEW_FIELDS:
@@ -530,13 +530,14 @@ def test_trigger_entry_observes_incomplete_horizon_and_economic_geometry() -> No
     complete = "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency"
     DIRECT.validate_trigger_review(review(complete), {"MNQ", "MES"}, "MNQ", "ENTER_SHORT", 0)
 
-    observations = DIRECT.validate_trigger_review(
-        review("small stop above the pivot"), {"MNQ", "MES"}, "MNQ", "ENTER_SHORT", 0
-    )
-    assert any(
-        value.startswith("entry_geometry_evidence_incomplete:0:trigger_review:")
-        for value in observations
-    )
+    try:
+        DIRECT.validate_trigger_review(
+            review("small stop above the pivot"), {"MNQ", "MES"}, "MNQ", "ENTER_SHORT", 0
+        )
+    except ValueError as error:
+        assert str(error).startswith("entry_geometry_evidence_incomplete:0:trigger_review:")
+    else:
+        raise AssertionError("trigger entry without explicit horizon and economic geometry was accepted")
 
 
 def test_invalid_output_is_not_retried(monkeypatch) -> None:
