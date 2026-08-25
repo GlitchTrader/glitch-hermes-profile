@@ -188,6 +188,58 @@ def build_reconciliation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return glitch_data, decision_root, output_path
 
 
+def test_portfolio_snapshot_loader_keeps_full_trade_window_and_boundaries(
+    tmp_path: Path,
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    root = glitch_data / "snapshots" / "historical" / "portfolio"
+    root.mkdir(parents=True)
+    stamps = (
+        "20260803T0900Z",
+        "20260803T0959Z",
+        "20260803T1000Z",
+        "20260803T1001Z",
+        "20260803T1002Z",
+        "20260803T1100Z",
+    )
+    for stamp in stamps:
+        (root / f"{stamp}.json").write_text(json.dumps({
+            "snapshot_id": stamp,
+            "created_utc": datetime.strptime(stamp, "%Y%m%dT%H%MZ")
+            .replace(tzinfo=timezone.utc).isoformat(),
+        }), encoding="utf-8")
+    (root / "legacy-name.json").write_text(json.dumps({
+        "snapshot_id": "legacy-name",
+        "created_utc": "2026-08-03T08:00:00Z",
+    }), encoding="utf-8")
+
+    snapshots = RECONCILER.portfolio_snapshots(glitch_data, [(
+        datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 3, 10, 1, tzinfo=timezone.utc),
+    )])
+
+    assert {row["snapshot_id"] for _, row in snapshots} == {
+        "legacy-name",
+        "20260803T0959Z",
+        "20260803T1000Z",
+        "20260803T1001Z",
+        "20260803T1002Z",
+    }
+
+
+def test_reconciliation_snapshot_intervals_include_native_only_entry_lifecycle() -> None:
+    intents = {"intent-1": {"action": "ENTER_LONG"}}
+    by_intent = {"intent-1": [
+        {"recorded_utc": "2026-08-03T10:00:00Z"},
+        {"recorded_utc": "2026-08-03T10:05:00Z"},
+    ]}
+
+    assert RECONCILER.reconciliation_snapshot_intervals([], intents, by_intent, {}) == [(
+        datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 3, 10, 5, tzinfo=timezone.utc),
+    )]
+
+
 def test_reconcile_uses_immutable_outbox_group_manifest(tmp_path: Path) -> None:
     glitch_data, decision_root, output_path = build_reconciliation_fixture(tmp_path)
     (glitch_data / "AccountGroups.tsv").write_text(

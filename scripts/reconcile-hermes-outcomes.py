@@ -10,6 +10,7 @@ unknown, not failure, and never erases master learning.
 """
 
 import argparse
+import bisect
 import hashlib
 import json
 import math
@@ -270,10 +271,83 @@ def parse_group_accounts_tsv(account_groups_tsv, master_account):
     return []
 
 
-def portfolio_snapshots(glitch_data):
+def reconciliation_snapshot_intervals(trade_ledger, intents, by_intent, existing):
+    """Return every known trade window without interpreting its market outcome."""
+    intervals = []
+    for trade in trade_ledger:
+        start = trade.get("entry_utc")
+        end = trade.get("exit_utc")
+        if isinstance(start, datetime) and isinstance(end, datetime):
+            intervals.append((min(start, end), max(start, end)))
+    for outcome in existing.values():
+        stamps = []
+        for field in (
+            "entry_utc", "exit_utc", "terminal_verified_utc",
+            "replication_terminal_verified_utc",
+        ):
+            try:
+                stamps.append(parse_utc(outcome.get(field)))
+            except (TypeError, ValueError):
+                continue
+        if stamps:
+            intervals.append((min(stamps), max(stamps)))
+    for intent_id, intent in intents.items():
+        if intent.get("action") not in {"ENTER_LONG", "ENTER_SHORT"}:
+            continue
+        stamps = []
+        for event in by_intent.get(intent_id, []):
+            try:
+                stamps.append(parse_utc(event.get("recorded_utc")))
+            except (TypeError, ValueError):
+                continue
+        if stamps:
+            intervals.append((min(stamps), max(stamps)))
+
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _snapshot_filename_utc(path):
+    try:
+        return datetime.strptime(path.stem, "%Y%m%dT%H%MZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def portfolio_snapshots(glitch_data, intervals=None):
+    """Load full trade windows plus their nearest boundary snapshots.
+
+    Filename filtering changes only file-selection cost. Every snapshot inside
+    every known trade is still parsed, along with the nearest snapshot before
+    and after each window. Noncanonical filenames are always parsed.
+    """
     snapshots = []
     root = glitch_data / "snapshots" / "historical" / "portfolio"
-    for path in root.glob("*.json"):
+    paths = list(root.glob("*.json"))
+    selected = paths
+    if intervals is not None:
+        timestamped = sorted(
+            (stamp, path)
+            for path in paths
+            if (stamp := _snapshot_filename_utc(path)) is not None
+        )
+        stamps = [stamp for stamp, _ in timestamped]
+        selected_paths = {
+            path for path in paths if _snapshot_filename_utc(path) is None
+        }
+        for start, end in intervals:
+            first = bisect.bisect_left(stamps, start)
+            after = bisect.bisect_right(stamps, end)
+            lower = max(0, first - 1)
+            upper = min(len(timestamped), after + 1)
+            selected_paths.update(path for _, path in timestamped[lower:upper])
+        selected = sorted(selected_paths)
+    for path in selected:
         try:
             row = json.loads(path.read_text(encoding="utf-8-sig"))
             snapshots.append((parse_utc(row["created_utc"]), row))
@@ -309,10 +383,10 @@ def snapshot_reference(snapshots, when):
     }
 
 
-def market_snapshot_reference(glitch_data, when, instrument_root=None):
-    """Reference the nearest market frame without treating it as native account truth."""
+def market_snapshot_rows(glitch_data):
+    """Parse the bounded minute-frame corpus once per reconciliation cycle."""
     root = glitch_data / "hermes" / "exchange" / "glitch" / "minute-frames"
-    candidates = []
+    rows = []
     for path in root.glob("*.json"):
         try:
             row = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -323,11 +397,22 @@ def market_snapshot_reference(glitch_data, when, instrument_root=None):
                 stamp = datetime.strptime(str(raw_stamp), "%Y%m%dT%H%MZ").replace(tzinfo=timezone.utc)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        if stamp < when:
-            candidates.append((stamp, row))
+        rows.append((stamp, row))
+    return sorted(rows, key=lambda item: item[0])
+
+
+def market_snapshot_reference(glitch_data, when, instrument_root=None, market_frames=None):
+    """Reference the nearest market frame without treating it as native account truth."""
+    candidates = [
+        (stamp, row)
+        for stamp, row in (
+            market_frames if market_frames is not None else market_snapshot_rows(glitch_data)
+        )
+        if stamp < when
+    ]
     if not candidates:
         return None
-    stamp, row = sorted(candidates, key=lambda item: item[0])[-1]
+    stamp, row = candidates[-1]
     market = row.get("market_snapshot") if isinstance(row, dict) else None
     if not isinstance(market, dict):
         return None
@@ -736,7 +821,7 @@ def contemporaneous_ai_comparison(intents, trade):
     }
 
 
-def manual_trade_outcome(glitch_data, snapshots, intents, trade):
+def manual_trade_outcome(glitch_data, snapshots, intents, trade, market_frames=None):
     """Build a learning-only manual episode from completed native round-trip truth."""
     source = str(trade.get("trade_source") or "").strip().lower()
     entry_type = str(trade.get("entry_type") or "").strip().lower()
@@ -755,7 +840,9 @@ def manual_trade_outcome(glitch_data, snapshots, intents, trade):
     cycle_id = "manual-cycle-" + digest[:24]
     side = "ENTER_LONG" if str(trade.get("side") or "").lower() == "long" else "ENTER_SHORT"
     portfolio = snapshot_reference(snapshots, trade["entry_utc"])
-    market = market_snapshot_reference(glitch_data, trade["entry_utc"], instrument)
+    market = market_snapshot_reference(
+        glitch_data, trade["entry_utc"], instrument, market_frames
+    )
     terminal = terminal_group_snapshot(snapshots, trade["exit_utc"], [account])
     master_result = {
         "account": account,
@@ -1517,7 +1604,6 @@ def attribute_native_terminal_events(executions, by_intent, trade_ledger=None):
 def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decision_log=None):
     executions = read_jsonl(glitch_data / "intents" / "executions.jsonl")
     intents = find_intents(evidence_root, decision_root, decision_log)
-    snapshots = portfolio_snapshots(glitch_data)
     trade_ledger = read_trade_ledger(glitch_data / "TradeLedger.tsv")
     journal = read_journal(glitch_data / "Journal.tsv")
     native_protection_log = glitch_data.parent / "log"
@@ -1527,6 +1613,11 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
     for row in executions:
         by_intent.setdefault(str(row.get("intent_id") or ""), []).append(row)
     attribute_native_terminal_events(executions, by_intent, trade_ledger)
+    snapshots = portfolio_snapshots(
+        glitch_data,
+        reconciliation_snapshot_intervals(trade_ledger, intents, by_intent, existing),
+    )
+    market_frames = market_snapshot_rows(glitch_data)
 
     for intent_id, intent in intents.items():
         if intent.get("action") not in {"ENTER_LONG", "ENTER_SHORT"}:
@@ -1684,7 +1775,9 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
         master_outcome = next((row for row in account_outcomes if row["account"].lower() == master.lower()), None)
         if master_outcome is None:
             continue
-        market_reference = market_snapshot_reference(glitch_data, entry_utc, instrument_root)
+        market_reference = market_snapshot_reference(
+            glitch_data, entry_utc, instrument_root, market_frames
+        )
         management_history = management_intent_counterfactuals(
             intents,
             snapshots,
@@ -1762,7 +1855,9 @@ def reconcile(glitch_data, evidence_root, output_path, decision_root=None, decis
     for trade in trade_ledger:
         if master_accounts and str(trade.get("account") or "").lower() not in master_accounts:
             continue
-        manual = manual_trade_outcome(glitch_data, snapshots, intents, trade)
+        manual = manual_trade_outcome(
+            glitch_data, snapshots, intents, trade, market_frames
+        )
         if manual is not None:
             replace_manual_outcome(existing, manual, trade)
 

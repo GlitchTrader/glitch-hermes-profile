@@ -587,14 +587,15 @@ def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
     assert DIRECT.packet_fingerprint(first) == DIRECT.packet_fingerprint(second)
 
 
-def test_selection_ev_contract_rejects_positive_nothing() -> None:
+def test_selection_ev_positive_nothing_is_observed_without_gating() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
         "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    with pytest.raises(ValueError, match="selection_ev_nothing_positive"):
-        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    assert DIRECT.validate_selection_ev(value, "NOTHING", 0, "test") == [
+        "selection_ev_nothing_positive:0:test"
+    ]
 
 
 def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
@@ -647,7 +648,7 @@ def test_selection_ev_forecast_range_and_verdict_are_audit_only() -> None:
     ("direction", "target", "wait_price"),
     (("LONG", 110, 110), ("SHORT", 90, 89)),
 )
-def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
+def test_selection_ev_observes_wait_that_claims_improvement_after_target(
     direction: str, target: float, wait_price: float
 ) -> None:
     value = (
@@ -655,8 +656,20 @@ def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=20-30%;"
         f"now_ev=NEGATIVE;wait_price={wait_price};wait_ev=IMPROVES;decisive_reason=fixture"
     )
-    with pytest.raises(ValueError, match="selection_ev_wait_consumes_target"):
-        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    assert "selection_ev_wait_consumes_target:0:test" in DIRECT.validate_selection_ev(
+        value, "NOTHING", 0, "test"
+    )
+
+
+def test_selection_ev_direction_action_contradiction_remains_a_hard_gate() -> None:
+    value = (
+        "direction=SHORT;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
+        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
+        "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
+    )
+    with pytest.raises(ValueError, match="selection_ev_direction_action_mismatch") as error:
+        DIRECT.validate_selection_ev(value, "ENTER_LONG", 0, "test")
+    assert DIRECT.retryable_model_contract_error(error.value) is False
 
 
 @pytest.mark.parametrize("supersession_direction", ["better_price", "targetward"])
