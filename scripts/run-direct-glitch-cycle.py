@@ -3705,6 +3705,35 @@ def candidate_price(packet: dict[str, Any], instrument: str) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
 
+def latest_master_entry_state(
+    packet: dict[str, Any],
+    account_name: str,
+) -> tuple[bool, int, int]:
+    """Return authoritative flat/order-free evidence for one entry master."""
+    frames = packet.get("frames")
+    latest = frames[-1] if isinstance(frames, list) and frames and isinstance(frames[-1], dict) else {}
+    portfolio = latest.get("portfolio_snapshot") if isinstance(latest, dict) else None
+    accounts = portfolio.get("accounts") if isinstance(portfolio, dict) else None
+    if not isinstance(accounts, list):
+        return False, 0, 0
+    account = next((
+        value for value in accounts
+        if isinstance(value, dict)
+        and str(value.get("account") or "").casefold() == str(account_name or "").casefold()
+    ), None)
+    if not isinstance(account, dict) or account.get("native_state_available") is not True:
+        return False, 0, 0
+    if not isinstance(account.get("positions"), list):
+        return False, 0, 0
+    try:
+        working_orders = int(account.get("working_orders"))
+    except (TypeError, ValueError):
+        return False, 0, 0
+    if working_orders < 0:
+        return False, 0, 0
+    return True, _account_total_contracts(account), working_orders
+
+
 def apply_entry_revalidation(
     batch: dict[str, Any],
     source_packet: dict[str, Any],
@@ -3724,6 +3753,14 @@ def apply_entry_revalidation(
         root = instrument_root(intent.get("instrument"))
         source_price = candidate_price(source_packet, root)
         current_price = candidate_price(latest_packet, root)
+        master_state_available, master_position_contracts, master_working_orders = (
+            latest_master_entry_state(latest_packet, str(intent.get("account") or ""))
+        )
+        master_flat_order_free = (
+            master_state_available
+            and master_position_contracts == 0
+            and master_working_orders == 0
+        )
         try:
             low = float(intent["entry_range_low"])
             high = float(intent["entry_range_high"])
@@ -3741,16 +3778,16 @@ def apply_entry_revalidation(
             geometry_valid = current_price is not None and stop < current_price < target
         else:
             geometry_valid = current_price is not None and target < current_price < stop
-        accepted = range_valid and geometry_valid
+        accepted = master_flat_order_free and range_valid and geometry_valid
         favorable = (
-            not accepted and latest_fresh and current_price is not None
+            not accepted and master_flat_order_free and latest_fresh and current_price is not None
             and all(math.isfinite(value) for value in (low, high, stop, target))
             and geometry_valid
             and ((intent.get("action") == "ENTER_LONG" and current_price < low)
                  or (intent.get("action") == "ENTER_SHORT" and current_price > high))
         )
         reassessment_eligible = (
-            not accepted and latest_fresh and current_price is not None
+            not accepted and master_flat_order_free and latest_fresh and current_price is not None
             and all(math.isfinite(value) for value in (low, high, stop, target))
             and geometry_valid
         )
@@ -3761,7 +3798,10 @@ def apply_entry_revalidation(
         )
         status = "accepted_current_price_in_range" if accepted else "superseded"
         reason = None if accepted else (
-            "latest_market_unavailable" if current_price is None or not latest_fresh
+            "latest_master_state_unavailable" if not master_state_available
+            else "latest_master_not_flat" if master_position_contracts != 0
+            else "latest_master_has_working_orders" if master_working_orders != 0
+            else "latest_market_unavailable" if current_price is None or not latest_fresh
             else "latest_price_outside_entry_range" if not range_valid
             else "entry_geometry_invalid_at_latest_price"
         )
@@ -3775,6 +3815,9 @@ def apply_entry_revalidation(
             "source_snapshot_hash": intent.get("snapshot_hash"),
             "latest_snapshot_hash": latest_hash,
             "instrument": root,
+            "latest_master_state_available": master_state_available,
+            "latest_master_position_contracts": master_position_contracts,
+            "latest_master_working_orders": master_working_orders,
             "source_price": source_price,
             "latest_price": current_price,
             "entry_range_low": low if math.isfinite(low) else None,
@@ -4150,7 +4193,7 @@ def build_prompt(
             "Apply the injected SOUL, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "This is a fast position-management pass. Do not rescan flat instruments, retrieve memory, or propose new exposure. "
             "For each active native position, compare remaining expected value of HOLD, MOVE_STOP, MOVE_TP, and EXIT using entry, current price, working stop and target, initial risk, current noise, MFE, MAE, rollback, accepted response, delta-price agreement, remaining objective, and giveback risk. "
-            "Favorable excursion is earned optionality. Once it is material relative to initial risk and current noise, HOLD bears the burden of proof. An unbroken original invalidation or still-reachable target is not sufficient. Protect at a technically supported level that can survive current noise; when no such level exists and continuation value no longer compensates for giveback, EXIT. Never move mechanically to breakeven. "
+            "Favorable excursion is earned optionality. Once it is material relative to initial risk and current noise, HOLD bears the burden of proof. Quantify remaining reward from current price to target, potential giveback from current price to stop, rollback relative to peak MFE and initial risk, and the immediate completed one- and five-minute response; never call rollback limited or modest without those comparisons. HOLD must explain why rebased continuation value clearly exceeds EXIT. A still-reachable target, intact original thesis or invalidation, higher-timeframe alignment, or lack of accepted reversal through entry is not sufficient, and EXIT after material MFE does not require original invalidation or accepted reversal. Derive and evaluate at least one candidate protection level from recent completed one- or five-minute structure instead of requiring a pre-labeled level. If no technically supported level can survive current noise, that strengthens EXIT and cannot reject both MOVE_STOP and EXIT. Never use a fixed MFE percentage, trailing distance, mechanical breakeven, or automatic exit. "
             "Extend a target only after price accepts beyond the prior objective, and only while ratcheting the stop in the same MOVE_TP update so extra upside is not financed by surrendering earned protection. "
             "A profit-protecting stop is at or above entry for a long and at or below entry for a short. "
             "Write the compact POSITION_MANAGEMENT_V1 template in decision_audit.decisive_evidence and replace every placeholder. "

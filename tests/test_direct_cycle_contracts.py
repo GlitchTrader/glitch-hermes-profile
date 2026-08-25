@@ -1322,6 +1322,40 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "RECURSIVE_ABSTENTION_VETO" not in prompt
 
 
+def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition() -> None:
+    positioned = multibook_flat_scenario()
+    positioned["books"] = positioned["books"][:1]
+    positioned["books"][0]["instrument_contexts"]["MNQ"]["current_signed_quantity"] = -1
+    flat = multibook_flat_scenario()
+    for scenario in (positioned, flat):
+        for book in scenario["books"]:
+            book["followers"] = []
+            book["exposure"] = []
+            book["position_building_context"] = {"instrument": "MNQ"}
+    packet = {
+        "packet_id": "cycle-9",
+        "window_close_utc": "2026-08-13T10:05:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101"}, {"account": "Sim301"}]},
+        }],
+    }
+
+    positioned_prompt = DIRECT.build_prompt(packet, positioned, {"outcomes": []})
+    flat_prompt = DIRECT.build_prompt(packet, flat, {"outcomes": []})
+
+    assert '"decision_mode":"position_management"' in positioned_prompt
+    assert "rollback relative to peak MFE and initial risk" in positioned_prompt
+    assert "HOLD must explain why rebased continuation value clearly exceeds EXIT" in positioned_prompt
+    assert "EXIT after material MFE does not require original invalidation or accepted reversal" in positioned_prompt
+    assert "derive and evaluate at least one candidate protection level" in positioned_prompt.lower()
+    assert "cannot reject both MOVE_STOP and EXIT" in positioned_prompt
+    assert "Never use a fixed MFE percentage" in positioned_prompt
+    assert "rollback relative to peak MFE and initial risk" not in flat_prompt
+    assert "cannot reject both MOVE_STOP and EXIT" not in flat_prompt
+
+
 def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     scenario = multibook_flat_scenario()
     for book in scenario["books"]:

@@ -160,7 +160,15 @@ def test_entry_rejects_one_sided_atr_evidence() -> None:
 def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeypatch) -> None:
     batch, _ = entry_batch()
     source = {"packet_id": "source"}
-    latest = {"packet_id": "latest"}
+    latest = {
+        "packet_id": "latest",
+        "frames": [{"portfolio_snapshot": {"accounts": [{
+            "account": "Sim101",
+            "native_state_available": True,
+            "positions": [],
+            "working_orders": 0,
+        }]}}],
+    }
     prices = {id(source): 105.0, id(latest): 105.5}
     monkeypatch.setattr(DIRECT, "candidate_price", lambda packet, _instrument: prices[id(packet)])
     monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
@@ -182,6 +190,49 @@ def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeyp
     assert batch["decisions"][0]["entry_revalidation"]["reassessment_eligible"] is True
     assert batch["decisions"][0]["entry_revalidation"]["favorable_supersession"] is True
     assert batch["decisions"][0]["entry_revalidation"]["supersession_direction"] == "better_price"
+
+
+def test_entry_revalidation_requires_latest_master_flat_and_order_free(monkeypatch) -> None:
+    batch, _ = entry_batch()
+    source = {"packet_id": "source"}
+    latest_account = {
+        "account": "Sim101",
+        "native_state_available": True,
+        "positions": [],
+        "working_orders": 0,
+    }
+    latest = {
+        "packet_id": "latest",
+        "frames": [{"portfolio_snapshot": {"accounts": [latest_account]}}],
+    }
+    monkeypatch.setattr(DIRECT, "candidate_price", lambda packet, _instrument: 105.0)
+    monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "market_snapshot_is_fresh", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "latest_market", lambda _packet: ({"snapshot_hash": "latest-hash"}, {}, []))
+
+    latest_account["positions"] = [{
+        "instrument": "MES 09-26", "quantity": 1, "market_position": "Short",
+    }]
+    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    evidence = batch["decisions"][0]["entry_revalidation"]
+    assert evidence["reason"] == "latest_master_not_flat"
+    assert evidence["latest_master_position_contracts"] == 1
+    assert evidence["reassessment_eligible"] is False
+    assert evidence["supersession_direction"] is None
+
+    latest_account["positions"] = []
+    latest_account["working_orders"] = 1
+    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    evidence = batch["decisions"][0]["entry_revalidation"]
+    assert evidence["reason"] == "latest_master_has_working_orders"
+    assert evidence["reassessment_eligible"] is False
+
+    latest_account["working_orders"] = 0
+    latest_account["native_state_available"] = False
+    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    evidence = batch["decisions"][0]["entry_revalidation"]
+    assert evidence["reason"] == "latest_master_state_unavailable"
+    assert evidence["reassessment_eligible"] is False
 
 
 def test_partial_multibook_supersession_does_not_request_a_duplicate_cycle() -> None:
