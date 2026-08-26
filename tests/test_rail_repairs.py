@@ -32,6 +32,10 @@ import win_subprocess as WIN_SUBPROCESS
 
 
 class RailRepairTests(unittest.TestCase):
+    def test_setup_supports_current_hermes_agent_python_layout(self):
+        setup = (ROOT / "setup.ps1").read_text(encoding="utf-8")
+        self.assertIn("hermes\\hermes-agent\\venv\\Scripts\\python.exe", setup)
+
     def test_distribution_checksum_manifest_matches_every_owned_file(self):
         manifest = (ROOT / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
         self.assertTrue(manifest)

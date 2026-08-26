@@ -150,7 +150,10 @@ Assert-DistributionIntegrity
 $hermesCommand = Get-Command hermes -ErrorAction Stop
 $python = Join-Path (Split-Path $hermesCommand.Source -Parent) 'python.exe'
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-    throw "Could not locate the Hermes Python runtime: $python"
+    $python = Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent\venv\Scripts\python.exe'
+}
+if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    throw "Could not locate the Hermes Python runtime in either supported Windows layout."
 }
 
 $previousHermesHome = $env:HERMES_HOME
