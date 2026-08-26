@@ -64,6 +64,90 @@ function Get-HermesJobs {
     return @((Get-Content -LiteralPath $jobsPath -Raw | ConvertFrom-Json).jobs)
 }
 
+function New-VerifiedCheckpoint {
+    $checkpointRoot = Join-Path $glitchRoot 'hermes-checkpoints'
+    $checkpointName = [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $checkpointPath = Join-Path $checkpointRoot $checkpointName
+    New-Item -ItemType Directory -Force -Path $checkpointPath | Out-Null
+
+    $sources = @(
+        [ordered]@{ Path = (Join-Path $profileRoot 'memories'); Destination = 'profile\memories' },
+        [ordered]@{ Path = (Join-Path $profileRoot 'plans'); Destination = 'profile\plans' },
+        [ordered]@{ Path = (Join-Path $glitchRoot 'hermes\exchange\hermes\supervisor'); Destination = 'backend\supervisor' },
+        [ordered]@{ Path = (Join-Path $glitchRoot 'hermes\epoch.json'); Destination = 'backend\epoch.json' },
+        [ordered]@{ Path = $distributionPath; Destination = 'profile\distribution.yaml' }
+    )
+    $entries = [Collections.Generic.List[object]]::new()
+    foreach ($source in $sources) {
+        $sourcePath = [string]$source.Path
+        if (-not (Test-Path -LiteralPath $sourcePath)) { continue }
+        $sourceFiles = if (Test-Path -LiteralPath $sourcePath -PathType Container) {
+            @(Get-ChildItem -LiteralPath $sourcePath -File -Recurse -Force)
+        } else {
+            @(Get-Item -LiteralPath $sourcePath -Force)
+        }
+        foreach ($sourceFile in $sourceFiles) {
+            $sourceBytes = $sourceFile.Length
+            $sourceHash = (Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash
+            $relative = if (Test-Path -LiteralPath $sourcePath -PathType Container) {
+                $sourceFile.FullName.Substring($sourcePath.TrimEnd('\').Length).TrimStart('\')
+            } else {
+                ''
+            }
+            $destinationRelative = if ([string]::IsNullOrWhiteSpace($relative)) {
+                [string]$source.Destination
+            } else {
+                Join-Path ([string]$source.Destination) $relative
+            }
+            $destinationPath = Join-Path $checkpointPath $destinationRelative
+            New-Item -ItemType Directory -Force -Path (Split-Path $destinationPath -Parent) | Out-Null
+            Copy-Item -LiteralPath $sourceFile.FullName -Destination $destinationPath -Force
+            $copiedFile = Get-Item -LiteralPath $destinationPath
+            $copiedHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash
+            if ($copiedFile.Length -ne $sourceBytes -or $copiedHash -ne $sourceHash) {
+                throw "Checkpoint copy does not match source: $($sourceFile.FullName)"
+            }
+            $entries.Add([ordered]@{
+                source = $sourceFile.FullName
+                checkpoint_relative = $destinationRelative
+                bytes = $sourceBytes
+                sha256 = $sourceHash
+            })
+        }
+    }
+
+    foreach ($entry in $entries) {
+        $checkpointFile = Join-Path $checkpointPath ([string]$entry.checkpoint_relative)
+        $copiedFile = Get-Item -LiteralPath $checkpointFile
+        $copiedHash = (Get-FileHash -LiteralPath $checkpointFile -Algorithm SHA256).Hash
+        if ($copiedFile.Length -ne [long]$entry.bytes -or $copiedHash -ne [string]$entry.sha256) {
+            throw "Checkpoint verification failed: $checkpointFile"
+        }
+    }
+
+    $manifestPath = Join-Path $checkpointPath 'checkpoint-manifest.json'
+    [ordered]@{
+        schema_version = 'glitch.hermes.epoch_checkpoint.v1'
+        created_utc = [datetime]::UtcNow.ToString('o')
+        profile = $Profile
+        profile_distribution = (Get-Content -LiteralPath $distributionPath -Raw)
+        files = @($entries)
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw 'Checkpoint manifest could not be created.'
+    }
+    $checkpointBytes = 0
+    foreach ($entry in $entries) {
+        $checkpointBytes += [long]$entry.bytes
+    }
+    return [ordered]@{
+        path = $checkpointPath
+        manifest = $manifestPath
+        files = $entries.Count
+        bytes = $checkpointBytes
+    }
+}
+
 $controlState = Get-Content -LiteralPath $controlStatePath -Raw | ConvertFrom-Json
 if (-not [bool]$controlState.trading_paused) {
     throw 'AI trading must be paused before resetting the epoch.'
@@ -142,6 +226,8 @@ $preview = [ordered]@{
         'Reset the intended NinjaTrader accounts.',
         'Use Glitch Reset Data to clear Journal and Summary statistics.'
     )
+    checkpoint_required = $true
+    checkpoint_root = (Join-Path $glitchRoot 'hermes-checkpoints')
     backup_created = $false
 }
 
@@ -154,6 +240,8 @@ if (-not $Apply) {
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not stop the Glitch Hermes gateway before reset.'
 }
+
+$checkpoint = New-VerifiedCheckpoint
 
 $removed = [Collections.Generic.List[string]]::new()
 foreach ($relative in $profileTargets) {
@@ -235,7 +323,11 @@ if ($memoryFiles.Count -gt 0 -or $requestDumps.Count -gt 0) {
     profile = $Profile
     distribution_version = $distributionVersion
     removed_targets = $removed.Count
-    backup_created = $false
+    backup_created = $true
+    checkpoint_path = $checkpoint.path
+    checkpoint_manifest = $checkpoint.manifest
+    checkpoint_files = $checkpoint.files
+    checkpoint_bytes = $checkpoint.bytes
     native_accounts_inspected = $false
     memory_files_with_content = $memoryFiles.Count
     request_dumps = $requestDumps.Count

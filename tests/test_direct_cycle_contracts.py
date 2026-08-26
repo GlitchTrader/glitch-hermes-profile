@@ -587,18 +587,17 @@ def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
     assert DIRECT.packet_fingerprint(first) == DIRECT.packet_fingerprint(second)
 
 
-def test_selection_ev_positive_nothing_is_observed_without_gating() -> None:
+def test_selection_ev_contract_rejects_positive_nothing() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
         "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    assert DIRECT.validate_selection_ev(value, "NOTHING", 0, "test") == [
-        "selection_ev_nothing_positive:0:test"
-    ]
+    with pytest.raises(ValueError, match="selection_ev_nothing_positive"):
+        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
 
-def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
+def test_selection_ev_requires_numeric_arithmetic_and_rejects_mismatch() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;"
         "risk_points=approximately 5 points (20 ticks);reward_points=10 pts;"
@@ -606,7 +605,8 @@ def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
         "estimated_target_first_range=40-50%;now_ev=NEGATIVE;wait_price=105;"
         "wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    with pytest.raises(ValueError, match="selection_ev_numeric_invalid"):
+        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
     inconsistent_audit = value.replace(
         "friction_points=not material",
@@ -615,10 +615,11 @@ def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
         "breakeven_target_first=about 33.3%",
         "breakeven_target_first=62% after qualitative discount",
     ).replace("now_ev=NEGATIVE", "now_ev=NEGATIVE (wait dominates)")
-    DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
+    with pytest.raises(ValueError, match="selection_ev_arithmetic_mismatch"):
+        DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
 
 
-def test_selection_ev_forecast_range_and_verdict_are_audit_only() -> None:
+def test_selection_ev_reconciles_forecast_range_and_verdict() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
@@ -632,23 +633,25 @@ def test_selection_ev_forecast_range_and_verdict_are_audit_only() -> None:
     }
     DIRECT.validate_selection_ev(value, "ENTER_LONG", 0, "test", forecast)
 
-    DIRECT.validate_selection_ev(
-        value, "ENTER_LONG", 0, "test", {**forecast, "probability": 0.8}
-    )
-    DIRECT.validate_selection_ev(
-        value.replace("40-50%", "20-30%"),
-        "ENTER_LONG",
-        0,
-        "test",
-        {**forecast, "probability": 0.75},
-    )
+    with pytest.raises(ValueError, match="selection_ev_forecast_range_mismatch"):
+        DIRECT.validate_selection_ev(
+            value, "ENTER_LONG", 0, "test", {**forecast, "probability": 0.8}
+        )
+    with pytest.raises(ValueError, match="selection_ev_verdict_range_mismatch"):
+        DIRECT.validate_selection_ev(
+            value.replace("40-50%", "20-30%"),
+            "ENTER_LONG",
+            0,
+            "test",
+            {**forecast, "probability": 0.75},
+        )
 
 
 @pytest.mark.parametrize(
     ("direction", "target", "wait_price"),
     (("LONG", 110, 110), ("SHORT", 90, 89)),
 )
-def test_selection_ev_observes_wait_that_claims_improvement_after_target(
+def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
     direction: str, target: float, wait_price: float
 ) -> None:
     value = (
@@ -656,20 +659,8 @@ def test_selection_ev_observes_wait_that_claims_improvement_after_target(
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=20-30%;"
         f"now_ev=NEGATIVE;wait_price={wait_price};wait_ev=IMPROVES;decisive_reason=fixture"
     )
-    assert "selection_ev_wait_consumes_target:0:test" in DIRECT.validate_selection_ev(
-        value, "NOTHING", 0, "test"
-    )
-
-
-def test_selection_ev_direction_action_contradiction_remains_a_hard_gate() -> None:
-    value = (
-        "direction=SHORT;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
-        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
-        "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
-    )
-    with pytest.raises(ValueError, match="selection_ev_direction_action_mismatch") as error:
-        DIRECT.validate_selection_ev(value, "ENTER_LONG", 0, "test")
-    assert DIRECT.retryable_model_contract_error(error.value) is False
+    with pytest.raises(ValueError, match="selection_ev_wait_consumes_target"):
+        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
 
 @pytest.mark.parametrize("supersession_direction", ["better_price", "targetward"])
@@ -797,7 +788,6 @@ def test_native_economics_drive_risk_geometry() -> None:
 
 
 def test_forecast_is_validated_as_non_gating_metadata() -> None:
-    DIRECT.validate_forecast(None, 0)
     batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
     batch["decisions"][0]["forecast"] = {
         "event": "STOP_BEFORE_PRIMARY_TARGET",
@@ -1341,7 +1331,7 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "learner guidance is deliberately excluded from flat entry cognition" in prompt
     assert "(risk_points + friction_points) / (risk_points + reward_points)" in prompt
     assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
-    assert "This self-audit is observational, not a fixed probability or reward/risk rule." in prompt
+    assert "not a fixed probability or reward/risk rule" in prompt
     assert "RECURSIVE_ABSTENTION_VETO" not in prompt
 
 
@@ -1495,8 +1485,6 @@ def test_shared_flat_trigger_review_requests_one_shared_decision() -> None:
     assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
-    assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
-    assert "This self-audit is observational, not a fixed probability or reward/risk rule." in prompt
 
 
 def test_latest_prior_cognition_uses_one_canonical_decision_from_latest_prior_cycle(

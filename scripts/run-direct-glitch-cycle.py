@@ -2368,7 +2368,7 @@ def validate_candidate_comparison(
     action: str,
     index: int,
     forecast: dict[str, Any] | None = None,
-) -> list[str]:
+) -> None:
     """Require a complete, symmetric setup ledger before any intent is valid."""
     if not isinstance(text, str) or CANDIDATE_COMPARISON_MARKER not in text:
         raise ValueError(f"candidate_comparison_missing:{index}")
@@ -2409,7 +2409,7 @@ def validate_candidate_comparison(
     selection_action = re.search(r"(?mi)^SELECTION_ACTION\s*=\s*([A-Za-z_]+)\s*$", text)
     selection_ev = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
     selection_reason = re.search(r"(?mi)^SELECTION_REASON\s*=\s*(.+?)\s*$", text)
-    if not ranking or not ranking.group(1).strip() or not selection or not selection_action or not selection_reason:
+    if not ranking or not ranking.group(1).strip() or not selection or not selection_action or not selection_ev or not selection_reason:
         raise ValueError(f"candidate_comparison_selection_incomplete:{index}")
     ranked_text = ranking.group(1).upper()
     if any(root not in ranked_text for root in expected):
@@ -2418,12 +2418,8 @@ def validate_candidate_comparison(
         raise ValueError(f"candidate_comparison_selection_instrument_mismatch:{index}")
     if selection_action.group(1).upper() != action:
         raise ValueError(f"candidate_comparison_selection_action_mismatch:{index}")
-    observations = (
-        validate_selection_ev(
-            selection_ev.group(1), action, index, "candidate_comparison", forecast
-        )
-        if selection_ev else
-        [f"selection_ev_missing:{index}:candidate_comparison"]
+    validate_selection_ev(
+        selection_ev.group(1), action, index, "candidate_comparison", forecast
     )
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
@@ -2431,7 +2427,6 @@ def validate_candidate_comparison(
             index,
             "candidate_comparison",
         )
-    return observations
 
 
 def validate_entry_geometry_evidence(value: str, index: int, source: str) -> None:
@@ -2488,6 +2483,33 @@ def _first_unsigned_number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _selection_ev_probability(value: Any) -> float | None:
+    number = _first_unsigned_number(value)
+    if number is None:
+        return None
+    text = str(value or "")
+    if "%" in text or number > 1:
+        number /= 100
+    return number if 0 <= number <= 1 else None
+
+
+def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
+    numbers = re.findall(r"(?<![\d.])(?:\d+(?:[.,]\d*)?|[.,]\d+)", str(value or ""))
+    if len(numbers) != 2:
+        return None
+    try:
+        low, high = (float(number.replace(",", ".")) for number in numbers)
+    except ValueError:
+        return None
+    text = str(value or "")
+    if "%" in text or max(low, high) > 1:
+        low /= 100
+        high /= 100
+    if not all(math.isfinite(number) and 0 <= number <= 1 for number in (low, high)):
+        return None
+    return (low, high) if low <= high else None
+
+
 def _wait_claims_improvement(value: str) -> bool:
     return bool(re.search(r"(?i)\b(?:positive|improv\w*|better|dominates?)\b", value))
 
@@ -2498,11 +2520,10 @@ def validate_selection_ev(
     index: int,
     source: str,
     forecast: dict[str, Any] | None = None,
-) -> list[str]:
-    """Reject contradictory direction; keep EV prose quality observational."""
-    observations: list[str] = []
+) -> None:
+    """Require a self-consistent EV conclusion without choosing the trade in code."""
     if not isinstance(value, str) or not value.strip():
-        return [f"selection_ev_missing:{index}:{source}"]
+        raise ValueError(f"selection_ev_missing:{index}:{source}")
     fields = _selection_ev_fields(value)
     required = {
         "direction", "entry", "stop", "target", "risk_points", "reward_points",
@@ -2511,41 +2532,78 @@ def validate_selection_ev(
     }
     missing = sorted(key for key in required if not fields.get(key))
     if missing:
-        observations.append(f"selection_ev_fields_missing:{index}:{source}:{','.join(missing)}")
-    verdict_match = re.match(
-        r"(?i)^\s*(POSITIVE|NEGATIVE|UNCERTAIN)\b",
-        fields.get("now_ev", ""),
-    )
+        raise ValueError(f"selection_ev_fields_missing:{index}:{source}:{','.join(missing)}")
+    verdict_match = re.match(r"(?i)^\s*(POSITIVE|NEGATIVE|UNCERTAIN)\b", fields["now_ev"])
     if not verdict_match:
-        observations.append(f"selection_ev_verdict_invalid:{index}:{source}")
-    else:
-        verdict = verdict_match.group(1).upper()
-        if action in {"ENTER_LONG", "ENTER_SHORT"} and verdict != "POSITIVE":
-            observations.append(f"selection_ev_entry_not_positive:{index}:{source}")
-        if action == "NOTHING" and verdict == "POSITIVE":
-            observations.append(f"selection_ev_nothing_positive:{index}:{source}")
-    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields.get("direction", ""))
+        raise ValueError(f"selection_ev_verdict_invalid:{index}:{source}")
+    verdict = verdict_match.group(1).upper()
+    if action in {"ENTER_LONG", "ENTER_SHORT"} and verdict != "POSITIVE":
+        raise ValueError(f"selection_ev_entry_not_positive:{index}:{source}")
+    if action == "NOTHING" and verdict == "POSITIVE":
+        raise ValueError(f"selection_ev_nothing_positive:{index}:{source}")
+    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields["direction"])
     if not direction_match:
-        observations.append(f"selection_ev_direction_invalid:{index}:{source}")
-        direction = None
-    else:
-        direction = direction_match.group(1).upper()
-        if action == "ENTER_LONG" and direction != "LONG":
-            raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
-        if action == "ENTER_SHORT" and direction != "SHORT":
-            raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
+        raise ValueError(f"selection_ev_direction_invalid:{index}:{source}")
+    direction = direction_match.group(1).upper()
+    if action == "ENTER_LONG" and direction != "LONG":
+        raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
+    if action == "ENTER_SHORT" and direction != "SHORT":
+        raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
 
-    target = _first_unsigned_number(fields.get("target"))
-    wait_price = _first_unsigned_number(fields.get("wait_price"))
-    if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields.get("wait_ev", "")):
+    risk = _first_unsigned_number(fields["risk_points"])
+    reward = _first_unsigned_number(fields["reward_points"])
+    friction = _first_unsigned_number(fields["friction_points"])
+    entry = _first_unsigned_number(fields["entry"])
+    stop = _first_unsigned_number(fields["stop"])
+    target = _first_unsigned_number(fields["target"])
+    declared_breakeven = _selection_ev_probability(fields["breakeven_target_first"])
+    estimated_range = _selection_ev_probability_range(fields["estimated_target_first_range"])
+    if (
+        risk is None or risk <= 0
+        or reward is None or reward <= 0
+        or friction is None or friction < 0
+        or entry is None or stop is None or target is None
+        or declared_breakeven is None
+        or estimated_range is None
+    ):
+        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
+    geometry_risk = entry - stop if direction == "LONG" else stop - entry
+    geometry_reward = target - entry if direction == "LONG" else entry - target
+    if (
+        geometry_risk <= 0 or geometry_reward <= 0
+        or abs(risk - geometry_risk) > 0.02
+        or abs(reward - geometry_reward) > 0.02
+    ):
+        raise ValueError(f"selection_ev_geometry_mismatch:{index}:{source}")
+    computed_breakeven = (risk + friction) / (risk + reward)
+    if not math.isfinite(computed_breakeven) or not 0 <= computed_breakeven <= 1:
+        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
+    if abs(declared_breakeven - computed_breakeven) > 0.01:
+        raise ValueError(f"selection_ev_arithmetic_mismatch:{index}:{source}")
+
+    range_low, range_high = estimated_range
+    if isinstance(forecast, dict) and forecast.get("event") == FORECAST_EVENT_STOP_BEFORE_PRIMARY_TARGET:
+        probability = forecast.get("probability")
+        if isinstance(probability, (int, float)) and not isinstance(probability, bool):
+            target_first = 1 - float(probability)
+            if target_first < range_low - 0.02 or target_first > range_high + 0.02:
+                raise ValueError(f"selection_ev_forecast_range_mismatch:{index}:{source}")
+
+    if (
+        (verdict == "POSITIVE" and range_high < computed_breakeven - 0.005)
+        or (verdict == "NEGATIVE" and range_low > computed_breakeven + 0.005)
+    ):
+        raise ValueError(f"selection_ev_verdict_range_mismatch:{index}:{source}")
+
+    wait_price = _first_unsigned_number(fields["wait_price"])
+    if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields["wait_ev"]):
         consumes_target = (
             direction == "LONG" and wait_price >= target
         ) or (
             direction == "SHORT" and wait_price <= target
         )
         if consumes_target:
-            observations.append(f"selection_ev_wait_consumes_target:{index}:{source}")
-    return observations
+            raise ValueError(f"selection_ev_wait_consumes_target:{index}:{source}")
 
 
 def validate_trigger_review(
@@ -2555,7 +2613,7 @@ def validate_trigger_review(
     action: str,
     index: int,
     forecast: dict[str, Any] | None = None,
-) -> list[str]:
+) -> None:
     if not isinstance(text, str) or TRIGGER_REVIEW_MARKER not in text:
         raise ValueError(f"trigger_review_missing:{index}")
     values: dict[str, str] = {}
@@ -2574,12 +2632,10 @@ def validate_trigger_review(
     if values["SELECTION_ACTION"].upper() != action:
         raise ValueError(f"trigger_review_selection_action_mismatch:{index}")
     ev_match = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
-    observations = (
-        validate_selection_ev(
-            ev_match.group(1), action, index, "trigger_review", forecast
-        )
-        if ev_match else
-        [f"selection_ev_missing:{index}:trigger_review"]
+    if not ev_match:
+        raise ValueError(f"trigger_review_selection_ev_missing:{index}")
+    validate_selection_ev(
+        ev_match.group(1), action, index, "trigger_review", forecast
     )
     status_value = values["PRIOR_TRIGGER_REVIEW"]
     allowed_statuses = {"HELD", "FAILED", "EXPIRED"}
@@ -2594,9 +2650,7 @@ def validate_trigger_review(
     if re.search(r"(?i)\bFAILED\b", status_value) and not re.search(
         r"(?i)\b(?:invalidat\w*|structural\s+contradiction)\b", status_value
     ):
-        observations.append(
-            f"trigger_review_failed_without_invalidation_or_contradiction:{index}"
-        )
+        raise ValueError(f"trigger_review_failed_without_invalidation_or_contradiction:{index}")
     validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
@@ -2604,7 +2658,6 @@ def validate_trigger_review(
             index,
             "trigger_review",
         )
-    return observations
 
 
 def validate_setup_derivation(value: str, index: int, source: str) -> None:
@@ -2620,8 +2673,7 @@ def validate_batch(
     *,
     allow_entry_revalidation: bool = False,
     expected_decision_mode: str | None = None,
-) -> list[str]:
-    observations: list[str] = []
+) -> None:
     forced_scope = (
         forced_entry_scope(directive, scenario)
         if directive and directive.get("directive_type") == "forced_entry"
@@ -2722,7 +2774,11 @@ def validate_batch(
         action = intent.get("action")
         if action not in ACTIONS:
             raise ValueError(f"action_invalid:{index}")
-        validate_forecast(intent.get("forecast"), index)
+        validate_forecast(
+            intent.get("forecast"),
+            index,
+            required=action in {"ENTER_LONG", "ENTER_SHORT"},
+        )
         if audit["final_choice"] != action:
             raise ValueError(f"decision_audit_choice_mismatch:{index}")
         active_instruments = positioned_instruments(book)
@@ -2738,23 +2794,23 @@ def validate_batch(
         elif candidate_roots:
             evidence = audit["decisive_evidence"]
             if expected_decision_mode == "trigger_review" or TRIGGER_REVIEW_MARKER in evidence:
-                observations.extend(validate_trigger_review(
+                validate_trigger_review(
                     evidence,
                     candidate_roots,
                     selected_instrument,
                     action,
                     index,
                     intent.get("forecast"),
-                ))
+                )
             else:
-                observations.extend(validate_candidate_comparison(
+                validate_candidate_comparison(
                     evidence,
                     candidate_roots,
                     selected_instrument,
                     action,
                     index,
                     intent.get("forecast"),
-                ))
+                )
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
             if "protection_updates" in intent:
                 raise ValueError(f"entry_contains_protection_updates:{index}")
@@ -2811,12 +2867,13 @@ def validate_batch(
                 raise ValueError(
                     f"operator_forced_entry_not_honored:{book.get('route_id')}:{expected}"
                 )
-    return observations
 
 
-def validate_forecast(forecast: Any, index: int) -> None:
-    """Validate calibration metadata when present without gating the action."""
+def validate_forecast(forecast: Any, index: int, *, required: bool = False) -> None:
+    """Validate calibration metadata without turning it into an action gate."""
     if forecast is None:
+        if required:
+            raise ValueError(f"forecast_required:{index}")
         return
     if not isinstance(forecast, dict) or set(forecast) != FORECAST_FIELDS:
         raise ValueError(f"forecast_contract_invalid:{index}")
@@ -3444,25 +3501,24 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "wake_triggers_",
 )
 
-NON_REPAIRABLE_MODEL_CONTRACT_ERRORS = (
-    "candidate_comparison_selection_action_mismatch",
-    "candidate_comparison_selection_instrument_mismatch",
-    "decision_audit_choice_mismatch",
+SEMANTIC_MODEL_CONTRACT_ERRORS = (
+    "selection_ev_arithmetic_mismatch",
     "selection_ev_direction_action_mismatch",
-    "trigger_review_selection_action_mismatch",
-    "trigger_review_selection_instrument_mismatch",
+    "selection_ev_forecast_range_mismatch",
+    "selection_ev_geometry_mismatch",
+    "selection_ev_numeric_invalid",
+    "selection_ev_verdict_range_mismatch",
+    "selection_ev_wait_consumes_target",
+    "trigger_review_failed_without_invalidation_or_contradiction",
 )
 
 
 def retryable_model_contract_error(error: Exception) -> bool:
     if isinstance(error, InvalidModelResponseError):
         return True
-    if not isinstance(error, ValueError):
-        return False
-    error_text = str(error)
-    if error_text.startswith(NON_REPAIRABLE_MODEL_CONTRACT_ERRORS):
-        return False
-    return error_text.startswith(RETRYABLE_MODEL_CONTRACT_ERRORS)
+    return isinstance(error, ValueError) and str(error).startswith(
+        RETRYABLE_MODEL_CONTRACT_ERRORS
+    )
 
 
 def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
@@ -3471,9 +3527,21 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
     else:
         prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
     error_text = str(error)
+    if error_text.startswith(SEMANTIC_MODEL_CONTRACT_ERRORS):
+        correction = (
+            "\nDECISION_CONSISTENCY_CORRECTION: Re-evaluate the same current packet and correct "
+            "the market judgment as needed. Keep numeric EV arithmetic, the target-first range, "
+            "the stop-first forecast, and the EV verdict internally consistent. A WAIT price at "
+            "or beyond the primary target cannot "
+            "be described as improving the opportunity, and a fired path cannot be FAILED unless "
+            "its named invalidation was reached or a specific structural contradiction emerged. "
+            "You may change action, instrument, prices, confidence, reasons, and audit evidence. "
+            "Return one fully consistent strict JSON object only."
+        )
+        return prompt + correction + "\nCONTRACT_ERROR=" + error_text + "\nPREVIOUS_RESPONSE=" + prior
     return (
         "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
-        "quantity, protection, confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
+        "confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
         "and the required field or nesting contract named by CONTRACT_ERROR. Return exactly one "
         "complete strict glitch.intent.batch.v1 JSON object with no Markdown or prose. "
         "decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
@@ -4707,12 +4775,6 @@ def run_once(
             prior_cognition,
             prompt_version,
         )
-        admission_observations = validate_batch(
-            batch,
-            scenario,
-            directive,
-            expected_decision_mode=decision_mode,
-        )
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet)
         supersession_reassessment = maybe_request_supersession_reassessment(
@@ -4744,10 +4806,6 @@ def run_once(
             "hermes_session_mode": "isolated",
             "output_repair_count": output_repair_count,
             "transport_retry_count": transport_retry_count,
-            "decision_admission_audit": {
-                "effect": "observation_only_no_execution_effect",
-                "issues": admission_observations,
-            },
             "invocation_reason": reason,
         })
     except Exception as error:

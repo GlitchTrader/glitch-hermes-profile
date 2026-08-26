@@ -145,6 +145,17 @@ class RailRepairTests(unittest.TestCase):
         self.assertNotIn("'Journal.tsv'", backend_targets)
         self.assertIn("Reload the Glitch AddOn before re-enabling AI", reset)
 
+    def test_epoch_reset_verifies_learning_checkpoint_before_deletion(self):
+        reset = (ROOT / "scripts" / "reset-hermes-trading-epoch.ps1").read_text(encoding="utf-8")
+        checkpoint_call = reset.index("$checkpoint = New-VerifiedCheckpoint")
+        first_removal = reset.index("Remove-ResetTarget -Path $target", checkpoint_call)
+        self.assertLess(checkpoint_call, first_removal)
+        self.assertIn("Get-FileHash -LiteralPath $checkpointFile -Algorithm SHA256", reset)
+        self.assertIn("hermes\\exchange\\hermes\\supervisor", reset)
+        self.assertIn("$checkpointBytes += [long]$entry.bytes", reset)
+        self.assertIn("backup_created = $true", reset)
+        self.assertNotIn("AllowUnbackedReset", reset)
+
 
 if __name__ == "__main__":
     unittest.main()
