@@ -1120,6 +1120,133 @@ def _latest_native_position_boundary(frames: list[Any], master: str, side: str) 
     return boundary
 
 
+def deterministic_management_math(
+    side: str,
+    quantity: int,
+    current_price: Any,
+    point_value_usd: Any,
+    tick_size: Any,
+    orders: list[dict[str, Any]],
+    current_unrealized_pnl_usd: float,
+    peak_unrealized_pnl_usd: float,
+    trough_unrealized_pnl_usd: float,
+) -> dict[str, Any]:
+    """Precompute native bracket arithmetic without choosing a management action."""
+    result: dict[str, Any] = {
+        "schema_version": "glitch.hermes.management_math.v1",
+        "effect": "decision_support_only_no_execution_effect",
+        "decision_authority": "hermes",
+        "status": "unavailable",
+        "calculation_basis": (
+            "native_current_price_to_working_stop_and_target_"
+            "gross_before_incremental_execution_costs"
+        ),
+        "formula": "giveback_to_stop / (giveback_to_stop + remaining_reward_to_target)",
+        "current_price": None,
+        "point_value_usd": None,
+        "tick_size": None,
+        "current_unrealized_pnl_usd": current_unrealized_pnl_usd,
+        "peak_unrealized_pnl_usd": peak_unrealized_pnl_usd,
+        "trough_unrealized_pnl_usd": trough_unrealized_pnl_usd,
+        "rollback_from_peak_usd": peak_unrealized_pnl_usd - current_unrealized_pnl_usd,
+        "profit_retained_fraction_of_peak": (
+            current_unrealized_pnl_usd / peak_unrealized_pnl_usd
+            if peak_unrealized_pnl_usd > 0 else None
+        ),
+        "stop_legs": [],
+        "target_legs": [],
+        "aggregate_giveback_to_stop_usd": None,
+        "aggregate_remaining_reward_to_target_usd": None,
+        "hold_target_before_stop_break_even_probability": None,
+        "calculation_issues": [],
+    }
+    try:
+        price = float(current_price)
+        point_value = float(point_value_usd)
+        tick = float(tick_size)
+    except (TypeError, ValueError):
+        result["calculation_issues"] = ["native_price_or_economics_unavailable"]
+        return result
+    if (
+        side not in {"long", "short"}
+        or quantity < 1
+        or not all(math.isfinite(value) and value > 0 for value in (price, point_value, tick))
+    ):
+        result["calculation_issues"] = ["native_price_or_economics_invalid"]
+        return result
+    result["current_price"] = price
+    result["point_value_usd"] = point_value
+    result["tick_size"] = tick
+
+    stop_coverage = 0
+    target_coverage = 0
+    giveback = 0.0
+    reward = 0.0
+    issues: list[str] = []
+    for order in orders:
+        role = order.get("role")
+        if role not in {"stop", "target"}:
+            continue
+        remaining = order.get("remaining_quantity")
+        if not isinstance(remaining, int) or isinstance(remaining, bool) or remaining < 1:
+            issues.append(f"{role}_quantity_unavailable")
+            continue
+        raw_price = order.get("stop_price") if role == "stop" else order.get("limit_price")
+        try:
+            order_price = float(raw_price)
+        except (TypeError, ValueError):
+            issues.append(f"{role}_price_unavailable")
+            continue
+        if not math.isfinite(order_price) or order_price <= 0:
+            issues.append(f"{role}_price_invalid")
+            continue
+        if role == "stop":
+            points = price - order_price if side == "long" else order_price - price
+        else:
+            points = order_price - price if side == "long" else price - order_price
+        if points < 0:
+            issues.append(f"{role}_already_beyond_current_price")
+            continue
+        dollars = points * point_value * remaining
+        leg = {
+            "leg_id": order.get("leg_id"),
+            "remaining_quantity": remaining,
+            "price": order_price,
+            "distance_points_per_contract": round(points, 8),
+            "distance_ticks_per_contract": round(points / tick, 8),
+            "distance_usd": round(dollars, 8),
+        }
+        if role == "stop":
+            result["stop_legs"].append(leg)
+            stop_coverage += remaining
+            giveback += dollars
+        else:
+            result["target_legs"].append(leg)
+            target_coverage += remaining
+            reward += dollars
+
+    if stop_coverage != quantity:
+        issues.append("stop_coverage_incomplete")
+    if target_coverage != quantity:
+        issues.append("target_coverage_incomplete")
+    result["calculation_issues"] = sorted(set(issues))
+    if issues:
+        result["status"] = "incomplete"
+        return result
+    denominator = giveback + reward
+    if denominator <= 0 or not math.isfinite(denominator):
+        result["status"] = "incomplete"
+        result["calculation_issues"] = ["terminal_distance_denominator_invalid"]
+        return result
+    result["status"] = "complete"
+    result["aggregate_giveback_to_stop_usd"] = round(giveback, 8)
+    result["aggregate_remaining_reward_to_target_usd"] = round(reward, 8)
+    result["hold_target_before_stop_break_even_probability"] = round(
+        giveback / denominator, 8
+    )
+    return result
+
+
 def active_trade_state(
     packet: dict[str, Any],
     scenario: dict[str, Any],
@@ -1299,6 +1426,18 @@ def active_trade_state(
                 "limit_price": order.get("limit_price"),
                 "oco": order.get("oco"),
             })
+        instrument_context = selected_instrument_context(book, trade_instrument)
+        management_math = deterministic_management_math(
+            side,
+            abs(net),
+            instrument_context.get("current_price"),
+            instrument_context.get("point_value_usd"),
+            instrument_context.get("tick_size"),
+            compact_orders,
+            unrealized,
+            peak,
+            trough,
+        )
         trades.append({
             "master_account": master,
             "route_id": book.get("route_id"),
@@ -1310,6 +1449,7 @@ def active_trade_state(
             "peak_unrealized_pnl_usd": peak,
             "trough_unrealized_pnl_usd": trough,
             "rollback_from_peak_usd": peak - unrealized,
+            "deterministic_management_math": management_math,
             "management_context": {
                 "gross_breakeven_price": position.get("average_price"),
                 "profit_protection_for_side": (
@@ -2368,7 +2508,7 @@ def validate_candidate_comparison(
     action: str,
     index: int,
     forecast: dict[str, Any] | None = None,
-) -> None:
+) -> list[str]:
     """Require a complete, symmetric setup ledger before any intent is valid."""
     if not isinstance(text, str) or CANDIDATE_COMPARISON_MARKER not in text:
         raise ValueError(f"candidate_comparison_missing:{index}")
@@ -2409,7 +2549,7 @@ def validate_candidate_comparison(
     selection_action = re.search(r"(?mi)^SELECTION_ACTION\s*=\s*([A-Za-z_]+)\s*$", text)
     selection_ev = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
     selection_reason = re.search(r"(?mi)^SELECTION_REASON\s*=\s*(.+?)\s*$", text)
-    if not ranking or not ranking.group(1).strip() or not selection or not selection_action or not selection_ev or not selection_reason:
+    if not ranking or not ranking.group(1).strip() or not selection or not selection_action or not selection_reason:
         raise ValueError(f"candidate_comparison_selection_incomplete:{index}")
     ranked_text = ranking.group(1).upper()
     if any(root not in ranked_text for root in expected):
@@ -2418,8 +2558,12 @@ def validate_candidate_comparison(
         raise ValueError(f"candidate_comparison_selection_instrument_mismatch:{index}")
     if selection_action.group(1).upper() != action:
         raise ValueError(f"candidate_comparison_selection_action_mismatch:{index}")
-    validate_selection_ev(
-        selection_ev.group(1), action, index, "candidate_comparison", forecast
+    observations = (
+        validate_selection_ev(
+            selection_ev.group(1), action, index, "candidate_comparison", forecast
+        )
+        if selection_ev else
+        [f"selection_ev_missing:{index}:candidate_comparison"]
     )
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
@@ -2427,6 +2571,7 @@ def validate_candidate_comparison(
             index,
             "candidate_comparison",
         )
+    return observations
 
 
 def validate_entry_geometry_evidence(value: str, index: int, source: str) -> None:
@@ -2483,33 +2628,6 @@ def _first_unsigned_number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _selection_ev_probability(value: Any) -> float | None:
-    number = _first_unsigned_number(value)
-    if number is None:
-        return None
-    text = str(value or "")
-    if "%" in text or number > 1:
-        number /= 100
-    return number if 0 <= number <= 1 else None
-
-
-def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
-    numbers = re.findall(r"(?<![\d.])(?:\d+(?:[.,]\d*)?|[.,]\d+)", str(value or ""))
-    if len(numbers) != 2:
-        return None
-    try:
-        low, high = (float(number.replace(",", ".")) for number in numbers)
-    except ValueError:
-        return None
-    text = str(value or "")
-    if "%" in text or max(low, high) > 1:
-        low /= 100
-        high /= 100
-    if not all(math.isfinite(number) and 0 <= number <= 1 for number in (low, high)):
-        return None
-    return (low, high) if low <= high else None
-
-
 def _wait_claims_improvement(value: str) -> bool:
     return bool(re.search(r"(?i)\b(?:positive|improv\w*|better|dominates?)\b", value))
 
@@ -2520,10 +2638,11 @@ def validate_selection_ev(
     index: int,
     source: str,
     forecast: dict[str, Any] | None = None,
-) -> None:
-    """Require a self-consistent EV conclusion without choosing the trade in code."""
+) -> list[str]:
+    """Reject contradictory direction; keep EV prose quality observational."""
+    observations: list[str] = []
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"selection_ev_missing:{index}:{source}")
+        return [f"selection_ev_missing:{index}:{source}"]
     fields = _selection_ev_fields(value)
     required = {
         "direction", "entry", "stop", "target", "risk_points", "reward_points",
@@ -2532,78 +2651,41 @@ def validate_selection_ev(
     }
     missing = sorted(key for key in required if not fields.get(key))
     if missing:
-        raise ValueError(f"selection_ev_fields_missing:{index}:{source}:{','.join(missing)}")
-    verdict_match = re.match(r"(?i)^\s*(POSITIVE|NEGATIVE|UNCERTAIN)\b", fields["now_ev"])
+        observations.append(f"selection_ev_fields_missing:{index}:{source}:{','.join(missing)}")
+    verdict_match = re.match(
+        r"(?i)^\s*(POSITIVE|NEGATIVE|UNCERTAIN)\b",
+        fields.get("now_ev", ""),
+    )
     if not verdict_match:
-        raise ValueError(f"selection_ev_verdict_invalid:{index}:{source}")
-    verdict = verdict_match.group(1).upper()
-    if action in {"ENTER_LONG", "ENTER_SHORT"} and verdict != "POSITIVE":
-        raise ValueError(f"selection_ev_entry_not_positive:{index}:{source}")
-    if action == "NOTHING" and verdict == "POSITIVE":
-        raise ValueError(f"selection_ev_nothing_positive:{index}:{source}")
-    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields["direction"])
+        observations.append(f"selection_ev_verdict_invalid:{index}:{source}")
+    else:
+        verdict = verdict_match.group(1).upper()
+        if action in {"ENTER_LONG", "ENTER_SHORT"} and verdict != "POSITIVE":
+            observations.append(f"selection_ev_entry_not_positive:{index}:{source}")
+        if action == "NOTHING" and verdict == "POSITIVE":
+            observations.append(f"selection_ev_nothing_positive:{index}:{source}")
+    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields.get("direction", ""))
     if not direction_match:
-        raise ValueError(f"selection_ev_direction_invalid:{index}:{source}")
-    direction = direction_match.group(1).upper()
-    if action == "ENTER_LONG" and direction != "LONG":
-        raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
-    if action == "ENTER_SHORT" and direction != "SHORT":
-        raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
+        observations.append(f"selection_ev_direction_invalid:{index}:{source}")
+        direction = None
+    else:
+        direction = direction_match.group(1).upper()
+        if action == "ENTER_LONG" and direction != "LONG":
+            raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
+        if action == "ENTER_SHORT" and direction != "SHORT":
+            raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
 
-    risk = _first_unsigned_number(fields["risk_points"])
-    reward = _first_unsigned_number(fields["reward_points"])
-    friction = _first_unsigned_number(fields["friction_points"])
-    entry = _first_unsigned_number(fields["entry"])
-    stop = _first_unsigned_number(fields["stop"])
-    target = _first_unsigned_number(fields["target"])
-    declared_breakeven = _selection_ev_probability(fields["breakeven_target_first"])
-    estimated_range = _selection_ev_probability_range(fields["estimated_target_first_range"])
-    if (
-        risk is None or risk <= 0
-        or reward is None or reward <= 0
-        or friction is None or friction < 0
-        or entry is None or stop is None or target is None
-        or declared_breakeven is None
-        or estimated_range is None
-    ):
-        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
-    geometry_risk = entry - stop if direction == "LONG" else stop - entry
-    geometry_reward = target - entry if direction == "LONG" else entry - target
-    if (
-        geometry_risk <= 0 or geometry_reward <= 0
-        or abs(risk - geometry_risk) > 0.02
-        or abs(reward - geometry_reward) > 0.02
-    ):
-        raise ValueError(f"selection_ev_geometry_mismatch:{index}:{source}")
-    computed_breakeven = (risk + friction) / (risk + reward)
-    if not math.isfinite(computed_breakeven) or not 0 <= computed_breakeven <= 1:
-        raise ValueError(f"selection_ev_numeric_invalid:{index}:{source}")
-    if abs(declared_breakeven - computed_breakeven) > 0.01:
-        raise ValueError(f"selection_ev_arithmetic_mismatch:{index}:{source}")
-
-    range_low, range_high = estimated_range
-    if isinstance(forecast, dict) and forecast.get("event") == FORECAST_EVENT_STOP_BEFORE_PRIMARY_TARGET:
-        probability = forecast.get("probability")
-        if isinstance(probability, (int, float)) and not isinstance(probability, bool):
-            target_first = 1 - float(probability)
-            if target_first < range_low - 0.02 or target_first > range_high + 0.02:
-                raise ValueError(f"selection_ev_forecast_range_mismatch:{index}:{source}")
-
-    if (
-        (verdict == "POSITIVE" and range_high < computed_breakeven - 0.005)
-        or (verdict == "NEGATIVE" and range_low > computed_breakeven + 0.005)
-    ):
-        raise ValueError(f"selection_ev_verdict_range_mismatch:{index}:{source}")
-
-    wait_price = _first_unsigned_number(fields["wait_price"])
-    if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields["wait_ev"]):
+    target = _first_unsigned_number(fields.get("target"))
+    wait_price = _first_unsigned_number(fields.get("wait_price"))
+    if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields.get("wait_ev", "")):
         consumes_target = (
             direction == "LONG" and wait_price >= target
         ) or (
             direction == "SHORT" and wait_price <= target
         )
         if consumes_target:
-            raise ValueError(f"selection_ev_wait_consumes_target:{index}:{source}")
+            observations.append(f"selection_ev_wait_consumes_target:{index}:{source}")
+    return observations
 
 
 def validate_trigger_review(
@@ -2613,7 +2695,7 @@ def validate_trigger_review(
     action: str,
     index: int,
     forecast: dict[str, Any] | None = None,
-) -> None:
+) -> list[str]:
     if not isinstance(text, str) or TRIGGER_REVIEW_MARKER not in text:
         raise ValueError(f"trigger_review_missing:{index}")
     values: dict[str, str] = {}
@@ -2632,10 +2714,12 @@ def validate_trigger_review(
     if values["SELECTION_ACTION"].upper() != action:
         raise ValueError(f"trigger_review_selection_action_mismatch:{index}")
     ev_match = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
-    if not ev_match:
-        raise ValueError(f"trigger_review_selection_ev_missing:{index}")
-    validate_selection_ev(
-        ev_match.group(1), action, index, "trigger_review", forecast
+    observations = (
+        validate_selection_ev(
+            ev_match.group(1), action, index, "trigger_review", forecast
+        )
+        if ev_match else
+        [f"selection_ev_missing:{index}:trigger_review"]
     )
     status_value = values["PRIOR_TRIGGER_REVIEW"]
     allowed_statuses = {"HELD", "FAILED", "EXPIRED"}
@@ -2650,7 +2734,9 @@ def validate_trigger_review(
     if re.search(r"(?i)\bFAILED\b", status_value) and not re.search(
         r"(?i)\b(?:invalidat\w*|structural\s+contradiction)\b", status_value
     ):
-        raise ValueError(f"trigger_review_failed_without_invalidation_or_contradiction:{index}")
+        observations.append(
+            f"trigger_review_failed_without_invalidation_or_contradiction:{index}"
+        )
     validate_setup_derivation(values["REMAINING_OBJECTIVE_INVALIDATION"], index, "trigger_review")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         validate_entry_geometry_evidence(
@@ -2658,6 +2744,7 @@ def validate_trigger_review(
             index,
             "trigger_review",
         )
+    return observations
 
 
 def validate_setup_derivation(value: str, index: int, source: str) -> None:
@@ -2673,7 +2760,8 @@ def validate_batch(
     *,
     allow_entry_revalidation: bool = False,
     expected_decision_mode: str | None = None,
-) -> None:
+) -> list[str]:
+    observations: list[str] = []
     forced_scope = (
         forced_entry_scope(directive, scenario)
         if directive and directive.get("directive_type") == "forced_entry"
@@ -2774,11 +2862,7 @@ def validate_batch(
         action = intent.get("action")
         if action not in ACTIONS:
             raise ValueError(f"action_invalid:{index}")
-        validate_forecast(
-            intent.get("forecast"),
-            index,
-            required=action in {"ENTER_LONG", "ENTER_SHORT"},
-        )
+        validate_forecast(intent.get("forecast"), index)
         if audit["final_choice"] != action:
             raise ValueError(f"decision_audit_choice_mismatch:{index}")
         active_instruments = positioned_instruments(book)
@@ -2794,23 +2878,23 @@ def validate_batch(
         elif candidate_roots:
             evidence = audit["decisive_evidence"]
             if expected_decision_mode == "trigger_review" or TRIGGER_REVIEW_MARKER in evidence:
-                validate_trigger_review(
+                observations.extend(validate_trigger_review(
                     evidence,
                     candidate_roots,
                     selected_instrument,
                     action,
                     index,
                     intent.get("forecast"),
-                )
+                ))
             else:
-                validate_candidate_comparison(
+                observations.extend(validate_candidate_comparison(
                     evidence,
                     candidate_roots,
                     selected_instrument,
                     action,
                     index,
                     intent.get("forecast"),
-                )
+                ))
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
             if "protection_updates" in intent:
                 raise ValueError(f"entry_contains_protection_updates:{index}")
@@ -2867,13 +2951,12 @@ def validate_batch(
                 raise ValueError(
                     f"operator_forced_entry_not_honored:{book.get('route_id')}:{expected}"
                 )
+    return observations
 
 
-def validate_forecast(forecast: Any, index: int, *, required: bool = False) -> None:
-    """Validate calibration metadata without turning it into an action gate."""
+def validate_forecast(forecast: Any, index: int) -> None:
+    """Validate calibration metadata when present without gating the action."""
     if forecast is None:
-        if required:
-            raise ValueError(f"forecast_required:{index}")
         return
     if not isinstance(forecast, dict) or set(forecast) != FORECAST_FIELDS:
         raise ValueError(f"forecast_contract_invalid:{index}")
@@ -3501,24 +3584,25 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "wake_triggers_",
 )
 
-SEMANTIC_MODEL_CONTRACT_ERRORS = (
-    "selection_ev_arithmetic_mismatch",
+NON_REPAIRABLE_MODEL_CONTRACT_ERRORS = (
+    "candidate_comparison_selection_action_mismatch",
+    "candidate_comparison_selection_instrument_mismatch",
+    "decision_audit_choice_mismatch",
     "selection_ev_direction_action_mismatch",
-    "selection_ev_forecast_range_mismatch",
-    "selection_ev_geometry_mismatch",
-    "selection_ev_numeric_invalid",
-    "selection_ev_verdict_range_mismatch",
-    "selection_ev_wait_consumes_target",
-    "trigger_review_failed_without_invalidation_or_contradiction",
+    "trigger_review_selection_action_mismatch",
+    "trigger_review_selection_instrument_mismatch",
 )
 
 
 def retryable_model_contract_error(error: Exception) -> bool:
     if isinstance(error, InvalidModelResponseError):
         return True
-    return isinstance(error, ValueError) and str(error).startswith(
-        RETRYABLE_MODEL_CONTRACT_ERRORS
-    )
+    if not isinstance(error, ValueError):
+        return False
+    error_text = str(error)
+    if error_text.startswith(NON_REPAIRABLE_MODEL_CONTRACT_ERRORS):
+        return False
+    return error_text.startswith(RETRYABLE_MODEL_CONTRACT_ERRORS)
 
 
 def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
@@ -3527,21 +3611,9 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
     else:
         prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
     error_text = str(error)
-    if error_text.startswith(SEMANTIC_MODEL_CONTRACT_ERRORS):
-        correction = (
-            "\nDECISION_CONSISTENCY_CORRECTION: Re-evaluate the same current packet and correct "
-            "the market judgment as needed. Keep numeric EV arithmetic, the target-first range, "
-            "the stop-first forecast, and the EV verdict internally consistent. A WAIT price at "
-            "or beyond the primary target cannot "
-            "be described as improving the opportunity, and a fired path cannot be FAILED unless "
-            "its named invalidation was reached or a specific structural contradiction emerged. "
-            "You may change action, instrument, prices, confidence, reasons, and audit evidence. "
-            "Return one fully consistent strict JSON object only."
-        )
-        return prompt + correction + "\nCONTRACT_ERROR=" + error_text + "\nPREVIOUS_RESPONSE=" + prior
     return (
         "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
-        "confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
+        "quantity, protection, confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
         "and the required field or nesting contract named by CONTRACT_ERROR. Return exactly one "
         "complete strict glitch.intent.batch.v1 JSON object with no Markdown or prose. "
         "decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
@@ -3715,36 +3787,88 @@ def candidate_price(packet: dict[str, Any], instrument: str) -> float | None:
 def latest_master_entry_state(
     packet: dict[str, Any],
     account_name: str,
-) -> tuple[bool, int, int]:
+) -> tuple[bool, int, int, str | None]:
     """Return authoritative flat/order-free evidence for one entry master."""
     frames = packet.get("frames")
     latest = frames[-1] if isinstance(frames, list) and frames and isinstance(frames[-1], dict) else {}
     portfolio = latest.get("portfolio_snapshot") if isinstance(latest, dict) else None
     accounts = portfolio.get("accounts") if isinstance(portfolio, dict) else None
     if not isinstance(accounts, list):
-        return False, 0, 0
+        return False, 0, 0, None
+    observed_utc = str(
+        latest.get("created_utc")
+        or (portfolio.get("created_utc") if isinstance(portfolio, dict) else "")
+        or ""
+    )
+    if _utc_datetime(observed_utc) is None:
+        return False, 0, 0, None
     account = next((
         value for value in accounts
         if isinstance(value, dict)
         and str(value.get("account") or "").casefold() == str(account_name or "").casefold()
     ), None)
     if not isinstance(account, dict) or account.get("native_state_available") is not True:
-        return False, 0, 0
+        return False, 0, 0, observed_utc
     if not isinstance(account.get("positions"), list):
-        return False, 0, 0
+        return False, 0, 0, observed_utc
     try:
         working_orders = int(account.get("working_orders"))
     except (TypeError, ValueError):
-        return False, 0, 0
+        return False, 0, 0, observed_utc
     if working_orders < 0:
-        return False, 0, 0
-    return True, _account_total_contracts(account), working_orders
+        return False, 0, 0, observed_utc
+    return True, _account_total_contracts(account), working_orders, observed_utc
+
+
+def execution_message_fields(message: Any) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for token in str(message or "").split("|"):
+        key, separator, value = token.partition("=")
+        if separator and key:
+            fields[key] = value
+    return fields
+
+
+def distinct_master_entry_after_snapshot(
+    glitch_data: Path,
+    account_name: str,
+    observed_utc: str | None,
+    current_intent_id: str,
+) -> dict[str, Any] | None:
+    """Detect a newer distinct native entry before the portfolio packet catches up."""
+    boundary = _utc_datetime(observed_utc)
+    if boundary is None:
+        return None
+    conflicts = []
+    for row in _jsonl_objects(glitch_data / "intents" / "executions.jsonl"):
+        if row.get("code") not in {"master_entry_submitted", "master_entry_fill_observed"}:
+            continue
+        intent_id = str(row.get("intent_id") or "")
+        if not intent_id or intent_id == current_intent_id:
+            continue
+        recorded = _utc_datetime(row.get("recorded_utc"))
+        if recorded is None or recorded <= boundary:
+            continue
+        fields = execution_message_fields(row.get("message"))
+        if str(fields.get("account") or "").casefold() != str(account_name or "").casefold():
+            continue
+        conflicts.append((recorded, row, fields))
+    if not conflicts:
+        return None
+    recorded, row, fields = min(conflicts, key=lambda value: value[0])
+    return {
+        "intent_id": str(row.get("intent_id") or ""),
+        "recorded_utc": recorded.isoformat().replace("+00:00", "Z"),
+        "code": str(row.get("code") or ""),
+        "instrument": instrument_root(fields.get("contract")),
+    }
 
 
 def apply_entry_revalidation(
     batch: dict[str, Any],
     source_packet: dict[str, Any],
     latest_packet: dict[str, Any],
+    glitch_data: Path,
 ) -> bool:
     """Recheck model entry geometry against the newest native market observation."""
     superseded = False
@@ -3760,13 +3884,20 @@ def apply_entry_revalidation(
         root = instrument_root(intent.get("instrument"))
         source_price = candidate_price(source_packet, root)
         current_price = candidate_price(latest_packet, root)
-        master_state_available, master_position_contracts, master_working_orders = (
+        master_state_available, master_position_contracts, master_working_orders, master_observed_utc = (
             latest_master_entry_state(latest_packet, str(intent.get("account") or ""))
+        )
+        distinct_entry = distinct_master_entry_after_snapshot(
+            glitch_data,
+            str(intent.get("account") or ""),
+            master_observed_utc,
+            str(intent.get("intent_id") or ""),
         )
         master_flat_order_free = (
             master_state_available
             and master_position_contracts == 0
             and master_working_orders == 0
+            and distinct_entry is None
         )
         try:
             low = float(intent["entry_range_low"])
@@ -3808,6 +3939,7 @@ def apply_entry_revalidation(
             "latest_master_state_unavailable" if not master_state_available
             else "latest_master_not_flat" if master_position_contracts != 0
             else "latest_master_has_working_orders" if master_working_orders != 0
+            else "latest_master_state_precedes_distinct_entry" if distinct_entry is not None
             else "latest_market_unavailable" if current_price is None or not latest_fresh
             else "latest_price_outside_entry_range" if not range_valid
             else "entry_geometry_invalid_at_latest_price"
@@ -3823,8 +3955,10 @@ def apply_entry_revalidation(
             "latest_snapshot_hash": latest_hash,
             "instrument": root,
             "latest_master_state_available": master_state_available,
+            "latest_master_state_observed_utc": master_observed_utc,
             "latest_master_position_contracts": master_position_contracts,
             "latest_master_working_orders": master_working_orders,
+            "newer_distinct_master_entry": distinct_entry,
             "source_price": source_price,
             "latest_price": current_price,
             "entry_range_low": low if math.isfinite(low) else None,
@@ -4199,7 +4333,7 @@ def build_prompt(
         instructions = (
             "Apply the injected SOUL, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "This is a fast position-management pass. Do not rescan flat instruments, retrieve memory, or propose new exposure. "
-            "For each active native position, compare remaining expected value of HOLD, MOVE_STOP, MOVE_TP, and EXIT using entry, current price, working stop and target, initial risk, current noise, MFE, MAE, rollback, accepted response, delta-price agreement, remaining objective, and giveback risk. "
+            "For each active native position, compare remaining expected value of HOLD, MOVE_STOP, MOVE_TP, and EXIT using entry, current price, working stop and target, initial risk, current noise, MFE, MAE, rollback, accepted response, delta-price agreement, remaining objective, and giveback risk. For each recent_glitch_ledger.active_trade_state.trades row, when deterministic_management_math.status is complete, use its native stop/target distances, gross dollars, rollback, and HOLD break-even as the arithmetic authority and do not recompute them; otherwise cite its calculation_issues and do not invent missing values. Hermes still estimates target-before-stop probability from current market evidence and chooses the action: the supplied math is decision support, never an execution gate. In HOLD_EV state one coarse target-before-stop probability range and compare it with the supplied HOLD break-even. Do not call HOLD positive when that entire estimated range is below break-even; when it straddles break-even, resolve from current evidence, execution costs, and giveback risk rather than defaulting to the entry thesis. "
             "Favorable excursion is earned optionality. Once it is material relative to initial risk and current noise, HOLD bears the burden of proof. Quantify remaining reward from current price to target, potential giveback from current price to stop, rollback relative to peak MFE and initial risk, and the immediate completed one- and five-minute response; never call rollback limited or modest without those comparisons. HOLD must explain why rebased continuation value clearly exceeds EXIT. A still-reachable target, intact original thesis or invalidation, higher-timeframe alignment, or lack of accepted reversal through entry is not sufficient, and EXIT after material MFE does not require original invalidation or accepted reversal. Derive and evaluate at least one candidate protection level from recent completed one- or five-minute structure instead of requiring a pre-labeled level. If no technically supported level can survive current noise, that strengthens EXIT and cannot reject both MOVE_STOP and EXIT. Never use a fixed MFE percentage, trailing distance, mechanical breakeven, or automatic exit. "
             "Extend a target only after price accepts beyond the prior objective, and only while ratcheting the stop in the same MOVE_TP update so extra upside is not financed by surrendering earned protection. "
             "A profit-protecting stop is at or above entry for a long and at or below entry for a short. "
@@ -4588,7 +4722,7 @@ def run_once(
             original_scenario,
             allow_entry_revalidation=True,
         )
-        apply_entry_revalidation(pending_batch, original_packet, packet)
+        apply_entry_revalidation(pending_batch, original_packet, packet, glitch_data)
         supersession_reassessment = maybe_request_supersession_reassessment(
             pending_batch, exchange, original_packet, packet
         )
@@ -4627,7 +4761,7 @@ def run_once(
         batch = normalize_batch(read_json(outbox_path), scenario)
         validate_batch(batch, scenario, allow_entry_revalidation=True)
         current_packet = read_json(packet_path)
-        apply_entry_revalidation(batch, packet, current_packet)
+        apply_entry_revalidation(batch, packet, current_packet, glitch_data)
         supersession_reassessment = maybe_request_supersession_reassessment(
             batch, exchange, packet, current_packet
         )
@@ -4775,8 +4909,14 @@ def run_once(
             prior_cognition,
             prompt_version,
         )
+        admission_observations = validate_batch(
+            batch,
+            scenario,
+            directive,
+            expected_decision_mode=decision_mode,
+        )
         latest_packet = read_json(packet_path)
-        apply_entry_revalidation(batch, packet, latest_packet)
+        apply_entry_revalidation(batch, packet, latest_packet, glitch_data)
         supersession_reassessment = maybe_request_supersession_reassessment(
             batch, exchange, packet, latest_packet,
             suppress_followup=bool(
@@ -4806,6 +4946,10 @@ def run_once(
             "hermes_session_mode": "isolated",
             "output_repair_count": output_repair_count,
             "transport_retry_count": transport_retry_count,
+            "decision_admission_audit": {
+                "effect": "observation_only_no_execution_effect",
+                "issues": admission_observations,
+            },
             "invocation_reason": reason,
         })
     except Exception as error:

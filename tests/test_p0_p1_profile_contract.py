@@ -157,12 +157,12 @@ def test_entry_rejects_one_sided_atr_evidence() -> None:
         raise AssertionError("entry with only one-minute ATR evidence was accepted")
 
 
-def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeypatch) -> None:
+def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeypatch, tmp_path: Path) -> None:
     batch, _ = entry_batch()
     source = {"packet_id": "source"}
     latest = {
         "packet_id": "latest",
-        "frames": [{"portfolio_snapshot": {"accounts": [{
+        "frames": [{"created_utc": "2026-08-12T12:00:00Z", "portfolio_snapshot": {"accounts": [{
             "account": "Sim101",
             "native_state_available": True,
             "positions": [],
@@ -175,24 +175,24 @@ def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeyp
     monkeypatch.setattr(DIRECT, "market_snapshot_is_fresh", lambda _packet: True)
     monkeypatch.setattr(DIRECT, "latest_market", lambda _packet: ({"snapshot_hash": "latest-hash"}, {}, []))
 
-    assert DIRECT.apply_entry_revalidation(batch, source, latest) is False
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is False
     assert batch["decisions"][0]["entry_revalidation"]["status"] == "accepted_current_price_in_range"
 
     prices[id(latest)] = 107.0
-    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is True
     assert batch["decisions"][0]["entry_revalidation"]["reason"] == "latest_price_outside_entry_range"
     assert batch["decisions"][0]["entry_revalidation"]["reassessment_eligible"] is True
     assert batch["decisions"][0]["entry_revalidation"]["favorable_supersession"] is False
     assert batch["decisions"][0]["entry_revalidation"]["supersession_direction"] == "targetward"
 
     prices[id(latest)] = 103.0
-    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is True
     assert batch["decisions"][0]["entry_revalidation"]["reassessment_eligible"] is True
     assert batch["decisions"][0]["entry_revalidation"]["favorable_supersession"] is True
     assert batch["decisions"][0]["entry_revalidation"]["supersession_direction"] == "better_price"
 
 
-def test_entry_revalidation_requires_latest_master_flat_and_order_free(monkeypatch) -> None:
+def test_entry_revalidation_requires_latest_master_flat_and_order_free(monkeypatch, tmp_path: Path) -> None:
     batch, _ = entry_batch()
     source = {"packet_id": "source"}
     latest_account = {
@@ -203,7 +203,10 @@ def test_entry_revalidation_requires_latest_master_flat_and_order_free(monkeypat
     }
     latest = {
         "packet_id": "latest",
-        "frames": [{"portfolio_snapshot": {"accounts": [latest_account]}}],
+        "frames": [{
+            "created_utc": "2026-08-12T12:00:00Z",
+            "portfolio_snapshot": {"accounts": [latest_account]},
+        }],
     }
     monkeypatch.setattr(DIRECT, "candidate_price", lambda packet, _instrument: 105.0)
     monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
@@ -213,7 +216,7 @@ def test_entry_revalidation_requires_latest_master_flat_and_order_free(monkeypat
     latest_account["positions"] = [{
         "instrument": "MES 09-26", "quantity": 1, "market_position": "Short",
     }]
-    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is True
     evidence = batch["decisions"][0]["entry_revalidation"]
     assert evidence["reason"] == "latest_master_not_flat"
     assert evidence["latest_master_position_contracts"] == 1
@@ -222,16 +225,60 @@ def test_entry_revalidation_requires_latest_master_flat_and_order_free(monkeypat
 
     latest_account["positions"] = []
     latest_account["working_orders"] = 1
-    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is True
     evidence = batch["decisions"][0]["entry_revalidation"]
     assert evidence["reason"] == "latest_master_has_working_orders"
     assert evidence["reassessment_eligible"] is False
 
     latest_account["working_orders"] = 0
     latest_account["native_state_available"] = False
-    assert DIRECT.apply_entry_revalidation(batch, source, latest) is True
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is True
     evidence = batch["decisions"][0]["entry_revalidation"]
     assert evidence["reason"] == "latest_master_state_unavailable"
+    assert evidence["reassessment_eligible"] is False
+
+
+def test_entry_revalidation_rejects_a_distinct_native_entry_newer_than_the_flat_snapshot(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    batch, _ = entry_batch()
+    source = {"packet_id": "source"}
+    latest = {
+        "packet_id": "latest",
+        "frames": [{
+            "created_utc": "2026-08-12T12:00:00Z",
+            "portfolio_snapshot": {"accounts": [{
+                "account": "Sim101",
+                "native_state_available": True,
+                "positions": [],
+                "working_orders": 0,
+            }]},
+        }],
+    }
+    executions = tmp_path / "intents" / "executions.jsonl"
+    executions.parent.mkdir(parents=True)
+    executions.write_text(json.dumps({
+        "intent_id": "22222222-2222-4222-8222-222222222222",
+        "recorded_utc": "2026-08-12T12:00:05Z",
+        "code": "master_entry_fill_observed",
+        "message": "account=Sim101|contract=MES 09-26|fill=5000|signed_quantity=1",
+    }) + "\n", encoding="utf-8")
+    monkeypatch.setattr(DIRECT, "candidate_price", lambda packet, _instrument: 105.0)
+    monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "market_snapshot_is_fresh", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "latest_market", lambda _packet: ({"snapshot_hash": "latest-hash"}, {}, []))
+
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is True
+    evidence = batch["decisions"][0]["entry_revalidation"]
+    assert evidence["reason"] == "latest_master_state_precedes_distinct_entry"
+    assert evidence["latest_master_position_contracts"] == 0
+    assert evidence["latest_master_working_orders"] == 0
+    assert evidence["newer_distinct_master_entry"] == {
+        "intent_id": "22222222-2222-4222-8222-222222222222",
+        "recorded_utc": "2026-08-12T12:00:05Z",
+        "code": "master_entry_fill_observed",
+        "instrument": "MES",
+    }
     assert evidence["reassessment_eligible"] is False
 
 

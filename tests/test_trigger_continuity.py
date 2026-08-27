@@ -428,7 +428,7 @@ def test_trigger_review_accepts_natural_instrument_status_prose() -> None:
     )
 
 
-def test_trigger_review_rejects_failed_status_without_invalidation_or_contradiction() -> None:
+def test_trigger_review_observes_failed_status_without_required_prose() -> None:
     lines = [DIRECT.TRIGGER_REVIEW_MARKER]
     for field in DIRECT.TRIGGER_REVIEW_FIELDS:
         value = "current evidence"
@@ -441,23 +441,24 @@ def test_trigger_review_rejects_failed_status_without_invalidation_or_contradict
         lines.append(f"{field}={value}")
     lines.insert(-1, "SELECTION_EV=direction=SHORT;entry=100;stop=105;target=90;risk_points=5;reward_points=10;friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=20-30%;now_ev=NEGATIVE;wait_price=95;wait_ev=NEGATIVE;decisive_reason=fixture")
 
-    try:
-        DIRECT.validate_trigger_review("\n".join(lines), {"MNQ"}, "MNQ", "NOTHING", 0)
-    except ValueError as error:
-        assert str(error) == "trigger_review_failed_without_invalidation_or_contradiction:0"
-    else:
-        raise AssertionError("a trigger reclaim incorrectly invalidated the frozen path")
+    observations = DIRECT.validate_trigger_review(
+        "\n".join(lines), {"MNQ"}, "MNQ", "NOTHING", 0
+    )
+    assert "trigger_review_failed_without_invalidation_or_contradiction:0" in observations
 
 
-def test_semantic_contract_repair_allows_market_judgment_to_change() -> None:
+def test_contract_repair_never_allows_market_judgment_to_change() -> None:
     prompt = DIRECT.contract_repair_prompt(
         "ORIGINAL",
         {"decisions": []},
         ValueError("selection_ev_wait_consumes_target:0:trigger_review"),
     )
-    assert "DECISION_CONSISTENCY_CORRECTION" in prompt
-    assert "You may change action, instrument, prices" in prompt
-    assert "FORMAT_CORRECTION_ONLY" not in prompt
+    assert "FORMAT_CORRECTION_ONLY" in prompt
+    assert "Preserve the same market judgment" in prompt
+    assert "quantity, protection" in prompt
+    assert "You may change" not in prompt
+    assert "DECISION_CONSISTENCY_CORRECTION" not in prompt
+    assert "ORIGINAL" not in prompt
 
 
 def test_format_contract_repair_is_compact_and_names_every_selection_ev_field() -> None:

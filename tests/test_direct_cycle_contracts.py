@@ -322,7 +322,15 @@ def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometr
         ],
     }
     packet = {"frames": [{"portfolio_snapshot": {"accounts": [account]}}]}
-    scenario = {"books": [{"route_id": "glitch", "master_account": "Sim101"}]}
+    scenario = {"books": [{
+        "route_id": "glitch",
+        "master_account": "Sim101",
+        "instrument_contexts": {"MNQ": {
+            "current_price": 29498.75,
+            "point_value_usd": 2.0,
+            "tick_size": 0.25,
+        }},
+    }]}
 
     state = DIRECT.active_trade_state(packet, scenario, glitch_data, exchange)
     trade = state["trades"][0]
@@ -331,6 +339,63 @@ def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometr
     assert trade["trade_age_seconds"] is not None and trade["trade_age_seconds"] < 10
     assert trade["working_orders"][0]["stop_price"] == 29569.75
     assert trade["working_orders"][1]["limit_price"] == 29459.75
+    support = trade["deterministic_management_math"]
+    assert support["effect"] == "decision_support_only_no_execution_effect"
+    assert support["decision_authority"] == "hermes"
+    assert support["status"] == "complete"
+    assert support["calculation_basis"].endswith("gross_before_incremental_execution_costs")
+    assert support["aggregate_giveback_to_stop_usd"] == 142.0
+    assert support["aggregate_remaining_reward_to_target_usd"] == 78.0
+    assert support["hold_target_before_stop_break_even_probability"] == 0.64545455
+
+
+def test_deterministic_management_math_supports_long_multileg_brackets() -> None:
+    support = DIRECT.deterministic_management_math(
+        "long",
+        2,
+        101.0,
+        5.0,
+        0.25,
+        [
+            {"role": "stop", "leg_id": "A", "remaining_quantity": 1, "stop_price": 98.0},
+            {"role": "stop", "leg_id": "B", "remaining_quantity": 1, "stop_price": 99.0},
+            {"role": "target", "leg_id": "A", "remaining_quantity": 1, "limit_price": 103.0},
+            {"role": "target", "leg_id": "B", "remaining_quantity": 1, "limit_price": 105.0},
+        ],
+        10.0,
+        30.0,
+        -20.0,
+    )
+
+    assert support["status"] == "complete"
+    assert support["aggregate_giveback_to_stop_usd"] == 25.0
+    assert support["aggregate_remaining_reward_to_target_usd"] == 30.0
+    assert support["hold_target_before_stop_break_even_probability"] == 0.45454545
+    assert support["rollback_from_peak_usd"] == 20.0
+    assert support["profit_retained_fraction_of_peak"] == pytest.approx(1 / 3)
+
+
+def test_deterministic_management_math_never_publishes_partial_break_even() -> None:
+    support = DIRECT.deterministic_management_math(
+        "long",
+        2,
+        101.0,
+        5.0,
+        0.25,
+        [
+            {"role": "stop", "leg_id": "A", "remaining_quantity": 1, "stop_price": 98.0},
+            {"role": "target", "leg_id": "A", "remaining_quantity": 2, "limit_price": 103.0},
+        ],
+        0.0,
+        0.0,
+        0.0,
+    )
+
+    assert support["status"] == "incomplete"
+    assert support["calculation_issues"] == ["stop_coverage_incomplete"]
+    assert support["aggregate_giveback_to_stop_usd"] is None
+    assert support["aggregate_remaining_reward_to_target_usd"] is None
+    assert support["hold_target_before_stop_break_even_probability"] is None
 
 
 def test_active_trade_state_starts_fresh_after_native_flat_boundary(tmp_path: Path) -> None:
@@ -587,17 +652,18 @@ def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
     assert DIRECT.packet_fingerprint(first) == DIRECT.packet_fingerprint(second)
 
 
-def test_selection_ev_contract_rejects_positive_nothing() -> None:
+def test_selection_ev_positive_nothing_is_observed_without_gating() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
         "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    with pytest.raises(ValueError, match="selection_ev_nothing_positive"):
-        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    assert DIRECT.validate_selection_ev(value, "NOTHING", 0, "test") == [
+        "selection_ev_nothing_positive:0:test"
+    ]
 
 
-def test_selection_ev_requires_numeric_arithmetic_and_rejects_mismatch() -> None:
+def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;"
         "risk_points=approximately 5 points (20 ticks);reward_points=10 pts;"
@@ -605,8 +671,7 @@ def test_selection_ev_requires_numeric_arithmetic_and_rejects_mismatch() -> None
         "estimated_target_first_range=40-50%;now_ev=NEGATIVE;wait_price=105;"
         "wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    with pytest.raises(ValueError, match="selection_ev_numeric_invalid"):
-        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
 
     inconsistent_audit = value.replace(
         "friction_points=not material",
@@ -615,11 +680,10 @@ def test_selection_ev_requires_numeric_arithmetic_and_rejects_mismatch() -> None
         "breakeven_target_first=about 33.3%",
         "breakeven_target_first=62% after qualitative discount",
     ).replace("now_ev=NEGATIVE", "now_ev=NEGATIVE (wait dominates)")
-    with pytest.raises(ValueError, match="selection_ev_arithmetic_mismatch"):
-        DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
+    DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
 
 
-def test_selection_ev_reconciles_forecast_range_and_verdict() -> None:
+def test_selection_ev_forecast_range_and_verdict_are_audit_only() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
@@ -633,25 +697,23 @@ def test_selection_ev_reconciles_forecast_range_and_verdict() -> None:
     }
     DIRECT.validate_selection_ev(value, "ENTER_LONG", 0, "test", forecast)
 
-    with pytest.raises(ValueError, match="selection_ev_forecast_range_mismatch"):
-        DIRECT.validate_selection_ev(
-            value, "ENTER_LONG", 0, "test", {**forecast, "probability": 0.8}
-        )
-    with pytest.raises(ValueError, match="selection_ev_verdict_range_mismatch"):
-        DIRECT.validate_selection_ev(
-            value.replace("40-50%", "20-30%"),
-            "ENTER_LONG",
-            0,
-            "test",
-            {**forecast, "probability": 0.75},
-        )
+    DIRECT.validate_selection_ev(
+        value, "ENTER_LONG", 0, "test", {**forecast, "probability": 0.8}
+    )
+    DIRECT.validate_selection_ev(
+        value.replace("40-50%", "20-30%"),
+        "ENTER_LONG",
+        0,
+        "test",
+        {**forecast, "probability": 0.75},
+    )
 
 
 @pytest.mark.parametrize(
     ("direction", "target", "wait_price"),
     (("LONG", 110, 110), ("SHORT", 90, 89)),
 )
-def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
+def test_selection_ev_observes_wait_that_claims_improvement_after_target(
     direction: str, target: float, wait_price: float
 ) -> None:
     value = (
@@ -659,8 +721,20 @@ def test_selection_ev_rejects_wait_that_claims_improvement_after_target(
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=20-30%;"
         f"now_ev=NEGATIVE;wait_price={wait_price};wait_ev=IMPROVES;decisive_reason=fixture"
     )
-    with pytest.raises(ValueError, match="selection_ev_wait_consumes_target"):
-        DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    assert "selection_ev_wait_consumes_target:0:test" in DIRECT.validate_selection_ev(
+        value, "NOTHING", 0, "test"
+    )
+
+
+def test_selection_ev_direction_action_contradiction_remains_a_hard_gate() -> None:
+    value = (
+        "direction=SHORT;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
+        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
+        "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
+    )
+    with pytest.raises(ValueError, match="selection_ev_direction_action_mismatch") as error:
+        DIRECT.validate_selection_ev(value, "ENTER_LONG", 0, "test")
+    assert DIRECT.retryable_model_contract_error(error.value) is False
 
 
 @pytest.mark.parametrize("supersession_direction", ["better_price", "targetward"])
@@ -788,6 +862,7 @@ def test_native_economics_drive_risk_geometry() -> None:
 
 
 def test_forecast_is_validated_as_non_gating_metadata() -> None:
+    DIRECT.validate_forecast(None, 0)
     batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
     batch["decisions"][0]["forecast"] = {
         "event": "STOP_BEFORE_PRIMARY_TARGET",
@@ -1359,6 +1434,9 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     flat_prompt = DIRECT.build_prompt(packet, flat, {"outcomes": []})
 
     assert '"decision_mode":"position_management"' in positioned_prompt
+    assert "when deterministic_management_math.status is complete" in positioned_prompt
+    assert "the supplied math is decision support, never an execution gate" in positioned_prompt
+    assert "In HOLD_EV state one coarse target-before-stop probability range" in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" in positioned_prompt
     assert "HOLD must explain why rebased continuation value clearly exceeds EXIT" in positioned_prompt
     assert "EXIT after material MFE does not require original invalidation or accepted reversal" in positioned_prompt
@@ -1367,6 +1445,7 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "Never use a fixed MFE percentage" in positioned_prompt
     assert "reconcile 1 - forecast.probability with estimated_target_first_range" not in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" not in flat_prompt
+    assert "when deterministic_management_math.status is complete" not in flat_prompt
     assert "cannot reject both MOVE_STOP and EXIT" not in flat_prompt
 
 
