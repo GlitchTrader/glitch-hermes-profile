@@ -1378,6 +1378,30 @@ def test_flat_ledger_excludes_recursive_guidance_but_preserves_facts() -> None:
     assert "current_guidance" not in compact
     assert "current_plan" not in compact
     assert "active_trade_state" not in compact
+    assert compact["recent_exit_decisions"] == []
+
+
+def test_flat_ledger_elevates_recent_exit_decisions_without_recursive_guidance() -> None:
+    journals = {
+        "decisions": [
+            {"instrument": "MES", "action": "ENTER_SHORT", "reason": "initial path"},
+            {
+                "instrument": "MES",
+                "action": "EXIT",
+                "reason": "Buyer response reduced continuation below break-even.",
+                "change_condition": "Renewed accepted downside response below 7732.75.",
+            },
+            {"instrument": "MNQ", "action": "NOTHING", "reason": "late location"},
+        ],
+        "executions": [],
+        "outcomes": [],
+        "current_guidance": {"verdict": "REENTER_MES"},
+    }
+
+    compact = DIRECT.ledger_for_model(journals, positioned_only=False)
+
+    assert compact["recent_exit_decisions"] == [journals["decisions"][1]]
+    assert "current_guidance" not in compact
 
 
 def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> None:
@@ -1407,6 +1431,9 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "(risk_points + friction_points) / (risk_points + reward_points)" in prompt
     assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
     assert "not a fixed probability or reward/risk rule" in prompt
+    assert "recent_exit_decisions and completed native results take precedence" in prompt
+    assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
+    assert "seconds_until_must_flat as the actual schedule horizon" in prompt
     assert "RECURSIVE_ABSTENTION_VETO" not in prompt
 
 
@@ -1447,6 +1474,8 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "rollback relative to peak MFE and initial risk" not in flat_prompt
     assert "when deterministic_management_math.status is complete" not in flat_prompt
     assert "cannot reject both MOVE_STOP and EXIT" not in flat_prompt
+    assert "recent_exit_decisions and completed native results take precedence" not in positioned_prompt
+    assert "seconds_until_must_flat as the actual schedule horizon" not in positioned_prompt
 
 
 def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
@@ -1655,6 +1684,51 @@ def test_latest_trigger_review_keeps_the_prior_full_comparison_baseline(
     )
 
 
+def test_latest_completed_exit_supersedes_the_pre_exit_market_thesis(
+    tmp_path: Path,
+) -> None:
+    outbox = tmp_path / "hermes" / "outbox"
+    outbox.mkdir(parents=True)
+    (outbox / "20260827T2024Z.json").write_text(json.dumps({
+        "cycle_id": "20260827T2024Z",
+        "decisions": [{
+            "instrument": "MES",
+            "action": "ENTER_SHORT",
+            "confidence": 0.62,
+            "prompt_version": "prior-prompt",
+            "reason": "Bearish continuation below 7734.5.",
+            "decision_audit": {
+                "decisive_evidence": "INSTRUMENT_COMPARISON_V1\nBEARISH_PATH=held",
+                "change_condition": "MES above 7742.25 or below 7711.25",
+                "final_choice": "ENTER_SHORT",
+            },
+        }],
+    }), encoding="utf-8")
+    (outbox / "20260827T2042Z.json").write_text(json.dumps({
+        "cycle_id": "20260827T2042Z",
+        "decisions": [{
+            "instrument": "MES",
+            "action": "EXIT",
+            "confidence": 0.74,
+            "prompt_version": "prior-prompt",
+            "reason": "Buyer response reduced continuation below break-even.",
+            "decision_audit": {
+                "decisive_evidence": "POSITION_MANAGEMENT_V1\nEXIT_EV=selected",
+                "change_condition": "Renewed accepted downside response below 7732.75.",
+                "final_choice": "EXIT",
+            },
+        }],
+    }), encoding="utf-8")
+
+    prior = DIRECT.latest_prior_cognition(tmp_path, "20260827T2050Z")
+
+    assert prior is not None
+    assert prior["source_cycle_id"] == "20260827T2042Z"
+    assert prior["action"] == "EXIT"
+    assert prior["change_condition"] == "Renewed accepted downside response below 7732.75."
+    assert prior["baseline_comparison"]["source_cycle_id"] == "20260827T2024Z"
+
+
 def test_flat_prompt_injects_prior_cognition_and_requires_reconciliation() -> None:
     scenario = multibook_flat_scenario()
     for book in scenario["books"]:
@@ -1690,6 +1764,69 @@ def test_flat_prompt_injects_prior_cognition_and_requires_reconciliation() -> No
     assert "PRIOR_PATH_STATE" in prompt
     assert "Reconcile every supplied prior path as HELD, FAILED, or EXPIRED" in prompt
     assert "NOT_APPLICABLE only when no prior path exists" in prompt
+
+
+def test_trigger_review_injects_exit_continuity_for_alternative_candidates() -> None:
+    scenario = multibook_flat_scenario()
+    for book in scenario["books"]:
+        book["followers"] = []
+        book["exposure"] = []
+        book["position_building_context"] = {"instrument": "MNQ"}
+    packet = {
+        "packet_id": "cycle-9",
+        "window_close_utc": "2026-08-27T20:51:00Z",
+        "policy": {},
+        "frames": [{
+            "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+            "portfolio_snapshot": {"accounts": [{"account": "Sim101"}, {"account": "Sim301"}]},
+        }],
+    }
+    prior = {
+        "schema_version": "glitch.hermes.prior_cognition.v1",
+        "source_cycle_id": "20260827T2042Z",
+        "selected_instrument": "MES",
+        "action": "EXIT",
+        "reason": "Buyer response reduced short continuation below break-even.",
+        "decisive_evidence": "POSITION_MANAGEMENT_V1\nEXIT_EV=selected",
+        "change_condition": "Renewed accepted downside response below 7732.75.",
+    }
+    context = {
+        "reason": "condition_change",
+        "fired_triggers": [{
+            "source_cycle_id": "source",
+            "instrument": "MNQ",
+            "direction": "BELOW",
+            "price": 29627.25,
+        }],
+    }
+    journals = {
+        "decisions": [{
+            "instrument": "MES",
+            "action": "EXIT",
+            "reason": prior["reason"],
+            "change_condition": prior["change_condition"],
+        }],
+        "executions": [{
+            "code": "master_exit_fill_observed",
+            "message": "account=Sim101|contract=MES 09-26|fill=7734",
+        }],
+        "outcomes": [],
+    }
+
+    prompt = DIRECT.build_prompt(
+        packet,
+        scenario,
+        journals,
+        invocation_reason="condition_change",
+        invocation_context=context,
+        prior_cognition=prior,
+    )
+
+    assert '"decision_mode":"trigger_review"' in prompt
+    assert '"prior_cognition":{"schema_version":"glitch.hermes.prior_cognition.v1"' in prompt
+    assert '"recent_exit_decisions":[{"instrument":"MES","action":"EXIT"' in prompt
+    assert "recent_exit_decisions and completed native results take precedence" in prompt
+    assert "do not carry the exited setup forward as HELD" in prompt
 
 
 def test_journal_tail_deduplicates_shared_decisions_and_preserves_instrument(
@@ -1730,6 +1867,72 @@ def test_journal_tail_deduplicates_shared_decisions_and_preserves_instrument(
     assert len(result["decisions"]) == 1
     assert result["decisions"][0]["cycle_id"] == "20260813T1435Z"
     assert result["decisions"][0]["instrument"] == "MES"
+
+
+def test_journal_tail_preserves_exit_continuity_beyond_the_visible_decision_tail(
+    tmp_path: Path,
+) -> None:
+    intents = tmp_path / "intents"
+    intents.mkdir()
+    rows = [{
+        "schema_version": "glitch.hermes.decision_record.v1",
+        "cycle_id": "20260827T2042Z",
+        "recorded_utc": "2026-08-27T20:42:50Z",
+        "status": "accepted",
+        "intent": {
+            "intent_id": "exit-intent",
+            "created_utc": "2026-08-27T20:42:49Z",
+            "instrument": "MES",
+            "action": "EXIT",
+            "confidence": 0.74,
+            "prompt_version": DIRECT.DIRECT_PROMPT_REVISION + "-previousbundle",
+            "reason": "Buyer response reduced continuation below break-even.",
+            "decision_audit": {
+                "change_condition": "Renewed accepted downside response below 7732.75.",
+                "final_choice": "EXIT",
+            },
+        },
+    }]
+    rows.extend({
+        "schema_version": "glitch.hermes.decision_record.v1",
+        "cycle_id": f"20260827T20{43 + index:02d}Z",
+        "recorded_utc": f"2026-08-27T20:{43 + index:02d}:00Z",
+        "status": "accepted",
+        "intent": {
+            "intent_id": f"nothing-{index}",
+            "created_utc": f"2026-08-27T20:{43 + index:02d}:00Z",
+            "instrument": "MES",
+            "action": "NOTHING",
+            "confidence": 0.7,
+            "prompt_version": DIRECT.DIRECT_PROMPT_VERSION,
+            "reason": "No current entry.",
+            "decision_audit": {
+                "change_condition": "MES above 7742.25 or below 7711.25.",
+                "final_choice": "NOTHING",
+            },
+        },
+    } for index in range(10))
+    (intents / "decisions.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    result = DIRECT.journal_tail(tmp_path)
+
+    assert all(row["action"] == "NOTHING" for row in result["decisions"])
+    assert result["recent_exit_decisions"] == [{
+        "cycle_id": "20260827T2042Z",
+        "recorded_utc": "2026-08-27T20:42:50Z",
+        "status": "accepted",
+        "intent_id": "exit-intent",
+        "created_utc": "2026-08-27T20:42:49Z",
+        "instrument": "MES",
+        "action": "EXIT",
+        "confidence": 0.74,
+        "reason": "Buyer response reduced continuation below break-even.",
+        "change_condition": "Renewed accepted downside response below 7732.75.",
+        "final_choice": "EXIT",
+    }]
 
 
 def test_journal_tail_retains_native_exit_result_until_full_outcome_exists(

@@ -705,6 +705,9 @@ def add_group_exposure_context(
                 "is_risk_locked": observed.get("is_risk_locked"),
                 "is_eval_target_locked": observed.get("is_eval_target_locked"),
                 "entry_window_open": observed.get("entry_window_open"),
+                "ai_daily_close_enabled": observed.get("ai_daily_close_enabled"),
+                "must_flat_utc": observed.get("must_flat_utc"),
+                "seconds_until_must_flat": observed.get("seconds_until_must_flat"),
             })
 
         master = exposure[0]
@@ -733,6 +736,10 @@ def add_group_exposure_context(
             "ai_daily_capture_remaining_usd": observed_master.get("ai_daily_capture_remaining_usd"),
             "ai_daily_capture_progress_ratio": observed_master.get("ai_daily_capture_progress_ratio"),
             "ai_daily_capture_reached": observed_master.get("ai_daily_capture_reached"),
+            "ai_daily_close_enabled": observed_master.get("ai_daily_close_enabled"),
+            "entry_window_open": observed_master.get("entry_window_open"),
+            "must_flat_utc": observed_master.get("must_flat_utc"),
+            "seconds_until_must_flat": observed_master.get("seconds_until_must_flat"),
             "equity": observed_master.get("equity"),
             "liquidation_threshold": observed_master.get("liquidation_threshold"),
             "liquidation_buffer_usd": observed_master.get("buffer_margin"),
@@ -946,8 +953,9 @@ def outcome_idea_key(row: dict[str, Any]) -> tuple[str, str, str]:
 def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[dict[str, Any]]]:
     intents = glitch_data / "intents"
     result: dict[str, list[dict[str, Any]]] = {"received": []}
+    recent_decision_rows = _jsonl_tail(intents / "decisions.jsonl", max_lines * 40)
     recent_decisions = [
-        row for row in _jsonl_tail(intents / "decisions.jsonl", max_lines * 4)
+        row for row in recent_decision_rows
         if (
             row.get("intent") if isinstance(row.get("intent"), dict) else row
         ).get("prompt_version") is not None
@@ -966,7 +974,31 @@ def journal_tail(glitch_data: Path, max_lines: int = 6) -> dict[str, list[dict[s
             str(compact.get("change_condition") or ""),
         )
         unique_decisions[key] = compact
-    result["decisions"] = list(unique_decisions.values())[-max_lines:]
+    decision_values = list(unique_decisions.values())
+    result["decisions"] = decision_values[-max_lines:]
+    # EXIT is a bounded factual continuity event, not a learned strategy. Keep
+    # it across cognitive-bundle hash changes within the same prompt revision so
+    # a hot-path patch cannot resurrect the pre-exit thesis it was meant to fix.
+    recent_exits: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in recent_decision_rows:
+        intent = row.get("intent") if isinstance(row.get("intent"), dict) else row
+        if (
+            intent.get("action") != "EXIT"
+            or not base_prompt_version(intent.get("prompt_version")).startswith(
+                DIRECT_PROMPT_REVISION + "-"
+            )
+        ):
+            continue
+        compact = _compact_decision(row)
+        key = (
+            str(compact.get("cycle_id") or compact.get("created_utc") or compact.get("intent_id") or ""),
+            instrument_root(compact.get("instrument")),
+            str(compact.get("action") or ""),
+            str(compact.get("reason") or ""),
+            str(compact.get("change_condition") or ""),
+        )
+        recent_exits[key] = compact
+    result["recent_exit_decisions"] = list(recent_exits.values())[-2:]
     eligible = [
         row for row in _jsonl_tail(intents / "hermes-trade-outcomes.jsonl", max_lines * 20)
         if row.get("master_learning_eligible", row.get("learning_eligible", True)) is not False
@@ -1995,6 +2027,10 @@ def latest_prior_cognition(
             if (
                 CANDIDATE_COMPARISON_MARKER not in evidence
                 and TRIGGER_REVIEW_MARKER not in evidence
+                and not (
+                    decision.get("action") == "EXIT"
+                    and POSITION_MANAGEMENT_MARKER in evidence
+                )
             ):
                 continue
             if len(evidence) > MAX_PRIOR_COGNITION_CHARS:
@@ -4206,6 +4242,8 @@ def scenario_for_model(scenario: dict[str, Any], positioned_only: bool) -> dict[
                     "ai_daily_capture_target_ratio", "ai_daily_capture_target_usd",
                     "ai_daily_capture_remaining_usd", "ai_daily_capture_progress_ratio",
                     "ai_daily_capture_reached",
+                    "ai_daily_close_enabled", "entry_window_open", "must_flat_utc",
+                    "seconds_until_must_flat",
                     "liquidation_buffer_usd", "drawdown_headroom_ratio",
                     "max_drawdown", "prop_firm_id", "rule_status",
                     "current_total_contracts", "contract_ceiling",
@@ -4241,8 +4279,15 @@ def ledger_for_model(journals: dict[str, Any], positioned_only: bool) -> dict[st
     # Preserve factual continuity without feeding the learner's prose verdict
     # back into entry cognition. Otherwise repeated NOTHING episodes can label
     # themselves disciplined abstention and become their own veto.
+    recent_exit_decisions = journals.get("recent_exit_decisions")
+    if not isinstance(recent_exit_decisions, list):
+        recent_exit_decisions = [
+            row for row in journals.get("decisions", [])
+            if isinstance(row, dict) and row.get("action") == "EXIT"
+        ]
     return {
         "decisions": list(journals.get("decisions", []))[-3:],
+        "recent_exit_decisions": recent_exit_decisions[-2:],
         "executions": list(journals.get("executions", []))[-18:],
         "outcomes": list(journals.get("outcomes", []))[-6:],
     }
@@ -4312,7 +4357,7 @@ def build_prompt(
     envelope = {
         "decision_mode": decision_mode,
         "invocation_context": invocation_context,
-        "prior_cognition": prior_cognition if decision_mode == "flat_scan" else None,
+        "prior_cognition": prior_cognition if decision_mode in {"flat_scan", "trigger_review"} else None,
         "decision_packet": packet_for_model(packet, scenario, positioned_only=positioned_only),
         "execution_scope": scenario_for_model(scenario, positioned_only),
         "recent_glitch_ledger": ledger_for_model(journals, positioned_only),
@@ -4328,6 +4373,10 @@ def build_prompt(
         "Ordinary partial-bar, stale-depth, latency, and noise uncertainty are bounded costs to price once, not decisive missing conditions by themselves. Reserve UNCERTAIN for a genuinely unusable or unbounded fact; otherwise make a POSITIVE or NEGATIVE judgment. "
         "Acceptance, confirmation, and a retest are probability evidence, not sequential prerequisites. If current location, a setup-specific invalidation beyond ordinary noise, and a probabilistic objective already yield positive expected value after costs, enter now; do not wait for both acceptance and a retest or substitute remote structure that manufactures negative geometry. "
         "Do not force activity, recover losses, use a fixed setup, fixed ATR rule, fixed reward/risk rule, or treat guidance as stronger than current evidence. "
+    )
+    entry_continuity = (
+        "For a flat entry decision, recent_glitch_ledger.recent_exit_decisions and completed native results take precedence over the pre-exit thesis for the same instrument and direction. Treat the exit rationale and its change_condition as the continuity baseline; do not carry the exited setup forward as HELD merely because its old objective or broad invalidation remains open. Flatness, elapsed time, a renewed crossing or reclaim, a better price, an unchanged objective/invalidation/path, or remaining daily-capture progress is not by itself material post-exit evidence. Re-enter immediately when concrete evidence observed after the exit creates a genuinely distinct positive-EV setup; otherwise choose NOTHING. This is cognitive continuity, not a cooldown or deterministic execution gate. "
+        "Treat account_context.must_flat_utc and seconds_until_must_flat as the actual schedule horizon. When automated daily close is enabled, do not enter if the remaining window cannot contain the intended next-five-to-ten-bar path and an orderly exit; choose NOTHING rather than create exposure that scheduled compliance will immediately flatten. "
     )
     if positioned_only:
         instructions = (
@@ -4378,6 +4427,8 @@ def build_prompt(
                 "Carry forward its objective, invalidation, transition, and unresolved uncertainty unless current evidence changes them. "
                 "Use NOT_APPLICABLE only when no prior path exists for that candidate; a scheduled boundary never erases prior cognition by itself. "
             )
+    if not positioned_only:
+        instructions += entry_continuity
     if shared_flat:
         instructions += (
             "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
@@ -4854,7 +4905,7 @@ def run_once(
     )
     prior_cognition = (
         latest_prior_cognition(exchange, packet_id)
-        if decision_mode == "flat_scan" else None
+        if decision_mode in {"flat_scan", "trigger_review"} else None
     )
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
