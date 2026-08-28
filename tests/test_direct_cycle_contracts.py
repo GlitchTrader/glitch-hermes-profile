@@ -1548,6 +1548,10 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "NOTHING, HOLD, trigger reviews, rejected candidates, and opposite-direction trades are observations" in prompt
     assert "their labels or presence in history cannot by themselves lower its probability" in prompt
     assert "Reward/risk and a low break-even probability are payoff math, not probability evidence" in prompt
+    assert "Separate directional path quality from entry timing" in prompt
+    assert "do not count it both as probability evidence and as untouched reward" in prompt
+    assert "a concrete improvement in entry location, invalidation cost, or target-before-stop probability" in prompt
+    assert "never shorthand for perfect confirmation or a required retest" in prompt
     assert "must not raise estimated probability or confidence" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
     assert "seconds_until_must_flat as the actual schedule horizon" in prompt
