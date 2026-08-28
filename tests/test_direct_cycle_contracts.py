@@ -823,6 +823,8 @@ def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
         "decisions": [{
             "intent_id": "intent-1",
             "created_utc": "2026-08-03T04:02:41.5-03:00",
+            "entry_range_low": 99.5,
+            "entry_range_high": 100.5,
             "wake_triggers": [],
             "forecast": {
                 "event": "STOP_BEFORE_PRIMARY_TARGET",
@@ -838,6 +840,8 @@ def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
     assert posted[0]["created_utc"] == "2026-08-03T07:02:41.5000000Z"
     assert "wake_triggers" not in posted[0]
     assert "forecast" not in posted[0]
+    assert posted[0]["entry_range_low"] == 99.5
+    assert posted[0]["entry_range_high"] == 100.5
 
 
 def test_native_economics_drive_risk_geometry() -> None:
@@ -1432,6 +1436,9 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
     assert "not a fixed probability or reward/risk rule" in prompt
     assert "recent_exit_decisions and completed native results take precedence" in prompt
+    assert "correlated evidence, not independent trials" in prompt
+    assert "Reward/risk and a low break-even probability are payoff math, not probability evidence" in prompt
+    assert "must not raise estimated probability or confidence" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
     assert "seconds_until_must_flat as the actual schedule horizon" in prompt
     assert "RECURSIVE_ABSTENTION_VETO" not in prompt

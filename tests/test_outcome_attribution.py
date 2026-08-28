@@ -587,6 +587,63 @@ def test_closed_ledger_episode_does_not_consume_a_later_native_exit() -> None:
         assert terminal["_attributed_signed_quantity"] == -1
 
 
+def test_exit_order_identity_selects_current_entry_when_stale_entry_has_no_ledger_row() -> None:
+    executions = [
+        {
+            "recorded_utc": "2026-08-03T11:00:00Z",
+            "intent_id": "stale-entry",
+            "code": "master_entry_fill_observed",
+            "message": (
+                "account=Master|contract=MES 09-26|fill=99|signed_quantity=-1|"
+                "execution_id=old|native_order=old-order"
+            ),
+        },
+        {
+            "recorded_utc": "2026-08-03T12:00:00Z",
+            "intent_id": "current-entry",
+            "code": "master_entry_fill_observed",
+            "message": (
+                "account=Master|contract=MES 09-26|fill=100|signed_quantity=-1|"
+                "execution_id=current|native_order=current-order"
+            ),
+        },
+        {
+            "recorded_utc": "2026-08-03T12:05:00Z",
+            "intent_id": "exit-intent",
+            "code": "master_exit_fill_observed",
+            "message": (
+                "account=Master|contract=MES 09-26|fill=99.75|signed_quantity=1|"
+                "execution_id=exit|native_order=current-exit"
+            ),
+        },
+    ]
+    by_intent = {}
+    for row in executions:
+        by_intent.setdefault(row["intent_id"], []).append(row)
+    trade_ledger = [{
+        "account": "Master",
+        "instrument": "MES 09-26",
+        "entry_signal": "current-order",
+        "entry_order_identity": "current-order",
+        "exit_signal": "current-exit",
+        "exit_order_identity": "current-exit",
+        "exit_utc": datetime(2026, 8, 3, 12, 5, tzinfo=timezone.utc),
+    }]
+
+    RECONCILER.attribute_native_terminal_events(executions, by_intent, trade_ledger)
+
+    assert not any(
+        row["code"] == "master_exit_fill_observed"
+        for row in by_intent["stale-entry"]
+    )
+    terminal = next(
+        row for row in by_intent["current-entry"]
+        if row["code"] == "master_exit_fill_observed"
+    )
+    assert terminal["_source_intent_id"] == "exit-intent"
+    assert terminal["_attributed_signed_quantity"] == 1
+
+
 def test_close_kind_accepts_native_compact_stop_and_target_roles() -> None:
     assert RECONCILER.infer_close_kind({
         "exit_type": "TP",

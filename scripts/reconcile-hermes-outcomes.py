@@ -1515,16 +1515,28 @@ def attribute_native_terminal_events(executions, by_intent, trade_ledger=None):
     open_entries = {}
     seen_executions = set()
     ledger_exit_by_entry = {}
+    ledger_entries_by_exit = {}
     for trade in trade_ledger or []:
         account = str(trade.get("account") or "").lower()
         instrument = _instrument_root(trade.get("instrument"))
         exit_utc = trade.get("exit_utc")
         if not account or not instrument or not isinstance(exit_utc, datetime):
             continue
+        entry_orders = {
+            str(trade.get(field) or "").strip().lower()
+            for field in ("entry_signal", "entry_order_identity")
+            if str(trade.get(field) or "").strip()
+        }
         for field in ("entry_signal", "entry_order_identity"):
             native_order = str(trade.get(field) or "").strip().lower()
             if native_order:
                 ledger_exit_by_entry[(account, instrument, native_order)] = exit_utc
+        for field in ("exit_signal", "exit_order_identity"):
+            native_order = str(trade.get(field) or "").strip().lower()
+            if native_order and entry_orders:
+                ledger_entries_by_exit.setdefault(
+                    (account, instrument, native_order), set()
+                ).update(entry_orders)
     for row in sorted(executions, key=lambda value: str(value.get("recorded_utc") or "")):
         code = str(row.get("code") or "")
         if code != "master_entry_fill_observed" and code not in MASTER_TERMINAL_CODES:
@@ -1565,6 +1577,7 @@ def attribute_native_terminal_events(executions, by_intent, trade_ledger=None):
                 current = {
                     "intent_id": intent_id,
                     "quantity": 0.0,
+                    "native_order": native_order,
                     "ledger_exit_utc": ledger_exit_by_entry.get(
                         (account, instrument, native_order)
                     ),
@@ -1579,6 +1592,20 @@ def attribute_native_terminal_events(executions, by_intent, trade_ledger=None):
         remaining = quantity
         native_sign = 1 if (_float(fields, "signed_quantity", 0) or 0) > 0 else -1
         last_attributed = None
+        terminal_order = str(fields.get("native_order") or "").strip().lower()
+        ledger_entry_orders = ledger_entries_by_exit.get(
+            (account, instrument, terminal_order)
+        )
+        if ledger_entry_orders:
+            exact_entries = [
+                entry for entry in entries
+                if entry.get("native_order") in ledger_entry_orders
+            ]
+            if len(exact_entries) != 1:
+                row["_unallocated_signed_quantity"] = native_sign * remaining
+                continue
+            exact_entry = exact_entries[0]
+            entries.insert(0, entries.pop(entries.index(exact_entry)))
         while entries and remaining > 1e-9:
             current = entries[0]
             allocated = min(current["quantity"], remaining)
