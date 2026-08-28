@@ -219,6 +219,36 @@ def test_runtime_owns_intent_transport_metadata() -> None:
     uuid.UUID(intent["intent_id"])
 
 
+def test_runtime_binds_position_management_to_the_native_instrument() -> None:
+    batch, scenario = valid_batch("2000-01-01T00:00:00Z")
+    book = scenario["books"][0]
+    book["instrument_contexts"] = {
+        "MNQ": {"current_signed_quantity": 1},
+        "MES": {"current_signed_quantity": 0},
+    }
+    intent = batch["decisions"][0]
+    intent["instrument"] = "MES"
+    intent["action"] = "HOLD"
+    intent["reason"] = "Preserve this model-authored judgment."
+    intent["decision_audit"]["final_choice"] = "HOLD"
+    intent["decision_audit"]["decisive_evidence"] = "\n".join([
+        DIRECT.POSITION_MANAGEMENT_MARKER,
+        "INSTRUMENT=MES",
+        *(f"{field}={'HOLD' if field == 'SELECTION_ACTION' else 'model evidence'}"
+          for field in DIRECT.POSITION_MANAGEMENT_FIELDS),
+    ])
+
+    DIRECT.stamp_deterministic_intent_fields(batch, scenario)
+
+    assert intent["instrument"] == "MNQ"
+    assert "INSTRUMENT=MNQ" in intent["decision_audit"]["decisive_evidence"]
+    assert intent["action"] == "HOLD"
+    assert intent["reason"] == "Preserve this model-authored judgment."
+    DIRECT.validate_position_management(
+        intent["decision_audit"]["decisive_evidence"], "MNQ", "HOLD", 0
+    )
+
+
 def test_native_gl1_protection_uses_authoritative_order_fields() -> None:
     account = {
         "positions": [{"instrument_root": "MNQ", "market_position": "Short", "quantity": 1}],
@@ -373,6 +403,84 @@ def test_deterministic_management_math_supports_long_multileg_brackets() -> None
     assert support["hold_target_before_stop_break_even_probability"] == 0.45454545
     assert support["rollback_from_peak_usd"] == 20.0
     assert support["profit_retained_fraction_of_peak"] == pytest.approx(1 / 3)
+
+
+def test_active_trade_state_uses_native_pnl_implied_price_when_analytics_conflict(
+    tmp_path: Path,
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    exchange = tmp_path / "exchange"
+    (glitch_data / "intents").mkdir(parents=True)
+    account = {
+        "account": "Sim101",
+        "positions": [{
+            "instrument_root": "MNQ",
+            "market_position": "Long",
+            "quantity": 3,
+            "average_price": 29508.916666666668,
+            "unrealized_pnl": 2.0,
+        }],
+        "working_order_details": [
+            {
+                "instrument_root": "MNQ",
+                "name": "Stop1",
+                "order_type": "StopMarket",
+                "order_state": "Accepted",
+                "quantity": 3,
+                "filled": 0,
+                "stop_price": 29465.5,
+                "limit_price": 0,
+            },
+            {
+                "instrument_root": "MNQ",
+                "name": "Target1",
+                "order_type": "Limit",
+                "order_state": "Working",
+                "quantity": 3,
+                "filled": 0,
+                "stop_price": 0,
+                "limit_price": 29711.25,
+            },
+        ],
+    }
+    packet = {"frames": [{
+        "created_utc": "2026-08-28T16:36:00Z",
+        "portfolio_snapshot": {"accounts": [account]},
+    }]}
+    scenario = {"books": [{
+        "route_id": "glitch",
+        "master_account": "Sim101",
+        "instrument_contexts": {"MNQ": {
+            "current_price": 29489.5,
+            "point_value_usd": 2.0,
+            "tick_size": 0.25,
+        }},
+    }]}
+
+    trade = DIRECT.active_trade_state(packet, scenario, glitch_data, exchange)["trades"][0]
+    support = trade["deterministic_management_math"]
+    basis = support["price_basis"]
+
+    assert basis["status"] == "complete"
+    assert basis["selected_price_source"] == "native_position_unrealized_pnl_implied"
+    assert basis["analytics_current_price"] == 29489.5
+    assert basis["native_pnl_implied_price"] == pytest.approx(29509.25)
+    assert basis["absolute_disagreement_ticks"] == 79.0
+    assert basis["absolute_disagreement_usd"] == 118.5
+    assert support["current_price"] == pytest.approx(29509.25)
+    assert support["aggregate_giveback_to_stop_usd"] == 262.5
+    assert support["aggregate_remaining_reward_to_target_usd"] == 1212.0
+
+
+def test_position_management_price_basis_falls_back_without_native_inputs() -> None:
+    basis = DIRECT.position_management_price_basis(
+        "long", 1, None, None, 101.25, 5.0, 0.25
+    )
+
+    assert basis["status"] == "analytics_fallback"
+    assert basis["selected_current_price"] == 101.25
+    assert basis["selected_price_source"] == "analytics_market_snapshot"
+    assert basis["native_pnl_implied_price"] is None
 
 
 def test_deterministic_management_math_never_publishes_partial_break_even() -> None:
@@ -1471,6 +1579,8 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
 
     assert '"decision_mode":"position_management"' in positioned_prompt
     assert "when deterministic_management_math.status is complete" in positioned_prompt
+    assert "When its price_basis.status is complete" in positioned_prompt
+    assert "This resolves factual basis only and does not prefer a management action" in positioned_prompt
     assert "the supplied math is decision support, never an execution gate" in positioned_prompt
     assert "In HOLD_EV state one coarse target-before-stop probability range" in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" in positioned_prompt
@@ -1482,6 +1592,7 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "reconcile 1 - forecast.probability with estimated_target_first_range" not in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" not in flat_prompt
     assert "when deterministic_management_math.status is complete" not in flat_prompt
+    assert "When its price_basis.status is complete" not in flat_prompt
     assert "cannot reject both MOVE_STOP and EXIT" not in flat_prompt
     assert "recent_exit_decisions and completed native results take precedence" not in positioned_prompt
     assert "seconds_until_must_flat as the actual schedule horizon" not in positioned_prompt

@@ -1152,6 +1152,79 @@ def _latest_native_position_boundary(frames: list[Any], master: str, side: str) 
     return boundary
 
 
+def position_management_price_basis(
+    side: str,
+    quantity: int,
+    average_price: Any,
+    unrealized_pnl_usd: Any,
+    analytics_current_price: Any,
+    point_value_usd: Any,
+    tick_size: Any,
+) -> dict[str, Any]:
+    """Select one coherent position mark without choosing a management action."""
+    result: dict[str, Any] = {
+        "schema_version": "glitch.hermes.position_price_basis.v1",
+        "effect": "decision_support_only_no_execution_effect",
+        "status": "unavailable",
+        "selected_current_price": None,
+        "selected_price_source": None,
+        "analytics_current_price": None,
+        "native_pnl_implied_price": None,
+        "analytics_minus_native_points": None,
+        "absolute_disagreement_ticks": None,
+        "absolute_disagreement_usd": None,
+        "calculation_issues": [],
+    }
+    try:
+        analytics = float(analytics_current_price)
+    except (TypeError, ValueError):
+        analytics = math.nan
+    if math.isfinite(analytics) and analytics > 0:
+        result["analytics_current_price"] = analytics
+        result["selected_current_price"] = analytics
+        result["selected_price_source"] = "analytics_market_snapshot"
+
+    try:
+        average = float(average_price)
+        unrealized = float(unrealized_pnl_usd)
+        point_value = float(point_value_usd)
+        tick = float(tick_size)
+    except (TypeError, ValueError):
+        result["status"] = "analytics_fallback" if result["selected_current_price"] is not None else "unavailable"
+        result["calculation_issues"] = ["native_position_price_inputs_unavailable"]
+        return result
+    if (
+        side not in {"long", "short"}
+        or quantity < 1
+        or not math.isfinite(unrealized)
+        or not all(math.isfinite(value) and value > 0 for value in (average, point_value, tick))
+    ):
+        result["status"] = "analytics_fallback" if result["selected_current_price"] is not None else "unavailable"
+        result["calculation_issues"] = ["native_position_price_inputs_invalid"]
+        return result
+
+    direction = 1.0 if side == "long" else -1.0
+    implied = average + direction * unrealized / (quantity * point_value)
+    if not math.isfinite(implied) or implied <= 0:
+        result["status"] = "analytics_fallback" if result["selected_current_price"] is not None else "unavailable"
+        result["calculation_issues"] = ["native_pnl_implied_price_invalid"]
+        return result
+
+    result["status"] = "complete"
+    result["selected_current_price"] = round(implied, 8)
+    result["selected_price_source"] = "native_position_unrealized_pnl_implied"
+    result["native_pnl_implied_price"] = round(implied, 8)
+    if result["analytics_current_price"] is not None:
+        difference = analytics - implied
+        result["analytics_minus_native_points"] = round(difference, 8)
+        result["absolute_disagreement_ticks"] = round(abs(difference) / tick, 8)
+        result["absolute_disagreement_usd"] = round(
+            abs(difference) * quantity * point_value,
+            8,
+        )
+    return result
+
+
 def deterministic_management_math(
     side: str,
     quantity: int,
@@ -1459,10 +1532,19 @@ def active_trade_state(
                 "oco": order.get("oco"),
             })
         instrument_context = selected_instrument_context(book, trade_instrument)
+        price_basis = position_management_price_basis(
+            side,
+            abs(net),
+            position.get("average_price"),
+            unrealized,
+            instrument_context.get("current_price"),
+            instrument_context.get("point_value_usd"),
+            instrument_context.get("tick_size"),
+        )
         management_math = deterministic_management_math(
             side,
             abs(net),
-            instrument_context.get("current_price"),
+            price_basis.get("selected_current_price"),
             instrument_context.get("point_value_usd"),
             instrument_context.get("tick_size"),
             compact_orders,
@@ -1470,6 +1552,7 @@ def active_trade_state(
             peak,
             trough,
         )
+        management_math["price_basis"] = price_basis
         trades.append({
             "master_account": master,
             "route_id": book.get("route_id"),
@@ -3712,6 +3795,21 @@ def stamp_deterministic_intent_fields(
         intent["account"] = str(book["master_account"])
         intent["operator_profile"] = route
         intent["snapshot_hash"] = snapshot_hash
+        active_instruments = positioned_instruments(book)
+        if len(active_instruments) == 1:
+            # In position-management mode the native position identity is
+            # runtime-owned routing, not a market choice for the model.
+            active_instrument = active_instruments[0]
+            intent["instrument"] = active_instrument
+            audit = intent.get("decision_audit")
+            evidence = audit.get("decisive_evidence") if isinstance(audit, dict) else None
+            if isinstance(evidence, str) and POSITION_MANAGEMENT_MARKER in evidence:
+                audit["decisive_evidence"] = re.sub(
+                    r"(?mi)^INSTRUMENT\s*=\s*[A-Za-z0-9._-]+\s*$",
+                    f"INSTRUMENT={active_instrument}",
+                    evidence,
+                    count=1,
+                )
     return batch
 
 
@@ -4390,7 +4488,7 @@ def build_prompt(
         instructions = (
             "Apply the injected SOUL, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "This is a fast position-management pass. Do not rescan flat instruments, retrieve memory, or propose new exposure. "
-            "For each active native position, compare remaining expected value of HOLD, MOVE_STOP, MOVE_TP, and EXIT using entry, current price, working stop and target, initial risk, current noise, MFE, MAE, rollback, accepted response, delta-price agreement, remaining objective, and giveback risk. For each recent_glitch_ledger.active_trade_state.trades row, when deterministic_management_math.status is complete, use its native stop/target distances, gross dollars, rollback, and HOLD break-even as the arithmetic authority and do not recompute them; otherwise cite its calculation_issues and do not invent missing values. Hermes still estimates target-before-stop probability from current market evidence and chooses the action: the supplied math is decision support, never an execution gate. In HOLD_EV state one coarse target-before-stop probability range and compare it with the supplied HOLD break-even. Do not call HOLD positive when that entire estimated range is below break-even; when it straddles break-even, resolve from current evidence, execution costs, and giveback risk rather than defaulting to the entry thesis. "
+            "For each active native position, compare remaining expected value of HOLD, MOVE_STOP, MOVE_TP, and EXIT using entry, current price, working stop and target, initial risk, current noise, MFE, MAE, rollback, accepted response, delta-price agreement, remaining objective, and giveback risk. For each recent_glitch_ledger.active_trade_state.trades row, when deterministic_management_math.status is complete, use its native stop/target distances, gross dollars, rollback, and HOLD break-even as the arithmetic authority and do not recompute them; otherwise cite its calculation_issues and do not invent missing values. When its price_basis.status is complete, use selected_current_price for position economics because it is derived from the same native average price and unrealized PnL; retain a conflicting analytics_current_price as time-stamped market-path evidence and explicitly account for the reported disagreement. This resolves factual basis only and does not prefer a management action. Hermes still estimates target-before-stop probability from current market evidence and chooses the action: the supplied math is decision support, never an execution gate. In HOLD_EV state one coarse target-before-stop probability range and compare it with the supplied HOLD break-even. Do not call HOLD positive when that entire estimated range is below break-even; when it straddles break-even, resolve from current evidence, execution costs, and giveback risk rather than defaulting to the entry thesis. "
             "Favorable excursion is earned optionality. Once it is material relative to initial risk and current noise, HOLD bears the burden of proof. Quantify remaining reward from current price to target, potential giveback from current price to stop, rollback relative to peak MFE and initial risk, and the immediate completed one- and five-minute response; never call rollback limited or modest without those comparisons. HOLD must explain why rebased continuation value clearly exceeds EXIT. A still-reachable target, intact original thesis or invalidation, higher-timeframe alignment, or lack of accepted reversal through entry is not sufficient, and EXIT after material MFE does not require original invalidation or accepted reversal. Derive and evaluate at least one candidate protection level from recent completed one- or five-minute structure instead of requiring a pre-labeled level. If no technically supported level can survive current noise, that strengthens EXIT and cannot reject both MOVE_STOP and EXIT. Never use a fixed MFE percentage, trailing distance, mechanical breakeven, or automatic exit. "
             "Extend a target only after price accepts beyond the prior objective, and only while ratcheting the stop in the same MOVE_TP update so extra upside is not financed by surrendering earned protection. "
             "A profit-protecting stop is at or above entry for a long and at or below entry for a short. "
