@@ -1437,6 +1437,8 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "not a fixed probability or reward/risk rule" in prompt
     assert "recent_exit_decisions and completed native results take precedence" in prompt
     assert "correlated evidence, not independent trials" in prompt
+    assert "NOTHING, HOLD, trigger reviews, rejected candidates, and opposite-direction trades are observations" in prompt
+    assert "their labels or presence in history cannot by themselves lower its probability" in prompt
     assert "Reward/risk and a low break-even probability are payoff math, not probability evidence" in prompt
     assert "must not raise estimated probability or confidence" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt

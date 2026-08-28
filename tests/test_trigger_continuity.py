@@ -43,6 +43,42 @@ def test_change_condition_prices_keep_instrument_identity() -> None:
     }
 
 
+def test_change_condition_accepts_both_word_orders_without_cross_instrument_leakage() -> None:
+    intent = {
+        "instrument": "MES",
+        "decision_audit": {
+            "change_condition": (
+                "Reassess above MNQ 29840.75 or if MES accepts below 7766.25; "
+                "if M2K accepts above 3054.10 or below M2K 3053.00."
+            )
+        },
+        "wake_triggers": [],
+    }
+
+    DIRECT.normalize_wake_triggers(intent, {"MNQ", "MES", "M2K"})
+
+    assert {
+        (row["instrument"], row["direction"], row["price"])
+        for row in intent["wake_triggers"]
+    } == {
+        ("MNQ", "ABOVE", 29840.75),
+        ("MES", "BELOW", 7766.25),
+        ("M2K", "ABOVE", 3054.1),
+        ("M2K", "BELOW", 3053.0),
+    }
+    DIRECT.require_explicit_wake_triggers(
+        intent["decision_audit"], intent["wake_triggers"], 0, {"MNQ", "MES", "M2K"}, "MES"
+    )
+    try:
+        DIRECT.require_explicit_wake_triggers(
+            intent["decision_audit"], [], 0, {"MNQ", "MES", "M2K"}, "MES"
+        )
+    except ValueError as error:
+        assert str(error).startswith("wake_triggers_missing_for_change_condition:0:")
+    else:
+        raise AssertionError("direction-first instrument condition was accepted without a wake trigger")
+
+
 def test_persisted_triggers_are_frozen_instrument_aware_and_deduplicated(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"
     (exchange / "hermes" / "supervisor").mkdir(parents=True)

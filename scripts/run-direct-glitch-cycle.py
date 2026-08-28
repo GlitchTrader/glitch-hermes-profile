@@ -1634,6 +1634,16 @@ def explicit_price_crosses(
     roots = {instrument_root(value) for value in candidate_roots if instrument_root(value)}
     fallback = instrument_root(default_instrument)
     crosses: set[tuple[str, str, float]] = set()
+    inline_roots = roots | ({fallback} if fallback else set())
+    if inline_roots:
+        root_pattern = "|".join(re.escape(root) for root in sorted(inline_roots, key=len, reverse=True))
+        direction_first = re.compile(
+            rf"\b(above|over|below|under)\s+({root_pattern})\s+([0-9]+(?:\.[0-9]+)?)",
+            re.IGNORECASE,
+        )
+        for match in direction_first.finditer(condition):
+            direction = "ABOVE" if match.group(1).lower() in {"above", "over"} else "BELOW"
+            crosses.add((instrument_root(match.group(2)), direction, float(match.group(3))))
     for match in pattern.finditer(condition):
         direction = "ABOVE" if match.group(1).lower() in {"above", "over"} else "BELOW"
         prefix = condition[:match.start()]
@@ -4373,7 +4383,7 @@ def build_prompt(
         "Do not force activity, recover losses, use a fixed setup, fixed ATR rule, fixed reward/risk rule, or treat guidance as stronger than current evidence. "
     )
     entry_continuity = (
-        "For a flat entry decision, recent_glitch_ledger.recent_exit_decisions and completed native results take precedence over the pre-exit thesis for the same instrument and direction. Treat the exit rationale and its change_condition as the continuity baseline; do not carry the exited setup forward as HELD merely because its old objective or broad invalidation remains open. Flatness, elapsed time, a renewed crossing or reclaim, a better price, an unchanged objective/invalidation/path, or remaining daily-capture progress is not by itself material post-exit evidence. Recent same-instrument and same-direction attempts sharing substantially the same objective, invalidation, structural location, and auction path are correlated evidence, not independent trials. A failed or zero-favorable-excursion attempt lowers the probability of that same path; a new bar, recross, delta change, better price, elapsed time, attractive payoff geometry, or unmet daily target cannot restore it unless independent evidence materially changes auction state, structural location, objective or invalidation, or target-first probability. Reward/risk and a low break-even probability are payoff math, not probability evidence. Re-enter immediately when concrete evidence observed after the exit creates a genuinely distinct positive-EV setup; otherwise choose NOTHING. This is cognitive continuity, not a cooldown or deterministic execution gate. "
+        "For a flat entry decision, recent_glitch_ledger.recent_exit_decisions and completed native results take precedence over the pre-exit thesis for the same instrument and direction. Treat the exit rationale and its change_condition as the continuity baseline; do not carry the exited setup forward as HELD merely because its old objective or broad invalidation remains open. Flatness, elapsed time, a renewed crossing or reclaim, a better price, an unchanged objective/invalidation/path, or remaining daily-capture progress is not by itself material post-exit evidence. Recent completed native entry attempts sharing the same instrument and direction and substantially the same objective, invalidation, structural location, and auction path are correlated evidence, not independent trials. NOTHING, HOLD, trigger reviews, rejected candidates, and opposite-direction trades are observations, not attempts on that thesis; their labels or presence in history cannot by themselves lower its probability, though their underlying current-market evidence still matters. A completed native attempt that failed or had zero favorable excursion lowers the probability of that same path; a new bar, recross, delta change, better price, elapsed time, attractive payoff geometry, or unmet daily target cannot restore it unless independent evidence materially changes auction state, structural location, objective or invalidation, or target-first probability. Reward/risk and a low break-even probability are payoff math, not probability evidence. Re-enter immediately when concrete evidence observed after the exit creates a genuinely distinct positive-EV setup; otherwise choose NOTHING. This is cognitive continuity, not a cooldown or deterministic execution gate. "
         "Treat account_context.must_flat_utc and seconds_until_must_flat as the actual schedule horizon. When automated daily close is enabled, do not enter if the remaining window cannot contain the intended next-five-to-ten-bar path and an orderly exit; choose NOTHING rather than create exposure that scheduled compliance will immediately flatten. "
     )
     if positioned_only:
