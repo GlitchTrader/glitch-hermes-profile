@@ -1815,6 +1815,64 @@ def decision_review_is_complete(decision: dict[str, Any], evidence_ids: list[str
     )
 
 
+def deterministic_cognitive_evaluation_gate(
+    supervisor: Path,
+    active: dict[str, Any],
+    gate: dict[str, Any],
+    scope: str,
+) -> dict[str, Any] | None:
+    """Require an exact, cost-aware frozen report before extending an experiment."""
+    if scope not in {"local_continuation", "distribution"}:
+        return None
+    candidate_id = str(active.get("candidate_id") or "")
+    prompt_version = str(active.get("effective_prompt_version") or "")
+    bundle_hash = DIRECT.cognitive_bundle_hash_from_prompt_version(prompt_version)
+    required_ids = {str(value) for value in gate.get("evidence_episode_ids", []) if value}
+    for report in reversed(read_jsonl(supervisor / "cognition-evaluation-reports.jsonl")):
+        promotion_gate = report.get("promotion_gate")
+        scope_gate = promotion_gate.get(scope) if isinstance(promotion_gate, dict) else None
+        scope_checks = scope_gate.get("checks") if isinstance(scope_gate, dict) else None
+        cost_policy = report.get("cost_policy") if isinstance(report.get("cost_policy"), dict) else {}
+        covered = {str(value) for value in report.get("covered_trade_episode_ids", []) if value}
+        unsigned_report = {
+            key: value for key, value in report.items() if key != "publication_sha256"
+        }
+        publication_hash = hashlib.sha256(json.dumps(
+            unsigned_report,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
+        if (
+            report.get("schema_version")
+            != "glitch.hermes.cognition_evaluation_publication.v1"
+            or report.get("effect") != "lesson_lifecycle_only_no_trade_or_execution_effect"
+            or str(report.get("candidate_id") or "") != candidate_id
+            or str(report.get("expected_prompt_version") or "") != prompt_version
+            or str(report.get("cognitive_bundle_hash") or "") != bundle_hash
+            or not isinstance(scope_gate, dict)
+            or scope_gate.get("eligible") is not True
+            or not isinstance(scope_checks, list)
+            or not scope_checks
+            or any(not isinstance(check, dict) or check.get("passed") is not True for check in scope_checks)
+            or report.get("publication_sha256") != publication_hash
+            or (scope == "distribution" and cost_policy.get("verified") is not True)
+            or not required_ids.issubset(covered)
+        ):
+            continue
+        return {
+            "report_id": report.get("report_id"),
+            "experiment_id": report.get("experiment_id"),
+            "scope": scope,
+            "covered_trade_episode_ids": sorted(required_ids),
+            "cost_policy": report.get("cost_policy"),
+            "sample": report.get("sample"),
+            "performance": report.get("performance"),
+            "calibration": report.get("calibration"),
+        }
+    return None
+
+
 def append_distribution_candidate(supervisor: Path, active: dict[str, Any], gate: dict[str, Any]) -> None:
     candidate_id = str(active.get("candidate_id") or "")
     distribution_id = stable_id(
@@ -1870,12 +1928,24 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
             or not decision_review_is_complete(decision, gate["evidence_episode_ids"])
         ):
             return
+        deterministic_evaluation = None
+        if action in {"continue", "promote"}:
+            deterministic_evaluation = deterministic_cognitive_evaluation_gate(
+                supervisor,
+                active,
+                gate,
+                "distribution" if action == "promote" else "local_continuation",
+            )
+            if deterministic_evaluation is None:
+                return
         active["status"] = {"continue": "active", "promote": "promoted", "rollback": "rolled_back"}[action]
         active["evaluated_utc"] = utc_now()
         active["evaluation_episode_count"] = len(episode_ids)
         active["baseline_evidence_ids"] = list(episode_ids)
         active["evaluation"] = decision
         active["evaluation_evidence"] = gate
+        if deterministic_evaluation is not None:
+            active["deterministic_evaluation"] = deterministic_evaluation
         if action == "rollback":
             active.pop("replacement_text", None)
         else:

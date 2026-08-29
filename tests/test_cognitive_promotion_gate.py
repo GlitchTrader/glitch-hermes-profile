@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -66,6 +67,47 @@ def decision(candidate_id: str, action: str, evidence_ids: list[str]) -> dict:
 
 def write_rows(path: Path, rows: list[dict]) -> None:
     LEARNING.write_jsonl_atomic(path, rows)
+
+
+def evaluation_report(
+    candidate_id: str,
+    prompt_version: str,
+    evidence_ids: list[str],
+    *,
+    local_eligible: bool = True,
+    distribution_eligible: bool = True,
+) -> dict:
+    value = {
+        "schema_version": "glitch.hermes.cognition_evaluation_publication.v1",
+        "report_id": "report-1",
+        "experiment_id": "experiment-1",
+        "candidate_id": candidate_id,
+        "expected_prompt_version": prompt_version,
+        "cognitive_bundle_hash": DIRECT.cognitive_bundle_hash_from_prompt_version(prompt_version),
+        "effect": "lesson_lifecycle_only_no_trade_or_execution_effect",
+        "covered_trade_episode_ids": evidence_ids,
+        "cost_policy": {"verified": distribution_eligible},
+        "sample": {"exact_completed_trades": len(evidence_ids)},
+        "performance": {"net_pnl_usd": 10.0},
+        "calibration": {"beats_climatology": True},
+        "promotion_gate": {
+            "local_continuation": {
+                "eligible": local_eligible,
+                "checks": [{"name": "local", "passed": local_eligible}],
+            },
+            "distribution": {
+                "eligible": distribution_eligible,
+                "checks": [{"name": "distribution", "passed": distribution_eligible}],
+            },
+        },
+    }
+    value["publication_sha256"] = hashlib.sha256(json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+    return value
 
 
 def test_trade_fact_envelope_gets_system_owned_prompt_and_opportunity_identity() -> None:
@@ -177,6 +219,33 @@ def test_activation_and_distribution_require_new_exactly_attributed_master_evide
         decision("candidate-1", "promote", ["trade-3", "trade-4"]), supervisor, all_ids
     )
 
+    assert DIRECT.read_json(active_path)["status"] == "active"
+    assert not (supervisor / "distribution-candidates.jsonl").exists()
+
+    tampered = evaluation_report(
+        "candidate-1",
+        active["effective_prompt_version"],
+        ["trade-3", "trade-4"],
+    )
+    tampered["publication_sha256"] = "tampered"
+    write_rows(supervisor / "cognition-evaluation-reports.jsonl", [tampered])
+    LEARNING.apply_cognitive_decision(
+        decision("candidate-1", "promote", ["trade-3", "trade-4"]), supervisor, all_ids
+    )
+    assert DIRECT.read_json(active_path)["status"] == "active"
+
+    write_rows(
+        supervisor / "cognition-evaluation-reports.jsonl",
+        [evaluation_report(
+            "candidate-1",
+            active["effective_prompt_version"],
+            ["trade-3", "trade-4"],
+        )],
+    )
+    LEARNING.apply_cognitive_decision(
+        decision("candidate-1", "promote", ["trade-3", "trade-4"]), supervisor, all_ids
+    )
+
     promoted = DIRECT.read_json(active_path)
     dossiers = LEARNING.read_jsonl(supervisor / "distribution-candidates.jsonl")
     assert promoted["status"] == "promoted"
@@ -184,6 +253,7 @@ def test_activation_and_distribution_require_new_exactly_attributed_master_evide
     assert dossiers[0]["status"] == "human_review_required"
     assert dossiers[0]["auto_install"] is False
     assert dossiers[0]["validation_scope"] == "single_installation_local"
+    assert promoted["deterministic_evaluation"]["report_id"] == "report-1"
 
 
 def test_unreconciled_trade_episode_cannot_activate_a_lesson(tmp_path) -> None:

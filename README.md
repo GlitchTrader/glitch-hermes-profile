@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.64
+# Glitch Hermes Profile v0.0.2.65
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -6,7 +6,7 @@ Glitch/NinjaTrader remains the market, account, configured-policy, execution, br
 
 The profile is intelligence-first. It supplies evidence vocabulary, time-sequence context, strict output construction, and attributable learning. It does not encode a fixed trading strategy, daily profit target, account-size recipe, preferred setup, geometric template, or hidden action gate. Capacity and supported actions come from the current Glitch packet and user configuration.
 
-Local cognitive lessons require independent cross-session discovery, later completed master-trade confirmation, exact overlay attribution, contradiction review, and periodic revalidation before they can influence Hermes. They expire without revalidation. A locally promoted lesson creates only a human-review distribution candidate; it never installs itself into the product or changes Glitch execution.
+Local cognitive lessons require independent cross-session discovery, later completed master-trade confirmation, exact overlay attribution, contradiction review, and periodic revalidation before they can influence Hermes. Initial influence is a short-lived local experiment. Renewal requires a matching frozen, cost-adjusted deterministic evaluation; product promotion additionally requires verified all-in costs, several frozen weeks, calibrated forecasts that beat climatology, positive net results versus staying flat, and positive results across multiple observed regime strata. Lessons expire when those gates are not met. A locally promoted lesson creates only a human-review distribution candidate; it never installs itself into the product or changes Glitch execution.
 
 ## Requirements
 
@@ -52,6 +52,35 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hermes\profiles\glit
 The reset owns only the Hermes backend. It refuses to run unless AI and both jobs are paused, stops the profile gateway, then creates and SHA-256 verifies a checkpoint under `GlitchData\hermes-checkpoints` before deleting anything. The checkpoint preserves Hermes memories and plans plus the complete supervisor learning ledger, current guidance, current plan, prior epoch identity, and installed distribution record; it deliberately excludes replaceable multi-gigabyte packets and market snapshots. Only after verification does reset permanently clear Hermes sessions, request dumps, cron history, logs, stale jobs, decisions, intents, packets, snapshots, learning artifacts, and overlays. It does not inspect or mutate NinjaTrader accounts, positions, or orders, and it preserves the Glitch Journal, TradeLedger, warnings, locks, peaks, analytics cache, policy, account groups, ratios, licensing, and UI settings. Setup then recreates exactly two paused jobs and a fresh Hermes state database. There is no unbacked apply path.
 
 When the command completes, reset the intended NinjaTrader accounts and use Glitch **Reset Data** to clear Journal and Summary statistics. Those operator-owned actions are deliberately outside the backend script.
+
+## Frozen cognition evaluation
+
+The deterministic evaluator is deliberately unscheduled and outside both the direct operator and the model learner. It cannot create, suppress, amend, or execute an intent. It freezes the exact prompt and cognitive-bundle hash plus the current evidence cursors, then scores only later exact-version decisions and completed master outcomes.
+
+Pause Glitch AI first, then create the prospective checkpoint with the Hermes Python runtime:
+
+```powershell
+& "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" `
+  "$env:LOCALAPPDATA\hermes\profiles\glitch\scripts\evaluate-frozen-cognition.py" freeze
+```
+
+The default cost policy applies a four-tick round-trip research stress and is explicitly unverified; it may evaluate the local experiment but can never pass the product-distribution gate. To make product evidence eligible, freeze with an explicit all-in round-trip USD cost for every traded instrument and name the verified source:
+
+```powershell
+& "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" `
+  "$env:LOCALAPPDATA\hermes\profiles\glitch\scripts\evaluate-frozen-cognition.py" freeze `
+  --round-trip-cost-usd MES=5.00 --round-trip-cost-usd MNQ=2.00 `
+  --round-trip-cost-usd M2K=2.00 --verified-cost-source "operator verified schedule"
+```
+
+The amounts above demonstrate syntax only; they are not fee recommendations. After the frozen observation period, score and publish the report used by the lesson-lifecycle gate:
+
+```powershell
+& "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" `
+  "$env:LOCALAPPDATA\hermes\profiles\glitch\scripts\evaluate-frozen-cognition.py" evaluate --publish
+```
+
+The report separates gross result, explicit evaluation cost, net result, forecast Brier score versus climatology, independent NOTHING opportunity chronology, execution quality, weekly/instrument/regime-stratified results, and the local versus distribution gates. Counterfactual NOTHING paths are labeled as chronology, never fills or realized PnL.
 
 ## Controls
 

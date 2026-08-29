@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-08-23",
+  "updated": "2026-08-29",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -22,10 +22,32 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.64"
+        "distribution.yaml version 0.0.2.65"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."
+    },
+    {
+      "id": "GHP-004",
+      "title": "Freeze and score cognition before local renewal or product promotion",
+      "status": "done",
+      "priority": "P0",
+      "owner_role": "architect",
+      "acceptance": [
+        "A paused checkpoint binds prospective evidence to one exact prompt and cognitive-bundle hash.",
+        "The offline evaluator scores numeric cost-adjusted EV, calibration, NOTHING opportunity chronology, execution quality, net results, and simple baselines without participating in a trade decision.",
+        "A local lesson cannot be renewed or promoted without a matching deterministic report; distribution also requires verified costs and multi-week cross-regime evidence.",
+        "The direct cognition bundle and Glitch execution remain byte-unchanged."
+      ],
+      "depends_on": ["GHP-003"],
+      "evidence": [
+        "scripts/evaluate-frozen-cognition.py",
+        "scripts/run-hermes-learning-cycle.py",
+        "tests/test_frozen_cognition_evaluation.py",
+        "tests/test_cognitive_promotion_gate.py"
+      ],
+      "completed_at": "2026-08-29T20:33:54-03:00",
+      "stop_line": "Evaluation may govern lesson lifecycle only; it must never admit, suppress, resize, amend, or execute a trade."
     },
     {
       "id": "GHP-001",
@@ -76,7 +98,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-      "distribution_version": "0.0.2.64"
+      "distribution_version": "0.0.2.65"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

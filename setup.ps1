@@ -175,6 +175,7 @@ $requiredFiles = @(
     'scripts\run-hermes-learning-cycle.py',
     'scripts\launch-hermes-learning-cycle.py',
     'scripts\ensure-named-sessions.py',
+    'scripts\evaluate-frozen-cognition.py',
     'scripts\reset-hermes-trading-epoch.ps1',
     'plugins\glitch-control\plugin.yaml',
     'plugins\glitch-control\__init__.py'
@@ -196,6 +197,7 @@ foreach ($stream in @(
     'plans.jsonl',
     'daily-journal.jsonl',
     'cognitive-changes.jsonl',
+    'cognition-evaluation-reports.jsonl',
     'build-requests.jsonl',
     'codex-events.jsonl'
 )) {
@@ -236,7 +238,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.64'
+    distribution_version = '0.0.2.65'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)
