@@ -2144,6 +2144,12 @@ def latest_prior_cognition(
                 "change_condition": str(audit.get("change_condition") or ""),
                 "final_choice": str(audit.get("final_choice") or ""),
             }
+            selection_ev = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", evidence)
+            if selection_ev:
+                event["deterministic_selection_math"] = deterministic_selection_math(
+                    selection_ev.group(1),
+                    decision.get("forecast"),
+                )
             break
         if event is None:
             continue
@@ -2757,6 +2763,122 @@ def _first_unsigned_number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _selection_ev_probability(value: Any) -> float | None:
+    number = _first_unsigned_number(value)
+    if number is None:
+        return None
+    if "%" in str(value or "") or number > 1:
+        number /= 100
+    return number if 0 <= number <= 1 else None
+
+
+def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
+    numbers = re.findall(r"(?<![\d.])(?:\d+(?:[.,]\d*)?|[.,]\d+)", str(value or ""))
+    if len(numbers) != 2:
+        return None
+    try:
+        low, high = (float(number.replace(",", ".")) for number in numbers)
+    except ValueError:
+        return None
+    if "%" in str(value or "") or max(low, high) > 1:
+        low /= 100
+        high /= 100
+    if not all(math.isfinite(number) and 0 <= number <= 1 for number in (low, high)):
+        return None
+    return (low, high) if low <= high else None
+
+
+def deterministic_selection_math(
+    value: str,
+    forecast: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Reconcile proposed levels exactly without approving or suppressing an intent."""
+    fields = _selection_ev_fields(value) if isinstance(value, str) else {}
+    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields.get("direction", ""))
+    direction = direction_match.group(1).upper() if direction_match else None
+    entry = _first_unsigned_number(fields.get("entry"))
+    stop = _first_unsigned_number(fields.get("stop"))
+    target = _first_unsigned_number(fields.get("target"))
+    friction = _first_unsigned_number(fields.get("friction_points"))
+    declared_risk = _first_unsigned_number(fields.get("risk_points"))
+    declared_reward = _first_unsigned_number(fields.get("reward_points"))
+    declared_breakeven = _selection_ev_probability(fields.get("breakeven_target_first"))
+    estimated_range = _selection_ev_probability_range(fields.get("estimated_target_first_range"))
+    result: dict[str, Any] = {
+        "schema_version": "glitch.hermes.selection_math.v1",
+        "effect": "decision_support_only_no_execution_effect",
+        "decision_authority": "hermes",
+        "status": "incomplete",
+        "formula": "(risk_points + friction_points) / (risk_points + reward_points)",
+        "direction": direction,
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "friction_points": friction,
+        "declared_risk_points": declared_risk,
+        "declared_reward_points": declared_reward,
+        "declared_breakeven_target_first": declared_breakeven,
+        "declared_estimated_target_first_range": list(estimated_range) if estimated_range else None,
+        "computed_risk_points": None,
+        "computed_reward_points": None,
+        "computed_breakeven_target_first": None,
+        "forecast_target_first_probability": None,
+        "calculation_issues": [],
+    }
+    issues: list[str] = []
+    if (
+        direction is None or entry is None or stop is None or target is None
+        or friction is None or friction < 0
+    ):
+        issues.append("numeric_input_unavailable")
+    else:
+        risk = entry - stop if direction == "LONG" else stop - entry
+        reward = target - entry if direction == "LONG" else entry - target
+        if risk <= 0 or reward <= 0:
+            issues.append("geometry_invalid")
+        else:
+            result["status"] = "complete"
+            result["computed_risk_points"] = round(risk, 8)
+            result["computed_reward_points"] = round(reward, 8)
+            computed_breakeven = (risk + friction) / (risk + reward)
+            result["computed_breakeven_target_first"] = round(computed_breakeven, 8)
+            if declared_risk is None or abs(declared_risk - risk) > 0.02:
+                issues.append("declared_risk_mismatch")
+            if declared_reward is None or abs(declared_reward - reward) > 0.02:
+                issues.append("declared_reward_mismatch")
+            if declared_breakeven is None or abs(declared_breakeven - computed_breakeven) > 0.01:
+                issues.append("declared_breakeven_mismatch")
+
+            if (
+                isinstance(forecast, dict)
+                and forecast.get("event") == FORECAST_EVENT_STOP_BEFORE_PRIMARY_TARGET
+                and isinstance(forecast.get("probability"), (int, float))
+                and not isinstance(forecast.get("probability"), bool)
+            ):
+                target_first = 1 - float(forecast["probability"])
+                if math.isfinite(target_first) and 0 <= target_first <= 1:
+                    result["forecast_target_first_probability"] = round(target_first, 8)
+                    if (
+                        estimated_range is not None
+                        and (target_first < estimated_range[0] - 0.02 or target_first > estimated_range[1] + 0.02)
+                    ):
+                        issues.append("forecast_range_mismatch")
+
+            verdict_match = re.match(
+                r"(?i)^\s*(POSITIVE|NEGATIVE|UNCERTAIN)\b",
+                fields.get("now_ev", ""),
+            )
+            if estimated_range is not None and verdict_match:
+                verdict = verdict_match.group(1).upper()
+                if (
+                    (verdict == "POSITIVE" and estimated_range[1] < computed_breakeven - 0.005)
+                    or (verdict == "NEGATIVE" and estimated_range[0] > computed_breakeven + 0.005)
+                ):
+                    issues.append("verdict_range_mismatch")
+    result["calculation_issues"] = sorted(set(issues))
+    return result
+
+
 def _wait_claims_improvement(value: str) -> bool:
     return bool(re.search(r"(?i)\b(?:positive|improv\w*|better|dominates?)\b", value))
 
@@ -2804,6 +2926,24 @@ def validate_selection_ev(
         if action == "ENTER_SHORT" and direction != "SHORT":
             raise ValueError(f"selection_ev_direction_action_mismatch:{index}:{source}")
 
+    math_support = deterministic_selection_math(value, forecast)
+    issue_observations = {
+        "numeric_input_unavailable": "numeric_invalid",
+        "geometry_invalid": "geometry_mismatch",
+        "declared_risk_mismatch": "geometry_mismatch",
+        "declared_reward_mismatch": "geometry_mismatch",
+        "declared_breakeven_mismatch": "arithmetic_mismatch",
+        "forecast_range_mismatch": "forecast_range_mismatch",
+        "verdict_range_mismatch": "verdict_range_mismatch",
+    }
+    for issue in math_support["calculation_issues"]:
+        observation = issue_observations.get(issue)
+        if observation:
+            item = f"selection_ev_{observation}:{index}:{source}"
+            if item not in observations:
+                observations.append(item)
+
+    entry = _first_unsigned_number(fields.get("entry"))
     target = _first_unsigned_number(fields.get("target"))
     wait_price = _first_unsigned_number(fields.get("wait_price"))
     if direction_match and target is not None and wait_price is not None and _wait_claims_improvement(fields.get("wait_ev", "")):
@@ -2814,6 +2954,11 @@ def validate_selection_ev(
         )
         if consumes_target:
             observations.append(f"selection_ev_wait_consumes_target:{index}:{source}")
+        if entry is not None and (
+            (direction == "LONG" and wait_price > entry)
+            or (direction == "SHORT" and wait_price < entry)
+        ):
+            observations.append(f"selection_ev_wait_worsens_entry:{index}:{source}")
     return observations
 
 
@@ -3313,6 +3458,65 @@ def _compact_model_bar(
     return value
 
 
+def deterministic_geometry_context(instrument: dict[str, Any]) -> dict[str, Any]:
+    """Precompute comparable contract math without ranking a market or setup."""
+    economics = resolve_instrument_economics(instrument)
+    point_value = _point_value(economics)
+    tick_size = float(economics["tick_size"])
+
+    def metrics(points: float) -> dict[str, float]:
+        return {
+            "points": round(points, 8),
+            "ticks": round(points / tick_size, 8),
+            "one_contract_usd": round(points * point_value, 8),
+        }
+
+    bars = {
+        int(bar.get("minutes")): bar
+        for bar in instrument.get("timeframe_bars", [])
+        if isinstance(bar, dict) and isinstance(bar.get("minutes"), (int, float))
+    }
+    atr: dict[str, dict[str, float]] = {}
+    issues: list[str] = []
+    for minutes in (1, 5):
+        bar = bars.get(minutes, {})
+        indicators = bar.get("indicators") if isinstance(bar, dict) else None
+        try:
+            points = float(indicators.get("atr")) if isinstance(indicators, dict) else math.nan
+        except (TypeError, ValueError):
+            points = math.nan
+        if math.isfinite(points) and points > 0:
+            atr[f"{minutes}m"] = metrics(points)
+        else:
+            issues.append(f"atr_{minutes}m_unavailable")
+
+    one_minute = bars.get(1, {})
+    descriptive = one_minute.get("descriptive_state") if isinstance(one_minute, dict) else None
+    state = descriptive.get("descriptive_state") if isinstance(descriptive, dict) else None
+    liquidity = state.get("liquidity") if isinstance(state, dict) else None
+    spread: dict[str, Any] = {"status": "unavailable"}
+    if isinstance(liquidity, dict):
+        try:
+            spread_points = float(liquidity.get("spread_points"))
+        except (TypeError, ValueError):
+            spread_points = math.nan
+        if math.isfinite(spread_points) and spread_points >= 0:
+            spread = {"status": "available", **metrics(spread_points)}
+
+    return {
+        "schema_version": "glitch.hermes.geometry_context.v1",
+        "effect": "decision_support_only_no_execution_effect",
+        "decision_authority": "hermes",
+        "status": "complete" if not issues else "partial",
+        "point_value_usd_per_point": round(point_value, 8),
+        "tick_size_points": round(tick_size, 8),
+        "tick_value_usd": round(tick_size * point_value, 8),
+        "atr": atr,
+        "spread": spread,
+        "calculation_issues": issues,
+    }
+
+
 def _compact_model_instrument(
     instrument: dict[str, Any],
     *,
@@ -3321,6 +3525,8 @@ def _compact_model_instrument(
     """Keep the five-minute path and one current higher-timeframe context."""
     value = dict(instrument)
     _attach_observation_layers(value)
+    if latest_frame:
+        value["deterministic_geometry_context"] = deterministic_geometry_context(value)
     # These are aliases of instrument_economics, the one-minute descriptive
     # state, and per-timeframe derived_analytics respectively.
     value.pop("native_observations", None)
@@ -4534,6 +4740,13 @@ def build_prompt(
                 "Use NOT_APPLICABLE only when no prior path exists for that candidate; a scheduled boundary never erases prior cognition by itself. "
             )
     if not positioned_only:
+        instructions += (
+            "Use each candidate's deterministic_geometry_context as the arithmetic authority for tick value, one- and five-minute ATR, spread, and their one-contract dollar equivalents; it is decision support, not a setup signal or execution gate. Compare candidates in one-contract dollars as well as points and ticks. Greater dollar noise or spread is not a veto, but its evidence-supported probability and reward must compensate for the larger excursion and estimation error; when otherwise comparable, prefer the candidate with less dollar downside. For WAIT geometry, lower is a price improvement for a long and higher is a price improvement for a short. A worse-price confirmation may still improve probability, but call it better only when that probability gain outweighs the lost reward and increased invalidation cost. "
+        )
+        if prior_cognition and prior_cognition.get("deterministic_selection_math"):
+            instructions += (
+                "Treat prior_cognition.deterministic_selection_math as the exact arithmetic correction to the prior SELECTION_EV levels. It neither preserves nor promotes that prior setup; reassess its market evidence and estimated probability from the current packet. "
+            )
         instructions += entry_continuity
     if shared_flat:
         instructions += (

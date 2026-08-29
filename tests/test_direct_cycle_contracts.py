@@ -788,7 +788,11 @@ def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
         "breakeven_target_first=about 33.3%",
         "breakeven_target_first=62% after qualitative discount",
     ).replace("now_ev=NEGATIVE", "now_ev=NEGATIVE (wait dominates)")
-    DIRECT.validate_selection_ev(inconsistent_audit, "NOTHING", 0, "test")
+    observations = DIRECT.validate_selection_ev(
+        inconsistent_audit, "NOTHING", 0, "test"
+    )
+
+    assert "selection_ev_arithmetic_mismatch:0:test" in observations
 
 
 def test_selection_ev_forecast_range_and_verdict_are_audit_only() -> None:
@@ -805,16 +809,46 @@ def test_selection_ev_forecast_range_and_verdict_are_audit_only() -> None:
     }
     DIRECT.validate_selection_ev(value, "ENTER_LONG", 0, "test", forecast)
 
-    DIRECT.validate_selection_ev(
+    observations = DIRECT.validate_selection_ev(
         value, "ENTER_LONG", 0, "test", {**forecast, "probability": 0.8}
     )
-    DIRECT.validate_selection_ev(
+    assert "selection_ev_forecast_range_mismatch:0:test" in observations
+
+    observations = DIRECT.validate_selection_ev(
         value.replace("40-50%", "20-30%"),
         "ENTER_LONG",
         0,
         "test",
         {**forecast, "probability": 0.75},
     )
+    assert "selection_ev_verdict_range_mismatch:0:test" in observations
+
+
+def test_selection_math_reconciles_levels_without_choosing_an_action() -> None:
+    support = DIRECT.deterministic_selection_math(
+        "direction=LONG;entry=100;stop=95;target=110;risk_points=4;reward_points=9;"
+        "friction_points=0.5;breakeven_target_first=25%;estimated_target_first_range=40-50%;"
+        "now_ev=POSITIVE;wait_price=99;wait_ev=POSITIVE;decisive_reason=fixture",
+        {
+            "event": "STOP_BEFORE_PRIMARY_TARGET",
+            "probability": 0.8,
+            "method": "fixture",
+            "confidence": 0.7,
+        },
+    )
+
+    assert support["effect"] == "decision_support_only_no_execution_effect"
+    assert support["decision_authority"] == "hermes"
+    assert support["computed_risk_points"] == 5
+    assert support["computed_reward_points"] == 10
+    assert support["computed_breakeven_target_first"] == pytest.approx(5.5 / 15)
+    assert support["forecast_target_first_probability"] == pytest.approx(0.2)
+    assert support["calculation_issues"] == [
+        "declared_breakeven_mismatch",
+        "declared_reward_mismatch",
+        "declared_risk_mismatch",
+        "forecast_range_mismatch",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -830,6 +864,25 @@ def test_selection_ev_observes_wait_that_claims_improvement_after_target(
         f"now_ev=NEGATIVE;wait_price={wait_price};wait_ev=IMPROVES;decisive_reason=fixture"
     )
     assert "selection_ev_wait_consumes_target:0:test" in DIRECT.validate_selection_ev(
+        value, "NOTHING", 0, "test"
+    )
+
+
+@pytest.mark.parametrize(
+    ("direction", "wait_price"),
+    (("LONG", 101), ("SHORT", 99)),
+)
+def test_selection_ev_observes_wait_that_worsens_entry(
+    direction: str, wait_price: float
+) -> None:
+    value = (
+        f"direction={direction};entry=100;stop={95 if direction == 'LONG' else 105};"
+        f"target={110 if direction == 'LONG' else 90};risk_points=5;reward_points=10;"
+        "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=20-30%;"
+        f"now_ev=NEGATIVE;wait_price={wait_price};wait_ev=IMPROVES;decisive_reason=fixture"
+    )
+
+    assert "selection_ev_wait_worsens_entry:0:test" in DIRECT.validate_selection_ev(
         value, "NOTHING", 0, "test"
     )
 
@@ -973,6 +1026,43 @@ def test_native_economics_drive_risk_geometry() -> None:
     assert legs[0]["planned_risk_usd"] == 150.0
 
 
+def test_deterministic_geometry_context_normalizes_contract_noise_without_ranking() -> None:
+    context = DIRECT.deterministic_geometry_context({
+        "instrument": "MNQ",
+        "instrument_economics": {
+            "point_value_usd": 2.0,
+            "tick_size": 0.25,
+            "source": "ninjatrader_master_instrument",
+        },
+        "timeframe_bars": [
+            {
+                "minutes": 1,
+                "indicators": {"atr": 9.0},
+                "descriptive_state": {
+                    "descriptive_state": {
+                        "liquidity": {"spread_points": 0.5},
+                    },
+                },
+            },
+            {"minutes": 5, "indicators": {"atr": 25.0}},
+        ],
+    })
+
+    assert context["effect"] == "decision_support_only_no_execution_effect"
+    assert context["decision_authority"] == "hermes"
+    assert context["tick_value_usd"] == 0.5
+    assert context["atr"]["1m"] == {
+        "points": 9.0,
+        "ticks": 36.0,
+        "one_contract_usd": 18.0,
+    }
+    assert context["atr"]["5m"]["one_contract_usd"] == 50.0
+    assert context["spread"]["one_contract_usd"] == 1.0
+    assert "action" not in context
+    assert "ranking" not in context
+    assert "threshold" not in context
+
+
 def test_forecast_is_validated_as_non_gating_metadata() -> None:
     DIRECT.validate_forecast(None, 0)
     batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
@@ -1037,6 +1127,9 @@ def test_packet_preserves_economics_and_removes_duplicate_observation_aliases() 
     instrument = result["frames"][0]["market_snapshot"]["instruments"][0]
 
     assert instrument["instrument_economics"]["point_value_usd"] == 5.0
+    assert instrument["deterministic_geometry_context"]["effect"] == (
+        "decision_support_only_no_execution_effect"
+    )
     assert "native_observations" not in instrument
     assert "descriptive_state" not in instrument
     assert "heuristic_projections" not in instrument
@@ -1808,6 +1901,53 @@ def test_latest_trigger_review_keeps_the_prior_full_comparison_baseline(
     )
 
 
+def test_latest_prior_cognition_carries_exact_selection_math_without_action_effect(
+    tmp_path: Path,
+) -> None:
+    outbox = tmp_path / "hermes" / "outbox"
+    outbox.mkdir(parents=True)
+    (outbox / "20260813T1435Z.json").write_text(json.dumps({
+        "cycle_id": "20260813T1435Z",
+        "decisions": [{
+            "instrument": "MNQ",
+            "action": "NOTHING",
+            "confidence": 0.8,
+            "prompt_version": "prior-prompt",
+            "reason": "Prior path was rejected.",
+            "forecast": {
+                "event": "STOP_BEFORE_PRIMARY_TARGET",
+                "probability": 0.55,
+                "method": "fixture",
+                "confidence": 0.7,
+            },
+            "decision_audit": {
+                "decisive_evidence": (
+                    "INSTRUMENT_COMPARISON_V1\n"
+                    "SELECTION_EV=direction=LONG;entry=100;stop=95;target=110;"
+                    "risk_points=5;reward_points=10;friction_points=0;"
+                    "breakeven_target_first=0.5;estimated_target_first_range=40-50%;"
+                    "now_ev=NEGATIVE;wait_price=99;wait_ev=POSITIVE;decisive_reason=fixture"
+                ),
+                "change_condition": "MNQ above 101.0",
+                "final_choice": "NOTHING",
+            },
+        }],
+    }), encoding="utf-8")
+
+    prior = DIRECT.latest_prior_cognition(tmp_path, "20260813T1440Z")
+
+    assert prior is not None
+    support = prior["deterministic_selection_math"]
+    assert support["effect"] == "decision_support_only_no_execution_effect"
+    assert support["computed_risk_points"] == 5
+    assert support["computed_reward_points"] == 10
+    assert support["computed_breakeven_target_first"] == pytest.approx(1 / 3)
+    assert support["calculation_issues"] == [
+        "declared_breakeven_mismatch",
+        "verdict_range_mismatch",
+    ]
+
+
 def test_latest_completed_exit_supersedes_the_pre_exit_market_thesis(
     tmp_path: Path,
 ) -> None:
@@ -1875,6 +2015,10 @@ def test_flat_prompt_injects_prior_cognition_and_requires_reconciliation() -> No
         "action": "NOTHING",
         "decisive_evidence": "INSTRUMENT_COMPARISON_V1\nPRIOR_PATH_STATE",
         "change_condition": "MNQ above 101.0 or below 99.0",
+        "deterministic_selection_math": {
+            "effect": "decision_support_only_no_execution_effect",
+            "computed_breakeven_target_first": 0.4,
+        },
     }
 
     prompt = DIRECT.build_prompt(
@@ -1888,6 +2032,9 @@ def test_flat_prompt_injects_prior_cognition_and_requires_reconciliation() -> No
     assert "PRIOR_PATH_STATE" in prompt
     assert "Reconcile every supplied prior path as HELD, FAILED, or EXPIRED" in prompt
     assert "NOT_APPLICABLE only when no prior path exists" in prompt
+    assert "deterministic_geometry_context as the arithmetic authority" in prompt
+    assert "lower is a price improvement for a long" in prompt
+    assert "exact arithmetic correction to the prior SELECTION_EV levels" in prompt
 
 
 def test_trigger_review_injects_exit_continuity_for_alternative_candidates() -> None:
