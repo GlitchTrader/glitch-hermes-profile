@@ -118,7 +118,7 @@ def read_jsonl(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
 
 def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary = path.with_name(f".tmp-{uuid.uuid4().hex}")
     temporary.write_text(
         json.dumps(value, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -128,7 +128,7 @@ def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
 
 def write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary = path.with_name(f".tmp-{uuid.uuid4().hex}")
     temporary.write_text(
         "".join(json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",
@@ -296,15 +296,17 @@ def freeze_experiment(
     )
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,96}", identifier):
         raise ValueError("experiment_id_must_be_filename_safe")
-    parent = glitch_data / "hermes-checkpoints" / "cognition-experiments"
+    checkpoint_root = glitch_data / "hermes-checkpoints"
+    parent = checkpoint_root / "cognition-experiments"
     target = parent / identifier
     if target.exists():
         raise FileExistsError(f"experiment_already_exists:{target}")
-    temporary = parent / f".{identifier}.{uuid.uuid4().hex}.tmp"
+    staging_parent = checkpoint_root / ".cognition-tmp"
+    temporary = staging_parent / uuid.uuid4().hex
     baseline = temporary / "baseline"
-    baseline.mkdir(parents=True, exist_ok=False)
     copied: list[dict[str, Any]] = []
     try:
+        baseline.mkdir(parents=True, exist_ok=False)
         for name in EVIDENCE_FILES:
             source = supervisor / name
             if not source.is_file():
@@ -401,6 +403,11 @@ def freeze_experiment(
         if temporary.exists():
             shutil.rmtree(temporary)
         raise
+    finally:
+        try:
+            staging_parent.rmdir()
+        except OSError:
+            pass
 
 
 def selection_audit(row: dict[str, Any]) -> dict[str, Any]:

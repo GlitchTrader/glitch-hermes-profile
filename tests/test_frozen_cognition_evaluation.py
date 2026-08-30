@@ -242,3 +242,34 @@ def test_freeze_preserves_profile_bytes_and_evaluates_only_later_evidence(
     assert report_path.is_file()
     assert report["sample"]["exact_completed_trades"] == 1
     assert report["sample"]["exact_nothing_decisions"] == 1
+
+
+def test_freeze_staging_path_does_not_repeat_experiment_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    supervisor = EVALUATOR.supervisor_root(glitch_data)
+    for name in ("decision-episodes.jsonl", "trade-episodes.jsonl", "observations.jsonl"):
+        EVALUATOR.write_jsonl_atomic(supervisor / name, [])
+    monkeypatch.setattr(EVALUATOR, "assert_freeze_is_quiescent", lambda *_: None)
+    copied_destinations = []
+    real_copy2 = EVALUATOR.shutil.copy2
+
+    def recording_copy2(source, destination, *args, **kwargs):
+        copied_destinations.append(Path(destination))
+        return real_copy2(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(EVALUATOR.shutil, "copy2", recording_copy2)
+    experiment_id = "identifier-that-must-not-inflate-the-staging-path"
+    experiment = EVALUATOR.freeze_experiment(
+        glitch_data,
+        ROOT,
+        experiment_id,
+        EVALUATOR.build_cost_policy(4.0, [], None),
+    )
+
+    assert experiment.name == experiment_id
+    assert copied_destinations
+    assert all(".cognition-tmp" in destination.parts for destination in copied_destinations)
+    assert all(experiment_id not in destination.parts for destination in copied_destinations)
+    assert not (glitch_data / "hermes-checkpoints" / ".cognition-tmp").exists()
