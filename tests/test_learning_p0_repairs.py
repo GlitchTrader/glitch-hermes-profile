@@ -18,6 +18,22 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(LEARNING)
 
 
+def test_learning_admission_delegates_to_the_shared_live_market_rail(tmp_path, monkeypatch) -> None:
+    packet_path = tmp_path / "hermes" / "exchange" / "glitch" / "latest-decision-packet.json"
+    packet_path.parent.mkdir(parents=True)
+    packet_path.write_text(json.dumps({"packet_id": "packet-1"}), encoding="utf-8")
+    observed = []
+
+    def shared_gate(glitch_data, packet):
+        observed.append((glitch_data, packet))
+        return "market_session_closed"
+
+    monkeypatch.setattr(LEARNING.DIRECT, "model_call_admission_reason", shared_gate)
+
+    assert LEARNING.learning_model_call_admission_reason(tmp_path) == "market_session_closed"
+    assert observed == [(tmp_path.resolve(), {"packet_id": "packet-1"})]
+
+
 def test_deferred_learner_retries_inside_the_same_scheduled_worker(tmp_path, monkeypatch) -> None:
     args = SimpleNamespace(glitch_data=tmp_path, dry_run=False)
     status_path = tmp_path / "learning-worker-status.json"
@@ -59,6 +75,64 @@ def test_deferred_learner_does_not_retry_while_ai_is_paused(tmp_path, monkeypatc
         LEARNING.run_with_defer_retries(args, status_path)
 
     assert slept == []
+
+
+def test_market_or_data_admission_deferral_waits_for_next_cron(tmp_path, monkeypatch) -> None:
+    args = SimpleNamespace(glitch_data=tmp_path, dry_run=False)
+    status_path = tmp_path / "learning-worker-status.json"
+    calls = []
+
+    def defer(_args, *, refresh_derived=True):
+        calls.append(refresh_derived)
+        raise LEARNING.LearningNotAdmitted("market_session_closed")
+
+    monkeypatch.setattr(LEARNING, "run_once", defer)
+    slept = []
+    monkeypatch.setattr(LEARNING.time, "sleep", slept.append)
+
+    with pytest.raises(LEARNING.LearningNotAdmitted, match="market_session_closed"):
+        LEARNING.run_with_defer_retries(args, status_path)
+
+    assert calls == [True]
+    assert slept == []
+
+
+def test_learning_repair_rechecks_model_call_admission(tmp_path, monkeypatch) -> None:
+    args = SimpleNamespace(
+        glitch_data=tmp_path,
+        profile="glitch",
+        timeout_seconds=30,
+    )
+    admission_calls = 0
+    model_calls = 0
+
+    def admission(_args):
+        nonlocal admission_calls
+        admission_calls += 1
+        if admission_calls == 2:
+            raise LEARNING.LearningNotAdmitted("stale_market_package")
+
+    def invoke(*_args, **_kwargs):
+        nonlocal model_calls
+        model_calls += 1
+        return {"invalid": True}
+
+    monkeypatch.setattr(LEARNING, "require_learning_model_call_admission", admission)
+    monkeypatch.setattr(LEARNING, "invoke_hermes", invoke)
+    monkeypatch.setattr(LEARNING, "build_prompt", lambda *_args, **_kwargs: "PROMPT")
+    monkeypatch.setattr(LEARNING, "output_template", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(LEARNING, "continuity", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        LEARNING,
+        "validate_output",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid")),
+    )
+
+    with pytest.raises(LEARNING.LearningNotAdmitted, match="stale_market_package"):
+        LEARNING.invoke_loop(args, "hourly", {}, ["review-1"], tmp_path)
+
+    assert model_calls == 1
+    assert admission_calls == 2
 
 
 def test_deferred_learner_retry_window_spans_a_full_scheduler_interval() -> None:

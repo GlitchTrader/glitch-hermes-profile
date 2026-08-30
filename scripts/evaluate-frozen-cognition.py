@@ -25,9 +25,11 @@ from typing import Any
 
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 REPORT_LEDGER = "cognition-evaluation-reports.jsonl"
-FREEZE_SCHEMA = "glitch.hermes.cognition_experiment.v1"
-REPORT_SCHEMA = "glitch.hermes.cognition_evaluation.v1"
-PUBLISHED_SCHEMA = "glitch.hermes.cognition_evaluation_publication.v1"
+FREEZE_SCHEMA = "glitch.hermes.cognition_experiment.v2"
+LEGACY_FREEZE_SCHEMA = "glitch.hermes.cognition_experiment.v1"
+REPORT_SCHEMA = "glitch.hermes.cognition_evaluation.v2"
+LEGACY_REPORT_SCHEMA = "glitch.hermes.cognition_evaluation.v1"
+PUBLISHED_SCHEMA = "glitch.hermes.cognition_evaluation_publication.v2"
 EVIDENCE_FILES = (
     "decision-episodes.jsonl",
     "trade-episodes.jsonl",
@@ -42,7 +44,14 @@ PROFILE_CHECKPOINT_FILES = (
     "SHA256SUMS",
     "scripts/run-hermes-learning-cycle.py",
     "scripts/evaluate-frozen-cognition.py",
+    "scripts/win_subprocess.py",
 )
+WINDOWS_RESERVED_FILENAMES = {
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+WINDOWS_SAFE_PATH_LIMIT = 240
 LOCAL_POLICY = {
     "elapsed_days": 5,
     "sessions": 5,
@@ -149,11 +158,65 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def validate_experiment_identifier(
+    identifier: str,
+    target: Path,
+    checkpoint_paths: tuple[str, ...] = PROFILE_CHECKPOINT_FILES,
+) -> None:
+    if not experiment_identifier_is_safe(identifier):
+        raise ValueError("experiment_id_must_be_windows_filename_safe")
+    future_paths = tuple(target / "profile" / relative for relative in checkpoint_paths) + (
+        target / "reports" / ("f" * 64 + ".json"),
+        target / "evaluation-report.json",
+        target / "completed.json",
+    )
+    deepest = max(
+        future_paths,
+        key=lambda path: len(str(path.resolve())),
+    )
+    if len(str(deepest.resolve())) > WINDOWS_SAFE_PATH_LIMIT:
+        raise ValueError("experiment_id_exceeds_windows_safe_path_budget")
+
+
+def experiment_identifier_is_safe(identifier: str) -> bool:
+    return not (
+        not re.fullmatch(r"[A-Za-z0-9._-]{1,96}", identifier)
+        or identifier in {".", ".."}
+        or identifier.endswith((".", " "))
+        or identifier.split(".", 1)[0].upper() in WINDOWS_RESERVED_FILENAMES
+    )
+
+
+def report_identity(report: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in report.items() if key not in {"report_id", "recorded_utc"}}
+
+
+def verify_report_identity(report: dict[str, Any]) -> None:
+    if not report.get("report_id") or report.get("report_id") != canonical_sha256(report_identity(report)):
+        raise ValueError("cognition_evaluation_report_identity_mismatch")
+
+
 def load_direct_module(profile_root: Path):
     path = profile_root / "scripts" / "run-direct-glitch-cycle.py"
     spec = importlib.util.spec_from_file_location("glitch_direct_for_evaluation", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("direct_cycle_module_unavailable")
+    scripts = str(path.parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_frozen_evaluator(experiment: Path):
+    path = experiment / "profile" / "scripts" / "evaluate-frozen-cognition.py"
+    spec = importlib.util.spec_from_file_location(
+        "glitch_frozen_cognition_evaluator_" + hashlib.sha256(str(path).encode()).hexdigest()[:12],
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("frozen_cognition_evaluator_unavailable")
     scripts = str(path.parent)
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
@@ -294,11 +357,16 @@ def freeze_experiment(
     identifier = experiment_id or (
         created.strftime("%Y%m%dT%H%M%SZ") + "-" + direct.cognitive_bundle_hash()
     )
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,96}", identifier):
-        raise ValueError("experiment_id_must_be_filename_safe")
     checkpoint_root = glitch_data / "hermes-checkpoints"
     parent = checkpoint_root / "cognition-experiments"
     target = parent / identifier
+    validate_experiment_identifier(
+        identifier,
+        target,
+        tuple(dict.fromkeys(
+            tuple(direct.COGNITIVE_BUNDLE_RELATIVE_PATHS) + PROFILE_CHECKPOINT_FILES
+        )),
+    )
     if target.exists():
         raise FileExistsError(f"experiment_already_exists:{target}")
     staging_parent = checkpoint_root / ".cognition-tmp"
@@ -367,6 +435,9 @@ def freeze_experiment(
             "expected_prompt_version": expected_prompt,
             "cognitive_bundle_hash": direct.cognitive_bundle_hash(),
             "distribution_version": distribution_version(profile_root),
+            "evaluation_harness_sha256": sha256_file(
+                temporary / "profile" / "scripts" / "evaluate-frozen-cognition.py"
+            ),
             "profile_root_at_freeze": str(profile_root),
             "glitch_data": str(glitch_data),
             "baseline_evidence_ids": sorted(baseline_ids),
@@ -396,6 +467,13 @@ def freeze_experiment(
             "schema_version": "glitch.hermes.cognition_experiment_pointer.v1",
             "experiment_id": identifier,
             "path": str(target),
+            "updated_utc": utc_now(),
+        })
+        write_json_atomic(parent / "active.json", {
+            "schema_version": "glitch.hermes.cognition_experiment_pointer.v1",
+            "experiment_id": identifier,
+            "path": str(target),
+            "manifest_sha256": manifest["manifest_sha256"],
             "updated_utc": utc_now(),
         })
         return target
@@ -967,6 +1045,8 @@ def build_report(
         "expected_prompt_version": expected_prompt,
         "cognitive_bundle_hash": manifest.get("cognitive_bundle_hash"),
         "distribution_version": manifest.get("distribution_version"),
+        "freeze_manifest_sha256": manifest.get("manifest_sha256"),
+        "evaluation_harness_sha256": manifest.get("evaluation_harness_sha256"),
         "effect": "lesson_lifecycle_only_no_trade_or_execution_effect",
         "profile_integrity": {
             "current_base_prompt_version": direct.DIRECT_PROMPT_VERSION,
@@ -1035,8 +1115,7 @@ def build_report(
         "trade_scores": trade_scores,
         "nothing_scores": independent_nothings,
     }
-    identity = {key: value for key, value in report.items() if key not in {"report_id", "recorded_utc"}}
-    report["report_id"] = canonical_sha256(identity)
+    report["report_id"] = canonical_sha256(report_identity(report))
     return report
 
 
@@ -1055,6 +1134,9 @@ def resolve_experiment(glitch_data: Path, value: str) -> Path:
 
 
 def verify_experiment_checkpoint(experiment: Path, manifest: dict[str, Any]) -> None:
+    if str(manifest.get("experiment_id") or "") != experiment.name:
+        raise ValueError("cognition_experiment_identity_path_mismatch")
+    seen: set[str] = set()
     for section, prefix, key in (
         ("baseline_evidence", "baseline", "name"),
         ("profile_checkpoint_files", "", "checkpoint_path"),
@@ -1066,14 +1148,181 @@ def verify_experiment_checkpoint(experiment: Path, manifest: dict[str, Any]) -> 
             if not isinstance(row, dict) or not row.get(key) or not row.get("sha256"):
                 raise ValueError(f"cognition_experiment_{section}_invalid")
             relative = Path(prefix) / str(row[key]) if prefix else Path(str(row[key]))
+            normalized = relative.as_posix()
+            if normalized in seen:
+                raise ValueError(f"cognition_experiment_duplicate_checkpoint_path:{relative}")
+            seen.add(normalized)
             path = (experiment / relative).resolve()
             if not path.is_relative_to(experiment.resolve()) or not path.is_file():
                 raise ValueError(f"cognition_experiment_checkpoint_file_missing:{relative}")
             if sha256_file(path) != str(row["sha256"]):
                 raise ValueError(f"cognition_experiment_checkpoint_hash_mismatch:{relative}")
+            if isinstance(row.get("bytes"), int) and path.stat().st_size != row["bytes"]:
+                raise ValueError(f"cognition_experiment_checkpoint_size_mismatch:{relative}")
+    harness_hash = frozen_evaluation_harness_sha256(experiment, manifest)
+    declared = manifest.get("evaluation_harness_sha256")
+    if declared is not None and declared != harness_hash:
+        raise ValueError("cognition_experiment_evaluation_harness_hash_mismatch")
 
 
-def publish_report(supervisor: Path, report: dict[str, Any]) -> dict[str, Any]:
+def frozen_evaluation_harness_sha256(experiment: Path, manifest: dict[str, Any]) -> str:
+    wanted = "profile/scripts/evaluate-frozen-cognition.py"
+    rows = manifest.get("profile_checkpoint_files")
+    record = next((
+        row for row in rows if isinstance(row, dict) and row.get("checkpoint_path") == wanted
+    ), None) if isinstance(rows, list) else None
+    if not isinstance(record, dict) or not record.get("sha256"):
+        raise ValueError("cognition_experiment_evaluation_harness_missing")
+    path = (experiment / wanted).resolve()
+    if not path.is_relative_to(experiment.resolve()) or not path.is_file():
+        raise ValueError("cognition_experiment_evaluation_harness_missing")
+    actual = sha256_file(path)
+    if actual != str(record["sha256"]):
+        raise ValueError("cognition_experiment_evaluation_harness_hash_mismatch")
+    return actual
+
+
+def verified_experiment_manifest(
+    glitch_data: Path,
+    experiment_id: str,
+) -> tuple[Path, dict[str, Any]]:
+    if not experiment_identifier_is_safe(experiment_id):
+        raise ValueError("invalid_cognition_experiment_identifier")
+    experiment = resolve_experiment(glitch_data, experiment_id)
+    manifest = read_json(experiment / "freeze.json")
+    if manifest.get("schema_version") not in {FREEZE_SCHEMA, LEGACY_FREEZE_SCHEMA}:
+        raise ValueError("invalid_cognition_experiment")
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    if manifest.get("manifest_sha256") != canonical_sha256(unsigned):
+        raise ValueError("cognition_experiment_manifest_hash_mismatch")
+    verify_experiment_checkpoint(experiment, manifest)
+    return experiment, manifest
+
+
+def active_experiment_manifest(glitch_data: Path) -> dict[str, Any] | None:
+    root = glitch_data.resolve() / "hermes-checkpoints" / "cognition-experiments"
+    pointer_path = root / "active.json" if (root / "active.json").is_file() else root / "latest.json"
+    if not pointer_path.is_file():
+        return None
+    pointer = read_json(pointer_path)
+    experiment_id = str(pointer.get("experiment_id") or "")
+    if not experiment_id:
+        return {"status": "invalid_active_experiment", "reason": "pointer_invalid"}
+    try:
+        experiment, manifest = verified_experiment_manifest(glitch_data, experiment_id)
+    except (OSError, TypeError, ValueError):
+        return {"status": "invalid_active_experiment", "reason": "checkpoint_invalid"}
+    if (experiment / "completed.json").is_file():
+        try:
+            return None if completed_report(experiment) is not None else {
+                "status": "invalid_active_experiment", "reason": "completion_invalid"
+            }
+        except (OSError, TypeError, ValueError):
+            return {"status": "invalid_active_experiment", "reason": "completion_invalid"}
+    legacy_report = read_json(experiment / "evaluation-report.json")
+    if legacy_report.get("schema_version") == LEGACY_REPORT_SCHEMA:
+        try:
+            verify_report_identity(legacy_report)
+            return None
+        except ValueError:
+            return {"status": "invalid_active_experiment", "reason": "legacy_report_invalid"}
+    return manifest
+
+
+def verify_published_report(
+    glitch_data: Path,
+    publication: dict[str, Any],
+) -> dict[str, Any]:
+    if publication.get("schema_version") != PUBLISHED_SCHEMA:
+        raise ValueError("invalid_cognition_evaluation_publication")
+    unsigned = {key: value for key, value in publication.items() if key != "publication_sha256"}
+    if publication.get("publication_sha256") != canonical_sha256(unsigned):
+        raise ValueError("cognition_evaluation_publication_hash_mismatch")
+    experiment, manifest = verified_experiment_manifest(
+        glitch_data,
+        str(publication.get("experiment_id") or ""),
+    )
+    relative = Path(str(publication.get("report_relative_path") or ""))
+    report_path = (experiment / relative).resolve()
+    if not report_path.is_relative_to(experiment.resolve()) or not report_path.is_file():
+        raise ValueError("cognition_evaluation_report_path_invalid")
+    report = read_json(report_path)
+    verify_report_identity(report)
+    completed = completed_report(experiment)
+    if completed is None or completed[0] != report_path or completed[1] != report:
+        raise ValueError("cognition_evaluation_report_not_completed")
+    harness_hash = frozen_evaluation_harness_sha256(experiment, manifest)
+    projected_fields = (
+        "report_id", "recorded_utc", "experiment_id", "candidate_id",
+        "expected_prompt_version", "cognitive_bundle_hash", "cost_policy",
+        "sample", "performance", "calibration", "promotion_gate",
+        "covered_trade_episode_ids", "effect",
+    )
+    if (
+        publication.get("report_id") != report.get("report_id")
+        or publication.get("full_report_sha256") != canonical_sha256(report)
+        or publication.get("freeze_manifest_sha256") != manifest.get("manifest_sha256")
+        or report.get("freeze_manifest_sha256") != manifest.get("manifest_sha256")
+        or publication.get("evaluation_harness_sha256") != harness_hash
+        or report.get("evaluation_harness_sha256") != harness_hash
+        or any(publication.get(field) != report.get(field) for field in projected_fields)
+        or str(manifest.get("candidate_id") or "") != str(report.get("candidate_id") or "")
+        or str(manifest.get("expected_prompt_version") or "")
+        != str(report.get("expected_prompt_version") or "")
+        or str(manifest.get("cognitive_bundle_hash") or "")
+        != str(report.get("cognitive_bundle_hash") or "")
+    ):
+        raise ValueError("cognition_evaluation_provenance_mismatch")
+    return report
+
+
+def write_immutable_json(path: Path, value: dict[str, Any]) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    try:
+        descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        existing = read_json(path)
+        if canonical_sha256(existing) != canonical_sha256(value):
+            raise ValueError("immutable_cognition_artifact_collision")
+        return existing
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return value
+
+
+def write_immutable_report(path: Path, report: dict[str, Any]) -> dict[str, Any]:
+    verify_report_identity(report)
+    if path.exists():
+        existing = read_json(path)
+        verify_report_identity(existing)
+        if report_identity(existing) != report_identity(report):
+            raise ValueError("immutable_cognition_report_collision")
+        return existing
+    existing = write_immutable_json(path, report)
+    verify_report_identity(existing)
+    return existing
+
+
+def publish_report(
+    supervisor: Path,
+    report: dict[str, Any],
+    experiment: Path,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    verify_report_identity(report)
+    report_path = experiment / "reports" / f"{report['report_id']}.json"
+    if not report_path.is_file() or canonical_sha256(read_json(report_path)) != canonical_sha256(report):
+        raise ValueError("published_cognition_report_not_immutable_checkpoint_artifact")
+    completed = completed_report(experiment)
+    if completed is None or completed[0] != report_path.resolve() or completed[1] != report:
+        raise ValueError("published_cognition_report_not_completed")
     row = {
         "schema_version": PUBLISHED_SCHEMA,
         "report_id": report["report_id"],
@@ -1089,39 +1338,120 @@ def publish_report(supervisor: Path, report: dict[str, Any]) -> dict[str, Any]:
         "promotion_gate": report.get("promotion_gate"),
         "covered_trade_episode_ids": report.get("covered_trade_episode_ids"),
         "effect": "lesson_lifecycle_only_no_trade_or_execution_effect",
+        "report_relative_path": f"reports/{report['report_id']}.json",
+        "freeze_manifest_sha256": manifest.get("manifest_sha256"),
+        "evaluation_harness_sha256": frozen_evaluation_harness_sha256(experiment, manifest),
         "full_report_sha256": canonical_sha256(report),
     }
     row["publication_sha256"] = canonical_sha256(row)
     path = supervisor / REPORT_LEDGER
-    rows = read_jsonl(path, strict=True)
-    if not any(existing.get("report_id") == row["report_id"] for existing in rows):
-        write_jsonl_atomic(path, rows + [row])
-    return row
+    lock = supervisor / ".cognition-evaluation-publication.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError as error:
+        raise RuntimeError("cognition_evaluation_publication_busy") from error
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"pid": os.getpid(), "created_utc": utc_now()}))
+            stream.flush()
+            os.fsync(stream.fileno())
+        rows = read_jsonl(path, strict=True)
+        existing = next((value for value in rows if value.get("report_id") == row["report_id"]), None)
+        if existing is not None and existing != row:
+            raise ValueError("cognition_evaluation_publication_identity_collision")
+        if existing is None:
+            write_jsonl_atomic(path, rows + [row])
+        return row
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def completed_report(experiment: Path) -> tuple[Path, dict[str, Any]] | None:
+    completion = read_json(experiment / "completed.json")
+    report_id = str(completion.get("report_id") or "")
+    relative = Path(str(completion.get("report_relative_path") or ""))
+    if not report_id and not relative.parts:
+        return None
+    unsigned_completion = {
+        key: value for key, value in completion.items() if key != "completion_sha256"
+    }
+    if completion.get("completion_sha256") != canonical_sha256(unsigned_completion):
+        raise ValueError("completed_cognition_experiment_integrity_mismatch")
+    path = (experiment / relative).resolve()
+    if not path.is_relative_to(experiment.resolve()) or not path.is_file():
+        raise ValueError("completed_cognition_report_missing")
+    report = read_json(path)
+    verify_report_identity(report)
+    if (
+        report.get("report_id") != report_id
+        or completion.get("full_report_sha256") != canonical_sha256(report)
+    ):
+        raise ValueError("completed_cognition_report_integrity_mismatch")
+    return path, report
+
+
+def finalize_report_artifact(
+    experiment: Path,
+    manifest: dict[str, Any],
+    report: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    report["freeze_manifest_sha256"] = manifest.get("manifest_sha256")
+    report["evaluation_harness_sha256"] = frozen_evaluation_harness_sha256(experiment, manifest)
+    report["report_id"] = canonical_sha256(report_identity(report))
+    verify_report_identity(report)
+    report_path = experiment / "reports" / f"{report['report_id']}.json"
+    report = write_immutable_report(report_path, report)
+    completion = {
+        "schema_version": "glitch.hermes.cognition_experiment_completion.v1",
+        "experiment_id": manifest.get("experiment_id"),
+        "completed_utc": utc_now(),
+        "report_id": report["report_id"],
+        "report_relative_path": f"reports/{report['report_id']}.json",
+        "full_report_sha256": canonical_sha256(report),
+    }
+    completion["completion_sha256"] = canonical_sha256(completion)
+    write_immutable_json(experiment / "completed.json", completion)
+    write_json_atomic(experiment / "evaluation-report.json", {
+        "schema_version": "glitch.hermes.cognition_evaluation_pointer.v1",
+        "report_id": report["report_id"],
+        "report_relative_path": f"reports/{report['report_id']}.json",
+        "full_report_sha256": canonical_sha256(report),
+        "updated_utc": utc_now(),
+    })
+    return report_path, report
 
 
 def evaluate_experiment(
     glitch_data: Path, profile_root: Path, experiment: Path, publish: bool
 ) -> tuple[Path, dict[str, Any]]:
-    manifest = read_json(experiment / "freeze.json")
-    if manifest.get("schema_version") != FREEZE_SCHEMA:
-        raise ValueError("invalid_cognition_experiment")
-    expected_hash = manifest.get("manifest_sha256")
-    unsigned = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
-    if expected_hash != canonical_sha256(unsigned):
-        raise ValueError("cognition_experiment_manifest_hash_mismatch")
-    verify_experiment_checkpoint(experiment, manifest)
+    verified_path, manifest = verified_experiment_manifest(glitch_data, experiment.name)
+    if verified_path != experiment.resolve():
+        raise ValueError("cognition_experiment_path_identity_mismatch")
     supervisor = supervisor_root(glitch_data)
-    report = build_report(
+    existing = completed_report(experiment)
+    if existing is not None:
+        report_path, report = existing
+        if publish:
+            publish_report(supervisor, report, experiment, manifest)
+        return report_path, report
+    legacy_report = read_json(experiment / "evaluation-report.json")
+    if legacy_report.get("schema_version") == LEGACY_REPORT_SCHEMA:
+        report_path, report = finalize_report_artifact(experiment, manifest, legacy_report)
+        if publish:
+            publish_report(supervisor, report, experiment, manifest)
+        return report_path, report
+    frozen = load_frozen_evaluator(experiment)
+    report = frozen.build_report(
         manifest,
-        profile_root.resolve(),
+        (experiment / "profile").resolve(),
         read_jsonl(supervisor / "decision-episodes.jsonl", strict=True),
         read_jsonl(supervisor / "trade-episodes.jsonl", strict=True),
         read_jsonl(supervisor / "observations.jsonl", strict=True),
     )
-    report_path = experiment / "evaluation-report.json"
-    write_json_atomic(report_path, report)
+    report_path, report = finalize_report_artifact(experiment, manifest, report)
     if publish:
-        publish_report(supervisor, report)
+        publish_report(supervisor, report, experiment, manifest)
     return report_path, report
 
 

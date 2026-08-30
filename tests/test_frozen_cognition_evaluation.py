@@ -3,6 +3,8 @@ import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -146,7 +148,7 @@ def test_free_text_chronology_is_reduced_to_a_bounded_audit_state() -> None:
     ) == "neither_reached"
 
 
-def test_report_is_observational_and_fails_closed_on_small_sample(tmp_path: Path) -> None:
+def test_report_is_observational_and_fails_closed_on_small_sample() -> None:
     started = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
     manifest = {
         "schema_version": EVALUATOR.FREEZE_SCHEMA,
@@ -171,16 +173,6 @@ def test_report_is_observational_and_fails_closed_on_small_sample(tmp_path: Path
     assert report["performance"]["net_pnl_usd"] == 15.0
     assert report["promotion_gate"]["local_continuation"]["eligible"] is False
     assert report["promotion_gate"]["distribution"]["eligible"] is False
-
-    supervisor = tmp_path / "supervisor"
-    EVALUATOR.publish_report(supervisor, report)
-    published = EVALUATOR.read_jsonl(supervisor / EVALUATOR.REPORT_LEDGER)
-    assert len(published) == 1
-    assert published[0]["report_id"] == report["report_id"]
-    assert published[0]["publication_sha256"] == EVALUATOR.canonical_sha256({
-        key: value for key, value in published[0].items() if key != "publication_sha256"
-    })
-    assert "trade_scores" not in published[0]
 
 
 def test_profile_hot_bundle_excludes_evaluator_and_learner() -> None:
@@ -236,12 +228,54 @@ def test_freeze_preserves_profile_bytes_and_evaluates_only_later_evidence(
     EVALUATOR.write_jsonl_atomic(supervisor / "decision-episodes.jsonl", [decision_row])
     EVALUATOR.write_jsonl_atomic(supervisor / "trade-episodes.jsonl", [trade_row])
 
+    monkeypatch.setattr(
+        EVALUATOR,
+        "build_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("current evaluator used")),
+    )
     report_path, report = EVALUATOR.evaluate_experiment(
         glitch_data, ROOT, experiment, publish=False
     )
     assert report_path.is_file()
+    assert report_path.parent.name == "reports"
     assert report["sample"]["exact_completed_trades"] == 1
     assert report["sample"]["exact_nothing_decisions"] == 1
+    assert report["evaluation_harness_sha256"] == manifest["evaluation_harness_sha256"]
+
+    extra = trade_episode("trade-after-completion", DIRECT.DIRECT_PROMPT_VERSION)
+    extra.update({"recorded_utc": stamp, "decision_utc": stamp})
+    extra["facts"]["entry_decision_context"]["decision_utc"] = stamp
+    EVALUATOR.write_jsonl_atomic(supervisor / "trade-episodes.jsonl", [trade_row, extra])
+    repeated_path, repeated = EVALUATOR.evaluate_experiment(
+        glitch_data, ROOT, experiment, publish=True
+    )
+
+    assert repeated_path == report_path
+    assert repeated == report
+    published = EVALUATOR.read_jsonl(supervisor / EVALUATOR.REPORT_LEDGER, strict=True)
+    assert len(published) == 1
+    assert published[0]["schema_version"] == EVALUATOR.PUBLISHED_SCHEMA
+    assert published[0]["report_id"] == report["report_id"]
+    assert published[0]["publication_sha256"] == EVALUATOR.canonical_sha256({
+        key: value for key, value in published[0].items() if key != "publication_sha256"
+    })
+    assert published[0]["full_report_sha256"] == EVALUATOR.canonical_sha256(report)
+    assert "trade_scores" not in published[0]
+
+
+@pytest.mark.parametrize("identifier", [".", "..", "trailing-dot.", "CON", "con.txt", "LPT9.log"])
+def test_experiment_identifier_rejects_windows_aliases(
+    tmp_path: Path,
+    identifier: str,
+) -> None:
+    with pytest.raises(ValueError, match="windows_filename_safe"):
+        EVALUATOR.validate_experiment_identifier(identifier, tmp_path / identifier)
+
+
+def test_experiment_identifier_accounts_for_future_report_path(tmp_path: Path) -> None:
+    long_root = tmp_path / ("nested" * 12)
+    with pytest.raises(ValueError, match="windows_safe_path_budget"):
+        EVALUATOR.validate_experiment_identifier("x" * 96, long_root / ("x" * 96))
 
 
 def test_freeze_staging_path_does_not_repeat_experiment_id(
@@ -260,7 +294,7 @@ def test_freeze_staging_path_does_not_repeat_experiment_id(
         return real_copy2(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(EVALUATOR.shutil, "copy2", recording_copy2)
-    experiment_id = "identifier-that-must-not-inflate-the-staging-path"
+    experiment_id = "staging-path-id"
     experiment = EVALUATOR.freeze_experiment(
         glitch_data,
         ROOT,

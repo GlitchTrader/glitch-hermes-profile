@@ -732,6 +732,125 @@ def test_llm_activation_is_closed_during_cme_maintenance_and_weekend() -> None:
     ) is None
 
 
+def fresh_model_admission_packet() -> dict:
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    market = {
+        "fresh_instrument_count": 2,
+        "instrument_count": 2,
+        "coverage": [
+            {"instrument_root": "MES", "is_fresh": True},
+            {"instrument_root": "MNQ", "is_fresh": True},
+        ],
+        "instruments": [
+            {"instrument": "MES", "timestamp_utc": now, "is_fresh": True, "timeframe_bars": []},
+            {"instrument": "MNQ", "timestamp_utc": now, "is_fresh": True, "timeframe_bars": []},
+        ],
+    }
+    frames = [{"market_snapshot": json.loads(json.dumps(market))} for _ in range(5)]
+    frames[-1]["portfolio_snapshot"] = {
+        "accounts": [{
+            "account": "Sim101",
+            "trading_window_valid": True,
+            "trading_session_open": True,
+        }],
+    }
+    return {
+        "packet_id": "current",
+        "window_close_utc": now,
+        "frame_count": 5,
+        "is_contiguous": True,
+        "missing_minute_ids": [],
+        "policy": {"snapshot_max_age_seconds": 300},
+        "frames": frames,
+    }
+
+
+def write_model_admission_runtime(glitch_data: Path) -> None:
+    state = glitch_data / "hermes" / "control-state.json"
+    policy = glitch_data / "ai" / "policy.json"
+    rail = glitch_data / "selfcheck" / "rail.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    rail.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"trading_paused": False}), encoding="utf-8")
+    policy.write_text(json.dumps({
+        "schema_version": "glitch.ai.policy.v2",
+        "snapshot_max_age_seconds": 300,
+        "profile_account_bindings": [],
+        "instrument_allowlist": [],
+        "account_allowlist": [],
+        "blocked_sessions": [],
+    }), encoding="utf-8")
+    rail.write_text(json.dumps({
+        "created_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "feed_bus": {"fresh_instrument_count": 2},
+    }), encoding="utf-8")
+
+
+def test_model_call_admission_requires_ai_native_open_session_and_complete_fresh_package(
+    tmp_path: Path,
+) -> None:
+    write_model_admission_runtime(tmp_path)
+    packet = fresh_model_admission_packet()
+    open_time = datetime(2026, 8, 5, 15, 0, tzinfo=timezone.utc)
+
+    assert DIRECT.model_call_admission_reason(tmp_path, packet, open_time) is None
+
+    state = tmp_path / "hermes" / "control-state.json"
+    state.write_text(json.dumps({"trading_paused": True}), encoding="utf-8")
+    assert DIRECT.model_call_admission_reason(tmp_path, packet, open_time) == "ai_auto_off_or_scope_invalid"
+
+    state.write_text(json.dumps({"trading_paused": False}), encoding="utf-8")
+    packet["frames"][-1]["portfolio_snapshot"]["accounts"][0]["trading_session_open"] = False
+    assert DIRECT.model_call_admission_reason(tmp_path, packet, open_time) == "market_session_closed"
+
+    packet["frames"][-1]["portfolio_snapshot"]["accounts"][0]["trading_session_open"] = True
+    packet["frames"][-1]["market_snapshot"]["coverage"][1]["is_fresh"] = False
+    assert DIRECT.model_call_admission_reason(tmp_path, packet, open_time) == "stale_market_package"
+
+    packet = fresh_model_admission_packet()
+    weekend = datetime(2026, 8, 8, 15, 0, tzinfo=timezone.utc)
+    assert DIRECT.model_call_admission_reason(tmp_path, packet, weekend) == "weekend"
+
+    rail = tmp_path / "selfcheck" / "rail.json"
+    rail.write_text(json.dumps({
+        "created_utc": "2026-08-05T12:00:00Z",
+        "feed_bus": {"fresh_instrument_count": 2},
+    }), encoding="utf-8")
+    assert DIRECT.model_call_admission_reason(tmp_path, packet, open_time) == "stale_feed_observation"
+
+
+def test_direct_retry_rechecks_live_model_call_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    invalid, scenario = valid_batch("2026-08-13T10:00:00Z")
+    invalid["decisions"][0]["decision_audit"].pop("bear_case")
+    model_calls = 0
+    admission_calls = 0
+
+    def invoke(*_args, **_kwargs):
+        nonlocal model_calls
+        model_calls += 1
+        return invalid
+
+    def admission():
+        nonlocal admission_calls
+        admission_calls += 1
+        return None if admission_calls == 1 else "maintenance_window"
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    with pytest.raises(DIRECT.ModelCallDeferred, match="maintenance_window"):
+        DIRECT.invoke_validated_batch(
+            "glitch",
+            "PROMPT",
+            scenario,
+            None,
+            30,
+            model_call_admission=admission,
+        )
+
+    assert model_calls == 1
+    assert admission_calls == 2
+
+
 def test_missing_market_timestamp_fails_closed() -> None:
     packet = {
         "policy": {"snapshot_max_age_seconds": 180},

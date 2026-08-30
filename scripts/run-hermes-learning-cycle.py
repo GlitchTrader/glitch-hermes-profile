@@ -40,6 +40,12 @@ SOURCE = "trading"
 
 class LearningDeferred(RuntimeError):
     pass
+
+
+class LearningNotAdmitted(LearningDeferred):
+    """The shared live admission rail forbids a learner model call."""
+
+
 DEFAULT_GLITCH_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 EASTERN = ZoneInfo("America/New_York")
 LOOP_SCHEMAS = {
@@ -111,6 +117,39 @@ def load_direct_module():
 
 
 DIRECT = load_direct_module()
+
+
+def load_evaluator_module():
+    path = Path(__file__).with_name("evaluate-frozen-cognition.py")
+    spec = importlib.util.spec_from_file_location("glitch_frozen_cognition_evaluation", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cognition_evaluator_module_unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+EVALUATOR = load_evaluator_module()
+
+
+def learning_model_call_admission_reason(glitch_data: Path) -> str | None:
+    packet_path = (
+        glitch_data.resolve()
+        / "hermes" / "exchange" / "glitch" / "latest-decision-packet.json"
+    )
+    if not packet_path.is_file():
+        return "decision_packet_unavailable"
+    try:
+        packet = DIRECT.read_json(packet_path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return "decision_packet_unavailable"
+    return DIRECT.model_call_admission_reason(glitch_data.resolve(), packet)
+
+
+def require_learning_model_call_admission(args: argparse.Namespace) -> None:
+    reason = learning_model_call_admission_reason(args.glitch_data)
+    if reason is not None:
+        raise LearningNotAdmitted(reason)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1652,6 +1691,7 @@ def invoke_loop(
     if len(prompt) > MAX_PROMPT_CHARS:
         raise ValueError(f"learning_prompt_too_large:{loop_id}:{len(prompt)}")
     try:
+        require_learning_model_call_admission(args)
         value = invoke_hermes(args.profile, prompt, skills, args.timeout_seconds)
         return validate_output(value, loop_id, ids)
     except (json.JSONDecodeError, ValueError) as error:
@@ -1664,6 +1704,7 @@ def invoke_loop(
         )
         if len(repair_prompt) > MAX_PROMPT_CHARS:
             raise ValueError(f"learning_repair_prompt_too_large:{loop_id}:{len(repair_prompt)}")
+        require_learning_model_call_admission(args)
         value = invoke_hermes(args.profile, repair_prompt, skills, args.timeout_seconds)
         return validate_output(value, loop_id, ids)
 
@@ -1815,6 +1856,29 @@ def decision_review_is_complete(decision: dict[str, Any], evidence_ids: list[str
     )
 
 
+def glitch_data_from_supervisor(supervisor: Path) -> Path | None:
+    resolved = supervisor.resolve()
+    if tuple(part.lower() for part in resolved.parts[-4:]) != (
+        "hermes", "exchange", "hermes", "supervisor",
+    ):
+        return None
+    return resolved.parents[3]
+
+
+def active_frozen_experiment(supervisor: Path) -> dict[str, Any] | None:
+    glitch_data = glitch_data_from_supervisor(supervisor)
+    if glitch_data is None:
+        return None
+    return EVALUATOR.active_experiment_manifest(glitch_data)
+
+
+def strict_evaluation_publications(path: Path) -> list[dict[str, Any]] | None:
+    try:
+        return EVALUATOR.read_jsonl(path, strict=True)
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
 def deterministic_cognitive_evaluation_gate(
     supervisor: Path,
     active: dict[str, Any],
@@ -1828,49 +1892,60 @@ def deterministic_cognitive_evaluation_gate(
     prompt_version = str(active.get("effective_prompt_version") or "")
     bundle_hash = DIRECT.cognitive_bundle_hash_from_prompt_version(prompt_version)
     required_ids = {str(value) for value in gate.get("evidence_episode_ids", []) if value}
-    for report in reversed(read_jsonl(supervisor / "cognition-evaluation-reports.jsonl")):
-        promotion_gate = report.get("promotion_gate")
-        scope_gate = promotion_gate.get(scope) if isinstance(promotion_gate, dict) else None
-        scope_checks = scope_gate.get("checks") if isinstance(scope_gate, dict) else None
-        cost_policy = report.get("cost_policy") if isinstance(report.get("cost_policy"), dict) else {}
-        covered = {str(value) for value in report.get("covered_trade_episode_ids", []) if value}
-        unsigned_report = {
-            key: value for key, value in report.items() if key != "publication_sha256"
-        }
-        publication_hash = hashlib.sha256(json.dumps(
-            unsigned_report,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")).hexdigest()
-        if (
-            report.get("schema_version")
-            != "glitch.hermes.cognition_evaluation_publication.v1"
-            or report.get("effect") != "lesson_lifecycle_only_no_trade_or_execution_effect"
-            or str(report.get("candidate_id") or "") != candidate_id
-            or str(report.get("expected_prompt_version") or "") != prompt_version
-            or str(report.get("cognitive_bundle_hash") or "") != bundle_hash
-            or not isinstance(scope_gate, dict)
-            or scope_gate.get("eligible") is not True
-            or not isinstance(scope_checks, list)
-            or not scope_checks
-            or any(not isinstance(check, dict) or check.get("passed") is not True for check in scope_checks)
-            or report.get("publication_sha256") != publication_hash
-            or (scope == "distribution" and cost_policy.get("verified") is not True)
-            or not required_ids.issubset(covered)
-        ):
-            continue
-        return {
-            "report_id": report.get("report_id"),
-            "experiment_id": report.get("experiment_id"),
-            "scope": scope,
-            "covered_trade_episode_ids": sorted(required_ids),
-            "cost_policy": report.get("cost_policy"),
-            "sample": report.get("sample"),
-            "performance": report.get("performance"),
-            "calibration": report.get("calibration"),
-        }
-    return None
+    publications = strict_evaluation_publications(
+        supervisor / "cognition-evaluation-reports.jsonl"
+    )
+    if publications is None:
+        return None
+    matching = [
+        row for row in publications
+        if str(row.get("candidate_id") or "") == candidate_id
+        and str(row.get("expected_prompt_version") or "") == prompt_version
+        and str(row.get("cognitive_bundle_hash") or "") == bundle_hash
+    ]
+    if not matching:
+        return None
+    publication = matching[-1]
+    glitch_data = glitch_data_from_supervisor(supervisor)
+    if glitch_data is None:
+        return None
+    try:
+        report = EVALUATOR.verify_published_report(glitch_data, publication)
+    except (OSError, TypeError, ValueError):
+        return None
+    promotion_gate = report.get("promotion_gate")
+    scope_gate = promotion_gate.get(scope) if isinstance(promotion_gate, dict) else None
+    scope_checks = scope_gate.get("checks") if isinstance(scope_gate, dict) else None
+    cost_policy = report.get("cost_policy") if isinstance(report.get("cost_policy"), dict) else {}
+    covered = {str(value) for value in report.get("covered_trade_episode_ids", []) if value}
+    if (
+        report.get("effect") != "lesson_lifecycle_only_no_trade_or_execution_effect"
+        or not isinstance(scope_gate, dict)
+        or scope_gate.get("eligible") is not True
+        or not isinstance(scope_checks, list)
+        or not scope_checks
+        or any(not isinstance(check, dict) or check.get("passed") is not True for check in scope_checks)
+        or (scope == "distribution" and cost_policy.get("verified") is not True)
+        or not required_ids.issubset(covered)
+    ):
+        return None
+    return {
+        "report_id": report.get("report_id"),
+        "experiment_id": report.get("experiment_id"),
+        "scope": scope,
+        "covered_trade_episode_ids": sorted(required_ids),
+        "cost_policy": report.get("cost_policy"),
+        "sample": report.get("sample"),
+        "performance": report.get("performance"),
+        "calibration": report.get("calibration"),
+        "provenance": {
+            "publication_sha256": publication.get("publication_sha256"),
+            "full_report_sha256": publication.get("full_report_sha256"),
+            "freeze_manifest_sha256": publication.get("freeze_manifest_sha256"),
+            "evaluation_harness_sha256": publication.get("evaluation_harness_sha256"),
+            "report_relative_path": publication.get("report_relative_path"),
+        },
+    }
 
 
 def append_distribution_candidate(supervisor: Path, active: dict[str, Any], gate: dict[str, Any]) -> None:
@@ -1899,6 +1974,7 @@ def append_distribution_candidate(supervisor: Path, active: dict[str, Any], gate
         "evaluation_metric": active.get("evaluation_metric"),
         "rollback_condition": active.get("rollback_condition"),
         "local_validation_evidence": gate,
+        "deterministic_evaluation": active.get("deterministic_evaluation"),
     }], "distribution_candidate_id")
 
 
@@ -1975,6 +2051,8 @@ def apply_cognitive_decision(record: dict[str, Any], supervisor: Path, episode_i
         or str(decision.get("candidate_id")) != str(proposed.get("candidate_id"))
         or action not in {"activate", "rollback"}
     ):
+        return
+    if action == "activate" and active_frozen_experiment(supervisor) is not None:
         return
     later_episode_ids = later_evidence_ids(proposed, episode_ids)
     gate = evidence_gate(
@@ -2256,6 +2334,8 @@ def run_with_defer_retries(
     while True:
         try:
             return run_once(args, refresh_derived=refresh_derived)
+        except LearningNotAdmitted:
+            raise
         except LearningDeferred as deferred:
             elapsed = time.monotonic() - started
             if (
@@ -2282,7 +2362,8 @@ def non_debrief_loop_due(
     state: dict[str, Any],
     supervisor: Path,
     decision_episodes: list[dict[str, Any]],
-    feed_fresh: bool,
+    eligible_outcomes: list[dict[str, Any]],
+    trade_episodes: list[dict[str, Any]],
     now: datetime,
 ) -> bool:
     evidence = cognitive_evidence(supervisor)
@@ -2313,12 +2394,15 @@ def non_debrief_loop_due(
     ):
         return True
     plans = read_jsonl(supervisor / "plans.jsonl")
-    if not feed_fresh and (
-        len(reviews) > int(state.get("daily_review_count", 0) or 0)
-        or len(plans) > int(state.get("daily_plan_count", 0) or 0)
+    daily = read_jsonl(supervisor / "daily-journal.jsonl")
+    if unjournaled_completed_sessions(
+        eligible_outcomes,
+        trade_episodes,
+        decision_episodes,
+        daily,
+        now,
     ):
         return True
-    daily = read_jsonl(supervisor / "daily-journal.jsonl")
     return len(daily) - int(state.get("weekly_daily_count", 0) or 0) >= 7
 
 
@@ -2372,7 +2456,14 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
         bool(new_outcomes)
         and args.force_loop is None
         and state.get("last_completed_loop") == "debrief"
-        and non_debrief_loop_due(state, supervisor, decision_episodes, feed_fresh, now)
+        and non_debrief_loop_due(
+            state,
+            supervisor,
+            decision_episodes,
+            eligible_outcomes,
+            existing_episodes,
+            now,
+        )
     )
 
     # One bounded model loop per scheduler invocation. Each successful branch
@@ -2534,21 +2625,27 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
                     result["planning_review_ids"] = review_ids
             else:
                 plans = read_jsonl(supervisor / "plans.jsonl")
-                daily_due = (
-                    (not feed_fresh and (
-                        len(reviews) > int(state.get("daily_review_count", 0))
-                        or len(plans) > int(state.get("daily_plan_count", 0))
-                    ))
-                    or args.force_loop == "daily"
+                daily_journals = read_jsonl(supervisor / "daily-journal.jsonl")
+                completed_sessions = unjournaled_completed_sessions(
+                    eligible_outcomes,
+                    episodes,
+                    decision_episodes,
+                    daily_journals,
+                    now,
                 )
+                daily_due = bool(completed_sessions) or args.force_loop == "daily"
                 if daily_due and args.force_loop in {None, "daily"}:
-                    session_date = datetime.now(EASTERN).date().isoformat()
-                    journal_id = stable_id("daily-distill", f"{len(reviews)}:{len(plans)}")
+                    session_date = (
+                        completed_sessions[0][0]
+                        if completed_sessions
+                        else latest_completed_apex_session_date(now)
+                    )
+                    journal_id = stable_id("daily-distill", session_date)
                     if not args.dry_run:
                         evidence = {
                             "session_date_et": session_date,
                             "scope": {
-                                "kind": "maintenance_distillation",
+                                "kind": "completed_session_distillation",
                                 "source": "bounded_plans_plus_supervision_summaries",
                                 "through_utc": now.isoformat(),
                             },
@@ -2579,7 +2676,6 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
                     result["daily"] = True
                     result["daily_distilled"] = True
                 else:
-                    daily_journals = read_jsonl(supervisor / "daily-journal.jsonl")
                     weekly_due = (
                         len(daily_journals) - int(state.get("weekly_daily_count", 0)) >= 7
                     )

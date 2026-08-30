@@ -16,6 +16,13 @@ LEARNING = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(LEARNING)
 DIRECT = LEARNING.DIRECT
+EVALUATOR_SPEC = importlib.util.spec_from_file_location(
+    "evaluate_frozen_cognition_for_gate",
+    ROOT / "scripts" / "evaluate-frozen-cognition.py",
+)
+EVALUATOR = importlib.util.module_from_spec(EVALUATOR_SPEC)
+assert EVALUATOR_SPEC.loader is not None
+EVALUATOR_SPEC.loader.exec_module(EVALUATOR)
 
 
 def episode(episode_id: str, group_id: str, session_date: str, prompt_version: str) -> dict:
@@ -70,20 +77,22 @@ def write_rows(path: Path, rows: list[dict]) -> None:
 
 
 def evaluation_report(
-    candidate_id: str,
-    prompt_version: str,
+    manifest: dict,
     evidence_ids: list[str],
     *,
     local_eligible: bool = True,
     distribution_eligible: bool = True,
 ) -> dict:
     value = {
-        "schema_version": "glitch.hermes.cognition_evaluation_publication.v1",
-        "report_id": "report-1",
-        "experiment_id": "experiment-1",
-        "candidate_id": candidate_id,
-        "expected_prompt_version": prompt_version,
-        "cognitive_bundle_hash": DIRECT.cognitive_bundle_hash_from_prompt_version(prompt_version),
+        "schema_version": EVALUATOR.REPORT_SCHEMA,
+        "report_id": "",
+        "recorded_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "experiment_id": manifest["experiment_id"],
+        "candidate_id": manifest["candidate_id"],
+        "expected_prompt_version": manifest["expected_prompt_version"],
+        "cognitive_bundle_hash": manifest["cognitive_bundle_hash"],
+        "freeze_manifest_sha256": manifest["manifest_sha256"],
+        "evaluation_harness_sha256": manifest["evaluation_harness_sha256"],
         "effect": "lesson_lifecycle_only_no_trade_or_execution_effect",
         "covered_trade_episode_ids": evidence_ids,
         "cost_policy": {"verified": distribution_eligible},
@@ -101,13 +110,39 @@ def evaluation_report(
             },
         },
     }
-    value["publication_sha256"] = hashlib.sha256(json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")).hexdigest()
+    value["report_id"] = EVALUATOR.canonical_sha256(EVALUATOR.report_identity(value))
     return value
+
+
+def publish_evaluation(
+    glitch_data: Path,
+    supervisor: Path,
+    active: dict,
+    evidence_ids: list[str],
+    monkeypatch,
+    *,
+    experiment_id: str = "experiment-1",
+    local_eligible: bool = True,
+    distribution_eligible: bool = True,
+) -> tuple[dict, dict]:
+    monkeypatch.setattr(EVALUATOR, "assert_freeze_is_quiescent", lambda *_: None)
+    experiment = EVALUATOR.freeze_experiment(
+        glitch_data,
+        ROOT,
+        experiment_id,
+        EVALUATOR.build_cost_policy(4.0, ["TEST=1.00"], "test fixture"),
+    )
+    manifest = EVALUATOR.read_json(experiment / "freeze.json")
+    assert manifest["candidate_id"] == active["candidate_id"]
+    report = evaluation_report(
+        manifest,
+        evidence_ids,
+        local_eligible=local_eligible,
+        distribution_eligible=distribution_eligible,
+    )
+    _, report = EVALUATOR.finalize_report_artifact(experiment, manifest, report)
+    publication = EVALUATOR.publish_report(supervisor, report, experiment, manifest)
+    return report, publication
 
 
 def test_trade_fact_envelope_gets_system_owned_prompt_and_opportunity_identity() -> None:
@@ -166,9 +201,13 @@ def test_proposal_requires_independent_cross_session_evidence_and_general_langua
     assert proposed["auto_install"] is False
 
 
-def test_activation_and_distribution_require_new_exactly_attributed_master_evidence(tmp_path) -> None:
-    supervisor = tmp_path / "supervisor"
-    supervisor.mkdir()
+def test_activation_and_distribution_require_new_exactly_attributed_master_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    supervisor = EVALUATOR.supervisor_root(glitch_data)
+    supervisor.mkdir(parents=True)
     discovery = [
         episode("idea-1", "group-1", "2026-08-15", DIRECT.DIRECT_PROMPT_VERSION),
         episode("idea-2", "group-2", "2026-08-16", DIRECT.DIRECT_PROMPT_VERSION),
@@ -222,11 +261,14 @@ def test_activation_and_distribution_require_new_exactly_attributed_master_evide
     assert DIRECT.read_json(active_path)["status"] == "active"
     assert not (supervisor / "distribution-candidates.jsonl").exists()
 
-    tampered = evaluation_report(
-        "candidate-1",
-        active["effective_prompt_version"],
+    report, publication = publish_evaluation(
+        glitch_data,
+        supervisor,
+        active,
         ["trade-3", "trade-4"],
+        monkeypatch,
     )
+    tampered = dict(publication)
     tampered["publication_sha256"] = "tampered"
     write_rows(supervisor / "cognition-evaluation-reports.jsonl", [tampered])
     LEARNING.apply_cognitive_decision(
@@ -234,14 +276,7 @@ def test_activation_and_distribution_require_new_exactly_attributed_master_evide
     )
     assert DIRECT.read_json(active_path)["status"] == "active"
 
-    write_rows(
-        supervisor / "cognition-evaluation-reports.jsonl",
-        [evaluation_report(
-            "candidate-1",
-            active["effective_prompt_version"],
-            ["trade-3", "trade-4"],
-        )],
-    )
+    write_rows(supervisor / "cognition-evaluation-reports.jsonl", [publication])
     LEARNING.apply_cognitive_decision(
         decision("candidate-1", "promote", ["trade-3", "trade-4"]), supervisor, all_ids
     )
@@ -253,7 +288,7 @@ def test_activation_and_distribution_require_new_exactly_attributed_master_evide
     assert dossiers[0]["status"] == "human_review_required"
     assert dossiers[0]["auto_install"] is False
     assert dossiers[0]["validation_scope"] == "single_installation_local"
-    assert promoted["deterministic_evaluation"]["report_id"] == "report-1"
+    assert promoted["deterministic_evaluation"]["report_id"] == report["report_id"]
 
 
 def test_unreconciled_trade_episode_cannot_activate_a_lesson(tmp_path) -> None:
@@ -283,6 +318,109 @@ def test_unreconciled_trade_episode_cannot_activate_a_lesson(tmp_path) -> None:
         LEARNING.cognitive_evidence_ids(supervisor),
     )
     assert not (supervisor / "active-cognitive-overlay.json").exists()
+
+
+def test_active_frozen_base_experiment_blocks_automatic_prompt_activation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    supervisor = EVALUATOR.supervisor_root(glitch_data)
+    supervisor.mkdir(parents=True)
+    discovery = [
+        episode("idea-1", "group-1", "2026-08-15", DIRECT.DIRECT_PROMPT_VERSION),
+        episode("idea-2", "group-2", "2026-08-16", DIRECT.DIRECT_PROMPT_VERSION),
+    ]
+    write_rows(supervisor / "decision-episodes.jsonl", discovery)
+    LEARNING.activate_cognitive_candidate(candidate(["idea-1", "idea-2"]), supervisor)
+    monkeypatch.setattr(EVALUATOR, "assert_freeze_is_quiescent", lambda *_: None)
+    EVALUATOR.freeze_experiment(
+        glitch_data,
+        ROOT,
+        "frozen-base",
+        EVALUATOR.build_cost_policy(4.0, [], None),
+    )
+    confirmation = [
+        episode("trade-1", "trade-group-1", "2026-08-17", DIRECT.DIRECT_PROMPT_VERSION),
+        episode("trade-2", "trade-group-2", "2026-08-18", DIRECT.DIRECT_PROMPT_VERSION),
+    ]
+    write_rows(supervisor / "trade-episodes.jsonl", confirmation)
+
+    LEARNING.apply_cognitive_decision(
+        decision("candidate-1", "activate", ["trade-1", "trade-2"]),
+        supervisor,
+        LEARNING.cognitive_evidence_ids(supervisor),
+    )
+
+    assert not (supervisor / "active-cognitive-overlay.json").exists()
+
+
+def test_latest_provenance_bound_report_is_the_only_report_with_influence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    supervisor = EVALUATOR.supervisor_root(glitch_data)
+    supervisor.mkdir(parents=True)
+    old = "Treat incomplete evidence as uncertainty."
+    active = {
+        "schema_version": "glitch.hermes.cognitive_overlay.v2",
+        "status": "active",
+        "gate_version": DIRECT.COGNITIVE_GATE_VERSION,
+        "activation_evidence_kind": "completed_master_outcomes",
+        "decision_prompt_version": DIRECT.DIRECT_PROMPT_VERSION,
+        "candidate_id": "candidate-1",
+        "operation": "replace",
+        "target": "core_prompt",
+        "expected_old_text": old,
+        "expected_old_sha256": hashlib.sha256(old.encode("utf-8")).hexdigest(),
+        "replacement_text": "Treat incomplete evidence as a bounded uncertainty cost.",
+        "expires_utc": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+    }
+    active["effective_prompt_version"] = DIRECT.effective_prompt_version(active)
+    DIRECT.write_json_atomic(supervisor / "active-cognitive-overlay.json", active)
+    gate = {"evidence_episode_ids": ["trade-1", "trade-2"]}
+
+    _, passing = publish_evaluation(
+        glitch_data,
+        supervisor,
+        active,
+        gate["evidence_episode_ids"],
+        monkeypatch,
+        experiment_id="passing",
+    )
+    assert LEARNING.deterministic_cognitive_evaluation_gate(
+        supervisor, active, gate, "distribution"
+    ) is not None
+
+    _, failing = publish_evaluation(
+        glitch_data,
+        supervisor,
+        active,
+        gate["evidence_episode_ids"],
+        monkeypatch,
+        experiment_id="failing",
+        local_eligible=False,
+        distribution_eligible=False,
+    )
+    assert LEARNING.deterministic_cognitive_evaluation_gate(
+        supervisor, active, gate, "distribution"
+    ) is None
+
+    forged = dict(passing)
+    forged["report_id"] = "invented-report"
+    forged["report_relative_path"] = "reports/invented-report.json"
+    forged["performance"] = {"net_pnl_usd": 999999.0}
+    forged["publication_sha256"] = EVALUATOR.canonical_sha256({
+        key: value for key, value in forged.items() if key != "publication_sha256"
+    })
+    rows = LEARNING.read_jsonl(supervisor / "cognition-evaluation-reports.jsonl")
+    write_rows(supervisor / "cognition-evaluation-reports.jsonl", rows + [forged])
+
+    assert failing["promotion_gate"]["distribution"]["eligible"] is False
+    assert LEARNING.deterministic_cognitive_evaluation_gate(
+        supervisor, active, gate, "distribution"
+    ) is None
 
 
 def test_expired_or_legacy_overlay_cannot_change_prompt_or_prompt_identity() -> None:

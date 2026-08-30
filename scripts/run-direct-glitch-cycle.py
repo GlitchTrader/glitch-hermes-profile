@@ -287,9 +287,12 @@ def trading_runtime_enabled(glitch_data: Path) -> bool:
     policy_path = glitch_data / "ai" / "policy.json"
     if not state_path.is_file() or not policy_path.is_file():
         return False
-    state = read_json(state_path)
-    policy = read_json(policy_path)
-    return state.get("trading_paused") is False and runtime_policy_is_valid(policy)
+    try:
+        state = read_json(state_path)
+        policy = read_json(policy_path)
+        return state.get("trading_paused") is False and runtime_policy_is_valid(policy)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def runtime_policy_is_valid(policy: dict[str, Any]) -> bool:
@@ -3810,6 +3813,10 @@ class EmptyModelResponseError(RuntimeError):
     """The model transport completed but returned no output at all."""
 
 
+class ModelCallDeferred(RuntimeError):
+    """The live runtime stopped satisfying model-call admission."""
+
+
 class InvalidModelResponseError(ValueError):
     """Hermes returned content, but it was not a valid intent batch."""
 
@@ -4028,10 +4035,23 @@ def invoke_validated_batch(
     decision_mode: str = "flat_scan",
     prior_cognition: dict[str, Any] | None = None,
     prompt_version: str = DIRECT_PROMPT_VERSION,
+    model_call_admission: Any = None,
 ) -> tuple[dict[str, Any], int, int]:
     """Make one bounded Luna call plus at most one contract-only correction."""
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = decision_mode == "trigger_review"
+
+    def invoke(prompt_value: str) -> dict[str, Any]:
+        reason = model_call_admission() if callable(model_call_admission) else None
+        if reason:
+            raise ModelCallDeferred(str(reason))
+        return invoke_hermes(
+            profile,
+            prompt_value,
+            timeout_seconds,
+            positioned_only=positioned_only,
+            trigger_review_only=trigger_review_only,
+        )
 
     def prepare(value: dict[str, Any]) -> dict[str, Any]:
         batch = stamp_decision_prompt_version(
@@ -4064,34 +4084,16 @@ def invoke_validated_batch(
     raw: dict[str, Any] | None = None
     try:
         try:
-            raw = invoke_hermes(
-                profile,
-                prompt,
-                timeout_seconds,
-                positioned_only=positioned_only,
-                trigger_review_only=trigger_review_only,
-            )
+            raw = invoke(prompt)
         except EmptyModelResponseError:
             transport_retry_count = 1
-            raw = invoke_hermes(
-                profile,
-                prompt,
-                timeout_seconds,
-                positioned_only=positioned_only,
-                trigger_review_only=trigger_review_only,
-            )
+            raw = invoke(prompt)
         return prepare(raw), 0, transport_retry_count
     except (InvalidModelResponseError, ValueError) as error:
         if not retryable_model_contract_error(error):
             raise
         failed_output: Any = error.output if isinstance(error, InvalidModelResponseError) else raw
-        repaired_raw = invoke_hermes(
-            profile,
-            contract_repair_prompt(prompt, failed_output, error),
-            timeout_seconds,
-            positioned_only=positioned_only,
-            trigger_review_only=trigger_review_only,
-        )
+        repaired_raw = invoke(contract_repair_prompt(prompt, failed_output, error))
         return prepare(repaired_raw), 1, transport_retry_count
 
 
@@ -4850,6 +4852,83 @@ def market_snapshot_is_fresh(packet: dict[str, Any], max_age_seconds: int | None
     return age is not None and -60 <= age <= max_age_seconds
 
 
+def model_market_package_is_fresh(packet: dict[str, Any]) -> bool:
+    """Require every instrument in the model package to be natively fresh."""
+    if not packet_is_current(packet) or not market_snapshot_is_fresh(packet):
+        return False
+    if packet.get("is_contiguous") is not True or packet.get("frame_count") != 5:
+        return False
+    if packet.get("missing_minute_ids") != []:
+        return False
+    frames = packet.get("frames")
+    if not isinstance(frames, list) or len(frames) != 5:
+        return False
+
+    def frame_is_fresh(frame: Any) -> bool:
+        market = frame.get("market_snapshot") if isinstance(frame, dict) else None
+        if not isinstance(market, dict):
+            return False
+        instruments = market.get("instruments")
+        coverage = market.get("coverage")
+        fresh_count = market.get("fresh_instrument_count")
+        instrument_count = market.get("instrument_count")
+        return bool(
+            isinstance(instruments, list)
+            and instruments
+            and isinstance(coverage, list)
+            and len(coverage) == len(instruments)
+            and isinstance(fresh_count, int)
+            and not isinstance(fresh_count, bool)
+            and isinstance(instrument_count, int)
+            and not isinstance(instrument_count, bool)
+            and fresh_count == instrument_count == len(instruments)
+            and all(isinstance(row, dict) and row.get("is_fresh") is True for row in coverage)
+            and all(isinstance(row, dict) and row.get("is_fresh") is True for row in instruments)
+        )
+
+    return all(frame_is_fresh(frame) for frame in frames)
+
+
+def packet_trading_session_is_open(packet: dict[str, Any]) -> bool:
+    """Use Glitch's persisted per-account session verdict, not a second calendar."""
+    frames = packet.get("frames")
+    if not isinstance(frames, list) or not frames:
+        return False
+    latest = frames[-1] if isinstance(frames[-1], dict) else {}
+    portfolio = latest.get("portfolio_snapshot")
+    accounts = portfolio.get("accounts") if isinstance(portfolio, dict) else None
+    if not isinstance(accounts, list):
+        return False
+    valid = [
+        row for row in accounts
+        if isinstance(row, dict) and row.get("trading_window_valid") is True
+    ]
+    return bool(valid and any(row.get("trading_session_open") is True for row in valid))
+
+
+def model_call_admission_reason(
+    glitch_data: Path,
+    packet: dict[str, Any],
+    now: datetime | None = None,
+) -> str | None:
+    """Return why no Glitch model call may start; fail closed on missing evidence."""
+    try:
+        if not trading_runtime_enabled(glitch_data):
+            return "ai_auto_off_or_scope_invalid"
+        maintenance = llm_maintenance_reason(now)
+        if maintenance is not None:
+            return maintenance
+        if not packet_trading_session_is_open(packet):
+            return "market_session_closed"
+        if not model_market_package_is_fresh(packet):
+            return "stale_market_package"
+        if not feed_observation_is_fresh(glitch_data):
+            return "stale_feed_observation"
+        return None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return "model_admission_evidence_invalid"
+
+
 def feed_observation_is_fresh(glitch_data: Path) -> bool:
     """Require the current native rail feed-bus verdict; fail closed otherwise."""
     path = glitch_data / "selfcheck" / "rail.json"
@@ -5157,22 +5236,12 @@ def run_once(
     if receipt_path.is_file():
         raise ValueError("receipt_without_outbox")
 
-    maintenance_reason = llm_maintenance_reason()
-    if maintenance_reason is not None:
+    admission_reason = model_call_admission_reason(glitch_data, packet)
+    if admission_reason is not None:
         append_event(events_path, {
             "schema_version": "glitch.hermes.cycle_event.v1",
             "event": "llm_skipped",
-            "reason": maintenance_reason,
-            "recorded_utc": utc_now(),
-            "cycle_id": packet_id,
-        })
-        return 0
-
-    if not market_snapshot_is_fresh(packet):
-        append_event(events_path, {
-            "schema_version": "glitch.hermes.cycle_event.v1",
-            "event": "llm_skipped",
-            "reason": "stale_market_snapshot",
+            "reason": admission_reason,
             "market_age_seconds": market_snapshot_age_seconds(packet),
             "recorded_utc": utc_now(),
             "cycle_id": packet_id,
@@ -5187,16 +5256,6 @@ def run_once(
             "cycle_id": packet_id,
         })
         return 0
-    if not feed_observation_is_fresh(glitch_data):
-        append_event(events_path, {
-            "schema_version": "glitch.hermes.cycle_event.v1",
-            "event": "llm_skipped",
-            "reason": "stale_feed_observation",
-            "recorded_utc": utc_now(),
-            "cycle_id": packet_id,
-        })
-        return 0
-
     directive = read_operator_directive(exchange)
     reassessment_request = (
         direct_request if isinstance(direct_request, dict)
@@ -5268,6 +5327,17 @@ def run_once(
         "hermes_session_source": TRADING_SOURCE,
         "hermes_session_mode": "isolated",
     })
+
+    def current_model_call_admission() -> str | None:
+        original_reason = model_call_admission_reason(glitch_data, packet)
+        if original_reason is not None:
+            return original_reason
+        try:
+            current_packet = read_json(packet_path)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return "decision_packet_unavailable"
+        return model_call_admission_reason(glitch_data, current_packet)
+
     try:
         batch, output_repair_count, transport_retry_count = invoke_validated_batch(
             args.profile,
@@ -5278,6 +5348,7 @@ def run_once(
             decision_mode,
             prior_cognition,
             prompt_version,
+            current_model_call_admission,
         )
         admission_observations = validate_batch(
             batch,
@@ -5322,6 +5393,20 @@ def run_once(
             },
             "invocation_reason": reason,
         })
+    except ModelCallDeferred as deferred:
+        attempt = read_json(attempt_path)
+        attempt["completed_utc"] = utc_now()
+        attempt["status"] = "deferred"
+        attempt["reason"] = str(deferred)
+        write_json_atomic(attempt_path, attempt)
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": str(deferred),
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+        })
+        return 0
     except Exception as error:
         attempt = read_json(attempt_path)
         attempt["completed_utc"] = utc_now()
