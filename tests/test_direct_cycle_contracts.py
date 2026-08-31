@@ -1764,6 +1764,12 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "do not count it both as probability evidence and as untouched reward" in prompt
     assert "a concrete improvement in entry location, invalidation cost, or target-before-stop probability" in prompt
     assert "never shorthand for perfect confirmation or a required retest" in prompt
+    assert "rank the evidence-supported auction path, not the easiest bracket" in prompt
+    assert "a low break-even probability alone is not edge" in prompt
+    assert "a supported short-horizon rotation remains eligible" in prompt
+    assert "cannot become now_ev POSITIVE by selecting its favorable end" in prompt
+    assert "a range that clears only nominally needs current path evidence" in prompt
+    assert "Neither judgment requires a fixed numerical margin or completed confirmation" in prompt
     assert "must not raise estimated probability or confidence" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
     assert "seconds_until_must_flat as the actual schedule horizon" in prompt
@@ -1806,6 +1812,7 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "cannot reject both MOVE_STOP and EXIT" in positioned_prompt
     assert "Never use a fixed MFE percentage" in positioned_prompt
     assert "reconcile 1 - forecast.probability with estimated_target_first_range" not in positioned_prompt
+    assert "rank the evidence-supported auction path, not the easiest bracket" not in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" not in flat_prompt
     assert "when deterministic_management_math.status is complete" not in flat_prompt
     assert "When its price_basis.status is complete" not in flat_prompt
