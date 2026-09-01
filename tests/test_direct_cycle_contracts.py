@@ -139,6 +139,59 @@ def test_normalize_batch_relocates_misplaced_audit_wake_triggers() -> None:
     DIRECT.validate_batch(batch, scenario)
 
 
+def test_normalize_batch_relocates_known_audit_fields_without_changing_evidence() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    intent = batch["decisions"][0]
+    audit = intent["decision_audit"]
+    audit["decisive_evidence"] = (
+        "INSTRUMENT_COMPARISON_V1\n"
+        "SELECTION_REASON=Canonical model-authored reason."
+    )
+    audit["SELECTION_REASON"] = "Duplicated model-authored reason."
+    intent["change_condition"] = audit.pop("change_condition")
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert "SELECTION_REASON" not in audit
+    assert (
+        audit["decisive_evidence"]
+        == "INSTRUMENT_COMPARISON_V1\nSELECTION_REASON=Canonical model-authored reason."
+    )
+    assert "change_condition" not in intent
+    assert audit["change_condition"] == "Review the next complete packet."
+
+
+def test_normalize_batch_moves_misplaced_selection_reason_into_evidence() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    audit = batch["decisions"][0]["decision_audit"]
+    audit["decisive_evidence"] = "INSTRUMENT_COMPARISON_V1"
+    audit["SELECTION_REASON"] = "Model-authored comparative reason."
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert "SELECTION_REASON" not in audit
+    assert audit["decisive_evidence"].endswith(
+        "SELECTION_REASON=Model-authored comparative reason."
+    )
+
+
+def test_decision_audit_contract_error_names_exact_missing_and_extra_fields() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    audit = batch["decisions"][0]["decision_audit"]
+    audit.pop("bear_case")
+    audit.pop("change_condition")
+    audit["SELECTION_REASON"] = "Misnested reason."
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^decision_audit_contract_invalid:0:"
+            r"missing=bear_case,change_condition:extra=SELECTION_REASON$"
+        ),
+    ):
+        DIRECT.validate_batch(batch, scenario)
+
+
 def test_normalize_batch_recovers_duplicate_reason_from_model_audit() -> None:
     batch, _ = valid_batch("2026-08-03T07:02:41.0414987Z")
     intent = batch["decisions"][0]
@@ -233,7 +286,7 @@ def test_runtime_binds_position_management_to_the_native_instrument() -> None:
     intent["decision_audit"]["final_choice"] = "HOLD"
     intent["decision_audit"]["decisive_evidence"] = "\n".join([
         DIRECT.POSITION_MANAGEMENT_MARKER,
-        "INSTRUMENT=MES",
+        "INSTRUMENT=MES 09-26",
         *(f"{field}={'HOLD' if field == 'SELECTION_ACTION' else 'model evidence'}"
           for field in DIRECT.POSITION_MANAGEMENT_FIELDS),
     ])
@@ -247,6 +300,17 @@ def test_runtime_binds_position_management_to_the_native_instrument() -> None:
     DIRECT.validate_position_management(
         intent["decision_audit"]["decisive_evidence"], "MNQ", "HOLD", 0
     )
+
+
+def test_position_management_validator_accepts_full_native_contract_name() -> None:
+    evidence = "\n".join([
+        DIRECT.POSITION_MANAGEMENT_MARKER,
+        "INSTRUMENT=MNQ 09-26",
+        *(f"{field}={'HOLD' if field == 'SELECTION_ACTION' else 'model evidence'}"
+          for field in DIRECT.POSITION_MANAGEMENT_FIELDS),
+    ])
+
+    DIRECT.validate_position_management(evidence, "MNQ", "HOLD", 0)
 
 
 def test_native_gl1_protection_uses_authoritative_order_fields() -> None:
@@ -1448,6 +1512,59 @@ def comparison_ledger(sections: dict[str, list[str]]) -> str:
     return "\n".join(lines)
 
 
+def test_normalize_batch_uses_valid_ledger_selection_as_serialized_instrument() -> None:
+    complete = [f"{field}=supported evidence" for field in DIRECT.CANDIDATE_COMPARISON_FIELDS]
+    batch, scenario = valid_batch("2026-08-13T10:00:00Z")
+    scenario["market"]["candidates"] = [
+        {"instrument": "MNQ", "current_price": 20000.0},
+        {"instrument": "MES", "current_price": 5000.0},
+    ]
+    intent = batch["decisions"][0]
+    intent["decision_audit"]["decisive_evidence"] = comparison_ledger({
+        "MNQ": complete,
+        "MES": complete,
+    }).replace("RANKING=MNQ > MES", "RANKING=MES > MNQ").replace(
+        "SELECTION_INSTRUMENT=MNQ", "SELECTION_INSTRUMENT=MES"
+    )
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert intent["instrument"] == "MES"
+    DIRECT.validate_candidate_comparison(
+        intent["decision_audit"]["decisive_evidence"],
+        {"MNQ", "MES"},
+        intent["instrument"],
+        "NOTHING",
+        0,
+    )
+
+
+def test_normalize_batch_does_not_accept_selection_outside_candidate_scope() -> None:
+    complete = [f"{field}=supported evidence" for field in DIRECT.CANDIDATE_COMPARISON_FIELDS]
+    batch, scenario = valid_batch("2026-08-13T10:00:00Z")
+    scenario["market"]["candidates"] = [
+        {"instrument": "MNQ", "current_price": 20000.0},
+        {"instrument": "MES", "current_price": 5000.0},
+    ]
+    intent = batch["decisions"][0]
+    intent["decision_audit"]["decisive_evidence"] = comparison_ledger({
+        "MNQ": complete,
+        "MES": complete,
+    }).replace("SELECTION_INSTRUMENT=MNQ", "SELECTION_INSTRUMENT=NQ")
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert intent["instrument"] == "MNQ"
+    with pytest.raises(ValueError, match="candidate_comparison_selection_instrument_mismatch"):
+        DIRECT.validate_candidate_comparison(
+            intent["decision_audit"]["decisive_evidence"],
+            {"MNQ", "MES"},
+            intent["instrument"],
+            "NOTHING",
+            0,
+        )
+
+
 def test_flat_comparison_contract_is_compact_but_preserves_decision_dimensions() -> None:
     assert DIRECT.CANDIDATE_COMPARISON_FIELDS == (
         "CURRENT_AUCTION", "BULLISH_PATH", "BEARISH_PATH", "NEXT_TRANSITION",
@@ -1560,6 +1677,40 @@ def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
     assert calls[1].startswith("FORMAT_CORRECTION_ONLY:")
     assert "ORIGINAL_PROMPT" not in calls[1]
     assert "Preserve the same market judgment" in calls[1]
+
+
+def test_contract_retry_uses_the_pristine_model_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid, scenario = valid_batch("2026-08-13T10:00:00Z")
+    intent = invalid["decisions"][0]
+    for field in (
+        "schema_version", "intent_id", "created_utc", "account", "operator_profile",
+        "snapshot_hash", "model_version", "prompt_version",
+    ):
+        intent.pop(field)
+    intent["decision_audit"].pop("bear_case")
+    valid, _ = valid_batch("2026-08-13T10:00:00Z")
+    calls: list[str] = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return invalid if len(calls) == 1 else valid
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+
+    DIRECT.invoke_validated_batch(
+        "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+    )
+
+    repaired_prompt = calls[1]
+    previous_response = repaired_prompt.split("\nPREVIOUS_RESPONSE=", 1)[1]
+    assert '"account"' not in previous_response
+    assert '"intent_id"' not in previous_response
+    assert '"snapshot_hash"' not in previous_response
+    assert "account" not in intent
+    assert "intent_id" not in intent
+    assert "snapshot_hash" not in intent
 
 
 def test_unparseable_model_output_gets_one_contract_only_retry(

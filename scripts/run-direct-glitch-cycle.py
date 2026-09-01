@@ -9,6 +9,7 @@ Glitch's existing authenticated firewall. Codex is not part of this process.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -70,10 +71,11 @@ ENTRY_RANGE_FIELDS = {"entry_range_low", "entry_range_high"}
 ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS | ENTRY_RANGE_FIELDS | {
     "protection_updates", "entry_revalidation",
 }
-DECISION_AUDIT_FIELDS = {
+DECISION_AUDIT_FIELD_ORDER = (
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
     "decisive_evidence", "disconfirming_evidence", "change_condition", "final_choice",
-}
+)
+DECISION_AUDIT_FIELDS = set(DECISION_AUDIT_FIELD_ORDER)
 # The existing Glitch contract keeps decision_audit as strings.  We use the
 # decisive_evidence string as a strict Hermes-owned comparison ledger so the
 # multi-instrument cognition is mandatory without changing the wire schema.
@@ -2623,7 +2625,7 @@ def validate_position_management(
 ) -> None:
     if not isinstance(text, str) or POSITION_MANAGEMENT_MARKER not in text:
         raise ValueError(f"position_management_missing:{index}")
-    instrument = re.search(r"(?mi)^INSTRUMENT\s*=\s*([A-Za-z0-9._-]+)\s*$", text)
+    instrument = re.search(r"(?mi)^INSTRUMENT[ \t]*=[ \t]*([^\r\n]+?)[ \t]*$", text)
     if not instrument or instrument_root(instrument.group(1)) != instrument_root(expected_instrument):
         raise ValueError(f"position_management_instrument_mismatch:{index}")
     values: dict[str, str] = {}
@@ -2717,8 +2719,8 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> Non
     lowered = value.lower()
     normalized = re.sub(r"[\u2010-\u2015]", "-", lowered)
     numeric_atr_pair = (
-        re.search(r"\b1\s*(?:m|min(?:ute)?s?)\b", normalized)
-        and re.search(r"\b5\s*(?:m|min(?:ute)?s?)\b", normalized)
+        re.search(r"\b1\s*(?:-\s*)?(?:m|min(?:ute)?s?)\b", normalized)
+        and re.search(r"\b5\s*(?:-\s*)?(?:m|min(?:ute)?s?)\b", normalized)
     )
     written_atr_pair = (
         re.search(r"\bone(?:\s*-\s*|\s+)minute\b", normalized)
@@ -3115,8 +3117,15 @@ def validate_batch(
                 or not math.isfinite(float(confidence)) or not 0 <= confidence <= 1):
             raise ValueError(f"intent_confidence_invalid:{index}")
         audit = intent.get("decision_audit")
-        if not isinstance(audit, dict) or set(audit) != DECISION_AUDIT_FIELDS:
-            raise ValueError(f"decision_audit_contract_invalid:{index}")
+        if not isinstance(audit, dict):
+            raise ValueError(f"decision_audit_contract_invalid:{index}:not_object")
+        audit_fields = set(audit)
+        if audit_fields != DECISION_AUDIT_FIELDS:
+            missing = ",".join(sorted(DECISION_AUDIT_FIELDS - audit_fields)) or "-"
+            extra = ",".join(sorted(audit_fields - DECISION_AUDIT_FIELDS)) or "-"
+            raise ValueError(
+                f"decision_audit_contract_invalid:{index}:missing={missing}:extra={extra}"
+            )
         if any(not isinstance(audit[field], str) or not audit[field].strip()
                for field in DECISION_AUDIT_FIELDS):
             raise ValueError(f"decision_audit_value_invalid:{index}")
@@ -3296,6 +3305,33 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
                 # repair or reinterpret any cognitive audit value.
                 misplaced = audit.pop("wake_triggers")
                 intent.setdefault("wake_triggers", misplaced)
+            if (isinstance(audit, dict) and "change_condition" in intent
+                    and "change_condition" not in audit):
+                # Relocate this one documented audit field without changing its
+                # text. A duplicate remains invalid instead of being hidden.
+                audit["change_condition"] = intent.pop("change_condition")
+            if isinstance(audit, dict):
+                evidence = audit.get("decisive_evidence")
+                misplaced_reason = audit.get("SELECTION_REASON")
+                has_selection_ledger = (
+                    isinstance(evidence, str)
+                    and any(marker in evidence for marker in (
+                        CANDIDATE_COMPARISON_MARKER,
+                        TRIGGER_REVIEW_MARKER,
+                        POSITION_MANAGEMENT_MARKER,
+                    ))
+                )
+                if (has_selection_ledger and isinstance(misplaced_reason, str)
+                        and misplaced_reason.strip()
+                        and "\n" not in misplaced_reason and "\r" not in misplaced_reason):
+                    # SELECTION_REASON is a ledger line, not an audit JSON key.
+                    # Preserve an existing canonical line; otherwise relocate
+                    # the exact model-authored value without interpreting it.
+                    if not re.search(r"(?mi)^SELECTION_REASON\s*=", evidence):
+                        audit["decisive_evidence"] = (
+                            evidence.rstrip() + "\nSELECTION_REASON=" + misplaced_reason.strip()
+                        )
+                    audit.pop("SELECTION_REASON")
             if isinstance(audit, dict) and not str(intent.get("reason") or "").strip():
                 evidence = str(audit.get("decisive_evidence") or "")
                 selection_reason = re.search(
@@ -3303,6 +3339,21 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
                 )
                 if selection_reason:
                     intent["reason"] = selection_reason.group(1).strip()
+            if isinstance(audit, dict) and candidate_roots:
+                evidence = str(audit.get("decisive_evidence") or "")
+                if (CANDIDATE_COMPARISON_MARKER in evidence
+                        or TRIGGER_REVIEW_MARKER in evidence):
+                    selections = re.findall(
+                        r"(?mi)^SELECTION_INSTRUMENT\s*=\s*([A-Za-z0-9._-]+)\s*$",
+                        evidence,
+                    )
+                    if len(selections) == 1:
+                        selected_root = instrument_root(selections[0])
+                        if selected_root in candidate_roots:
+                            # The detailed comparison ledger is the model's
+                            # canonical choice; keep the duplicated wire field
+                            # synchronized before strict semantic validation.
+                            intent["instrument"] = selected_root
             if "wake_triggers" not in intent and "wake_trigger" in intent:
                 legacy = intent.pop("wake_trigger")
                 intent["wake_triggers"] = [] if legacy is None else [legacy]
@@ -3953,12 +4004,17 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
     else:
         prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
     error_text = str(error)
+    audit_fields = ",".join(DECISION_AUDIT_FIELD_ORDER)
     return (
         "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
         "quantity, protection, confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
         "and the required field or nesting contract named by CONTRACT_ERROR. Return exactly one "
         "complete strict glitch.intent.batch.v1 JSON object with no Markdown or prose. "
-        "decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
+        "decision_audit must contain exactly these JSON keys once: "
+        + audit_fields
+        + ". decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
+        "SELECTION_REASON and SELECTION_EV are text lines inside decision_audit.decisive_evidence, "
+        "never JSON keys. "
         "Every SELECTION_EV must contain direction, entry, stop, target, risk_points, reward_points, "
         "friction_points, breakeven_target_first, estimated_target_first_range, now_ev, wait_price, "
         "wait_ev, and decisive_reason.\nCONTRACT_ERROR="
@@ -4018,7 +4074,7 @@ def stamp_deterministic_intent_fields(
             evidence = audit.get("decisive_evidence") if isinstance(audit, dict) else None
             if isinstance(evidence, str) and POSITION_MANAGEMENT_MARKER in evidence:
                 audit["decisive_evidence"] = re.sub(
-                    r"(?mi)^INSTRUMENT\s*=\s*[A-Za-z0-9._-]+\s*$",
+                    r"(?mi)^INSTRUMENT[ \t]*=[ \t]*[^\r\n]+[ \t]*$",
                     f"INSTRUMENT={active_instrument}",
                     evidence,
                     count=1,
@@ -4088,7 +4144,7 @@ def invoke_validated_batch(
         except EmptyModelResponseError:
             transport_retry_count = 1
             raw = invoke(prompt)
-        return prepare(raw), 0, transport_retry_count
+        return prepare(copy.deepcopy(raw)), 0, transport_retry_count
     except (InvalidModelResponseError, ValueError) as error:
         if not retryable_model_contract_error(error):
             raise

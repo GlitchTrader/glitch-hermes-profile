@@ -137,6 +137,7 @@ def test_entry_rejects_geometry_evidence_that_hides_a_tiny_denominator() -> None
 def test_entry_accepts_prompt_approved_horizon_noise_wording() -> None:
     variants = (
         "12 points, 48 ticks, 1m ATR 5, 5m ATR 11, $24 USD risk after latency",
+        "12 points, 48 ticks, 1-minute ATR 5 and 5-minute ATR 11, $24 risk after latency",
         "12 points, 48 ticks, one-minute ATR 5 and five-minute ATR 11, $24 risk after latency",
         "12 points, 48 ticks, one- and five-minute ATR are 5 and 11, $24 risk after latency",
         "12 points, 48 ticks, supplied horizon noise is 5 and 11, $24 risk after latency",

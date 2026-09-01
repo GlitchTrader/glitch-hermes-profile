@@ -508,6 +508,9 @@ def test_format_contract_repair_is_compact_and_names_every_selection_ev_field() 
     assert "PREVIOUS_RESPONSE=" in prompt
     assert "breakeven_target_first" in prompt
     assert "estimated_target_first_range" in prompt
+    assert ",".join(DIRECT.DECISION_AUDIT_FIELD_ORDER) in prompt
+    assert "SELECTION_REASON" in prompt
+    assert "never JSON keys" in prompt
 
 
 def test_held_trigger_nothing_requests_one_minute_review() -> None:
