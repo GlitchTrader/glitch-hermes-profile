@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-08-30",
+  "updated": "2026-09-01",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -22,7 +22,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.67"
+        "distribution.yaml version 0.0.2.68"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."
@@ -51,23 +51,28 @@
     },
     {
       "id": "GHP-001",
-      "title": "Native acceptance of deterministic session observation memory",
-      "status": "approval_required",
-      "priority": "P1",
-      "owner_role": "operator_tests",
+      "title": "Equip Hermes with an instrument-neutral market map and native visual context",
+      "status": "in_progress",
+      "priority": "P0",
+      "owner_role": "architect",
       "acceptance": [
-        "The direct worker accumulates bounded session observations and exposes them as measured evidence only.",
-        "Missing or warming observations remain neutral uncertainty and cannot select or veto an action.",
-        "A named native Sim session proves the observation block remains evidence-only."
+        "An instrument-neutral, causally correct rolling ledger turns existing native MES, MNQ, and M2K facts into bounded price-sequence, structure, level, auction-state, VWAP, order-flow-response, geometry, and evidence-quality measurements.",
+        "A standardized chart rendered from the same native facts is attached to the same admitted Hermes call; numerical packet facts remain authoritative and rendering failure is neutral and fail-open.",
+        "The four non-current frames are compacted without losing the five-minute path, while the current 1/5/15/60-minute facts, native economics, portfolio, scope, prior cognition, factual ledger, and output contract remain present.",
+        "No deterministic layer selects an instrument, direction, setup, action, probability, bracket, quantity, protection change, exit, rank, strategy score, or veto; missing and warming evidence remain neutral.",
+        "The AddOn, replication, compliance, UI, execution validation, model/cadence/admission, learner, epoch, schemas, and current cognition remain unchanged.",
+        "Causality, instrument neutrality, missing-data neutrality, deterministic output, state safety, visual fidelity, packet preservation, bounded size/latency/retention, full regression, source/remote/install parity, and one fresh naturally admitted SIM cycle are proven."
       ],
       "depends_on": ["GHP-003"],
       "evidence": [
+        "docs/cognition-market-perception-v2.md",
         "scripts/market_structure.py",
         "tests/test_market_structure.py",
         "tests/test_direct_cycle_contracts.py",
-        "docs/learning-pipeline-repair.md"
+        "distribution.yaml version 0.0.2.68"
       ],
-      "stop_line": "Do not convert deterministic observations into action selection, sizing, geometry, entry, amendment, exit, or veto behavior."
+      "notes": "This supersedes the unwired v0.0.2.18 MNQ-specific observation design. Do not restore that implementation unchanged. The 80% daily-capture ambition is an evaluation target, never a gate or guarantee.",
+      "stop_line": "Perception may organize measurements only; it must never become a deterministic trading strategy, action gate, outcome bias, or second LLM decision layer."
     },
     {
       "id": "PROFILE-BETA-01",
@@ -98,7 +103,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.67"
+        "distribution_version": "0.0.2.68"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

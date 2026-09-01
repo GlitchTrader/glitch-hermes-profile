@@ -138,6 +138,9 @@ class RailRepairTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8-sig")
         self.assertIn(f"v{version}", readme.splitlines()[0])
 
+        setup = (ROOT / "setup.ps1").read_text(encoding="utf-8")
+        self.assertIn(f"distribution_version = '{version}'", setup)
+
         ledger = json.loads((ROOT / "docs" / "ledger" / "ledger.json").read_text(encoding="utf-8"))
         rail = next(item for item in ledger["items"] if item["id"] == "GHP-003")
         self.assertIn(version, "\n".join(rail.get("evidence") or []))

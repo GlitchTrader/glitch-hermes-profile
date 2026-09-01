@@ -2,8 +2,10 @@ import importlib.util
 import json
 import sys
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1739,6 +1741,92 @@ def test_unparseable_model_output_gets_one_contract_only_retry(
     assert "PREVIOUS_RESPONSE=BROKEN_RESPONSE" in calls[1]
 
 
+def test_visual_context_is_reused_for_empty_transport_but_not_contract_repair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "market.png"
+    image.write_bytes(b"png")
+    valid, scenario = valid_batch("2026-08-13T10:00:00Z")
+    attached: list[Path | None] = []
+
+    def empty_then_valid(_profile, _prompt, _timeout, **kwargs):
+        attached.append(kwargs.get("image_path"))
+        if len(attached) == 1:
+            raise DIRECT.EmptyModelResponseError("hermes_stdout_empty")
+        return valid
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", empty_then_valid)
+    DIRECT.invoke_validated_batch(
+        "glitch", "PROMPT", scenario, None, 30,
+        decision_mode="flat_scan", image_path=image,
+    )
+    assert attached == [image, image]
+
+    invalid, _ = valid_batch("2026-08-13T10:00:00Z")
+    invalid["decisions"][0]["decision_audit"].pop("bear_case")
+    attached.clear()
+
+    def invalid_then_valid(_profile, _prompt, _timeout, **kwargs):
+        attached.append(kwargs.get("image_path"))
+        return invalid if len(attached) == 1 else valid
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invalid_then_valid)
+    DIRECT.invoke_validated_batch(
+        "glitch", "PROMPT", scenario, None, 30,
+        decision_mode="flat_scan", image_path=image,
+    )
+    assert attached == [image, None]
+
+
+def test_native_hermes_invocation_receives_one_image_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    hermes = tmp_path / "hermes.exe"
+    python = tmp_path / "python.exe"
+    image = tmp_path / "market.png"
+    for path in (hermes, python, image):
+        path.write_bytes(b"fixture")
+    completed = SimpleNamespace(returncode=0, stdout="{}", stderr="")
+    calls = []
+
+    monkeypatch.setattr(DIRECT.shutil, "which", lambda _name: str(hermes))
+    monkeypatch.setattr(DIRECT, "resolve_python_invocation", lambda value: (value, {}))
+    monkeypatch.setattr(DIRECT, "hermes_profile_lock", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(DIRECT.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)) or completed)
+    monkeypatch.setattr(DIRECT, "extract_json", lambda *_args, **_kwargs: {"schema_version": "glitch.intent.batch.v1"})
+
+    DIRECT.invoke_hermes("glitch", "PROMPT", 30, image_path=image)
+
+    wrapper = calls[0][0][0][2]
+    assert "'--image'" in wrapper
+    assert repr(str(image)) in wrapper
+    assert calls[0][1]["input"] == "PROMPT"
+
+
+def test_market_perception_failure_is_observational_and_fail_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import market_structure
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("renderer unavailable")
+
+    monkeypatch.setattr(market_structure, "build_market_perception", fail)
+    packet = {"packet_id": "20260901T0100Z"}
+    scenario = {"books": []}
+    value, image = DIRECT.market_perception_context(
+        packet, tmp_path, scenario, {"trades": []}, "flat_scan"
+    )
+
+    assert image is None
+    assert value["status"] == "unavailable"
+    assert value["decision_continues_from_authoritative_numeric_packet"] is True
+    assert value["effect"] == "observation_only_no_execution_or_admission_effect"
+
+
 def test_compacted_bars_preserve_native_completed_bar_without_relabeling_current_bar() -> None:
     packet = {
         "packet_id": "20260813T1009Z",
@@ -1787,6 +1875,49 @@ def test_compacted_bars_preserve_native_completed_bar_without_relabeling_current
     assert completed["close"] == 11
     assert completed["completeness"] == "complete"
     assert "prior fully closed NinjaTrader candle" in result["observation_contract"]["last_completed_bar"]
+
+
+def test_current_bar_keeps_nonduplicated_depth_and_order_flow_facts() -> None:
+    bar = {
+        "minutes": 1,
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "indicators": {"cci": 42.0, "order_flow_hint": "bounded native hint"},
+        "descriptive_state": {
+            "native_observations": {"last_completed_bar": {"close": 100.0}},
+            "descriptive_state": {
+                "path": {"state": "progressing"},
+                "flow": {
+                    "classification_method": "quote_then_tick",
+                    "quote_classified_volume": 20.0,
+                    "tick_rule_volume": 4.0,
+                    "ambiguous_volume": 1.0,
+                    "price_impact_points_per_volume": 0.01,
+                },
+                "liquidity": {
+                    "best_bid": 100.25,
+                    "best_ask": 100.5,
+                    "depth_levels": [{"price": 100.25, "size": 8}],
+                    "book_reconstruction": "available",
+                },
+                "quality": {"packet_contiguity": "contiguous", "trading_day_id": "20260901"},
+            },
+        },
+    }
+
+    latest = DIRECT._compact_model_bar(bar, latest_frame=True)
+    historical = DIRECT._compact_model_bar(bar, latest_frame=False)
+
+    assert latest["indicators"]["cci"] == 42.0
+    assert latest["indicators"]["order_flow_hint"] == "bounded native hint"
+    state = latest["descriptive_state"]["descriptive_state"]
+    assert state["flow"]["classification_method"] == "quote_then_tick"
+    assert state["liquidity"]["depth_levels"][0]["size"] == 8
+    assert state["quality"]["packet_contiguity"] == "contiguous"
+    assert "indicators" not in historical
+    assert "depth_levels" not in json.dumps(historical)
 
 
 def test_compacted_bars_use_packet_session_as_canonical_location() -> None:

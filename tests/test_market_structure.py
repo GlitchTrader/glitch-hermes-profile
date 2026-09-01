@@ -1,10 +1,14 @@
-"""Deterministic tests for the market-structure observation layer."""
+"""Causality and boundary tests for market-perception v2."""
+
+from __future__ import annotations
 
 import json
+import math
 import sys
-import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -12,219 +16,328 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import market_structure as ms  # noqa: E402
 
 
-def bar(minute: int, o, h, l, c, atr=4.0):
-    return {"id": f"20260731T{minute // 60:02d}{minute % 60:02d}Z",
-            "o": float(o), "h": float(h), "l": float(l), "c": float(c), "atr": atr}
+ECONOMICS = {
+    "MES": {"point_value_usd": 5.0, "tick_size": 0.25},
+    "MNQ": {"point_value_usd": 2.0, "tick_size": 0.25},
+    "M2K": {"point_value_usd": 5.0, "tick_size": 0.1},
+}
+BASE = {"MES": 7600.0, "MNQ": 29000.0, "M2K": 2900.0}
+SCALE = {"MES": 0.7, "MNQ": 4.0, "M2K": 0.5}
 
 
-def packet_with_bars(bars, current_price, session=None, atr_60=20.0, adx_60=15.0):
-    frames = []
-    for record in bars[-5:]:
-        frames.append({
-            "minute_id": record["id"],
-            "market_snapshot": {
-                "instruments": [{
-                    "instrument": "MNQ",
-                    "current_price": current_price,
-                    "session": session or {"name": "Asia", "high": 28580.0, "low": 28304.25,
-                                           "previous_high": 28410.0, "previous_low": 28147.75},
-                    "timeframe_bars": [
-                        {"minutes": 1, "open": record["o"], "high": record["h"],
-                         "low": record["l"], "close": record["c"],
-                         "indicators": {"atr": record["atr"]}},
-                        {"minutes": 60, "open": 0, "high": 0, "low": 0, "close": 0,
-                         "indicators": {"atr": atr_60, "adx": adx_60}},
-                    ],
-                }],
+def minute_id(index: int) -> str:
+    stamp = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=index)
+    return stamp.strftime("%Y%m%dT%H%MZ")
+
+
+def iso_minute(index: int) -> str:
+    stamp = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=index)
+    return stamp.strftime("%Y-%m-%dT%H:%M:00Z")
+
+
+def completed_values(root: str, index: int) -> tuple[float, float, float, float]:
+    scale = SCALE[root]
+    center = BASE[root] + scale * (0.12 * index + 2.4 * math.sin(index / 7))
+    open_price = center - scale * math.sin(index / 3)
+    close = center + scale * math.sin((index + 1) / 3)
+    high = max(open_price, close) + scale * (0.8 + 0.2 * math.cos(index))
+    low = min(open_price, close) - scale * (0.8 + 0.2 * math.sin(index))
+    return open_price, high, low, close
+
+
+def instrument(root: str, index: int, *, partial_offset: float = 0.0) -> dict:
+    open_price, high, low, close = completed_values(root, index)
+    tick = ECONOMICS[root]["tick_size"]
+    partial_open = close + partial_offset
+    partial_close = partial_open + tick
+    vwap = BASE[root] + SCALE[root] * index * 0.08 if root != "M2K" else None
+    delta = (index % 11 - 5) * 13 if root != "M2K" else None
+    deviation = (partial_close - vwap) / max(SCALE[root] * 8, tick) if vwap is not None else None
+    native = {
+        "utc_time": iso_minute(index),
+        "closed_utc": iso_minute(index + 1),
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": 100 + index,
+        "completeness": "complete",
+        "source": "ninjatrader_bars_ago_1",
+    }
+    return {
+        "instrument": root,
+        "instrument_full_name": f"{root} 09-26",
+        "current_price": partial_close,
+        "instrument_economics": {**ECONOMICS[root], "source": "ninjatrader_master_instrument"},
+        "session": {
+            "name": "Asia",
+            "high": BASE[root] + SCALE[root] * 16,
+            "low": BASE[root] - SCALE[root] * 12,
+            "previous_high": BASE[root] + SCALE[root] * 20,
+            "previous_low": BASE[root] - SCALE[root] * 18,
+        },
+        "timeframe_bars": [{
+            "minutes": 1,
+            "utc_time": iso_minute(index + 1),
+            "open": partial_open,
+            "high": max(partial_open, partial_close) + tick,
+            "low": min(partial_open, partial_close) - tick,
+            "close": partial_close,
+            "volume": 17 + index,
+            "indicators": {
+                "atr": SCALE[root] * 3,
+                "adx": 22 + index % 8,
+                "rsi": 45 + index % 20,
+                "order_flow_cumulative_delta": delta * index if delta is not None else None,
+                "order_flow_delta_change": delta,
+                "order_flow_vwap": vwap,
+                "order_flow_vwap_deviation": deviation,
+                "order_flow_aggression_balance": 0.15 if delta is not None else None,
             },
+            "derived_analytics": {
+                "directional_score": math.sin(index / 8),
+                "tradeability_score": 0.5,
+                "order_flow_reliability": 0.7 if delta is not None else None,
+            },
+            "descriptive_state": {
+                "native_observations": {"last_completed_bar": native},
+                "descriptive_state": {
+                    "flow": {"classification_coverage": 1.0 if delta is not None else None},
+                    "quality": {
+                        "partial_1m": True,
+                        "order_flow_status": "available" if delta is not None else "unavailable",
+                    },
+                },
+            },
+        }],
+    }
+
+
+def frame(index: int, *, partial_offset: float = 0.0) -> dict:
+    return {
+        "schema_version": "glitch.hermes.minute_frame.v1",
+        "minute_id": minute_id(index + 1),
+        "captured_utc": iso_minute(index + 1),
+        "market_snapshot": {
+            "instruments": [instrument(root, index, partial_offset=partial_offset) for root in ("MNQ", "MES", "M2K")],
+        },
+    }
+
+
+def packet(end_index: int, *, partial_offset: float = 0.0) -> dict:
+    frames = [frame(index, partial_offset=partial_offset) for index in range(end_index - 4, end_index + 1)]
+    return {"packet_id": frames[-1]["minute_id"], "frames": frames}
+
+
+def seed_exchange(exchange: Path, count: int = 90) -> None:
+    directory = exchange / "glitch" / "minute-frames"
+    directory.mkdir(parents=True)
+    for index in range(count):
+        value = frame(index)
+        (directory / f"{value['minute_id']}.json").write_text(
+            json.dumps(value, separators=(",", ":")), encoding="utf-8"
+        )
+
+
+def test_completed_bar_is_native_and_live_partial_stays_separate() -> None:
+    state = ms._empty_state()
+    value = frame(20, partial_offset=500.0)
+    ms.ingest_frame(state, value)
+
+    mes = state["instruments"]["MES"]
+    native_close = completed_values("MES", 20)[3]
+    assert mes["bars"][-1]["c"] == pytest.approx(native_close)
+    assert mes["latest_partial"]["c"] > native_close + 400
+    assert mes["bars"][-1]["first_observed_frame_id"] == value["minute_id"]
+
+
+def test_instrument_neutral_ingest_dedupes_and_uses_native_economics() -> None:
+    state = ms._empty_state()
+    for index in range(ms.MAX_BARS + 20):
+        ms.ingest_frame(state, frame(index))
+    ms.ingest_frame(state, frame(ms.MAX_BARS + 19))
+
+    assert set(state["instruments"]) == {"MES", "MNQ", "M2K"}
+    for root, economics in ECONOMICS.items():
+        slot = state["instruments"][root]
+        assert len(slot["bars"]) == ms.MAX_BARS
+        assert len(slot["samples"]) == ms.MAX_SAMPLES
+        assert slot["economics"]["tick_size"] == economics["tick_size"]
+        assert slot["economics"]["point_value_usd"] == economics["point_value_usd"]
+
+
+def test_exchange_backfill_never_reads_a_frame_after_packet_ceiling(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    seed_exchange(exchange, 75)
+    admitted = packet(60)
+    state = ms.update_state_from_exchange(ms._empty_state(), admitted, exchange)
+
+    assert state["last_source_frame_id"] == admitted["packet_id"]
+    assert all(
+        slot["latest_frame_id"] <= admitted["packet_id"]
+        for slot in state["instruments"].values()
+    )
+
+
+def test_corrupt_state_recovers_neutrally_and_round_trip_is_stable(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text("{broken", encoding="utf-8")
+    assert ms.load_state(path) == ms._empty_state()
+
+    state = ms._empty_state()
+    ms.ingest_frame(state, frame(1))
+    ms.save_state(path, state)
+    first = path.read_bytes()
+    ms.save_state(path, ms.load_state(path))
+    assert path.read_bytes() == first
+
+
+def test_swings_are_causal_and_name_the_confirmation_bar() -> None:
+    bars = []
+    prices = [10, 11, 14, 12, 9, 10, 13]
+    for index, price in enumerate(prices):
+        bars.append({
+            "id": f"b{index}", "o": price, "h": price + 1,
+            "l": price - 1, "c": price, "v": 1,
         })
-    return {"frames": frames}
+    swings = ms.confirmed_swings(bars, width=2)
+
+    assert swings
+    assert all("confirmed_after_bar_id" in swing for swing in swings)
+    assert all(
+        int(swing["confirmed_after_bar_id"][1:]) > int(swing["bar_id"][1:])
+        for swing in swings
+    )
 
 
-def uptrend_bars(count=80, start=28400.0, step=1.5):
-    bars = []
-    price = start
-    for minute in range(count):
-        swing = 6.0 if (minute // 10) % 2 == 0 else -3.0
-        price += step if swing > 0 else -0.5
-        bars.append(bar(minute, price - 1, price + 2, price - 2, price))
-    return bars
+def test_unfilled_imbalance_is_a_measurement_not_a_trade() -> None:
+    bars = [
+        {"id": "b0", "o": 100, "h": 101, "l": 99, "c": 100, "v": 1},
+        {"id": "b1", "o": 101, "h": 108, "l": 100, "c": 107, "v": 1},
+        {"id": "b2", "o": 107, "h": 110, "l": 104, "c": 109, "v": 1},
+    ]
+    zones = ms.fvg_zones(bars, 109, tick=0.25, atr=3, point_value=5)
+
+    assert zones[0]["kind"] == "up_imbalance"
+    assert zones[0]["formed_bar_id"] == "b2"
+    assert "action" not in zones[0]
+    bars.append({"id": "b3", "o": 109, "h": 109, "l": 100, "c": 101, "v": 1})
+    assert ms.fvg_zones(bars, 101, tick=0.25, atr=3, point_value=5) == []
 
 
-def range_bars(count=80, low=28400.0, high=28440.0):
-    bars = []
-    for minute in range(count):
-        phase = (minute % 20) / 20.0
-        mid = low + (high - low) * (0.5 + 0.45 * (1 if phase < 0.5 else -1) * (phase % 0.5) * 2)
-        bars.append(bar(minute, mid - 1, min(high, mid + 3), max(low, mid - 3), mid))
-    return bars
+def test_market_map_is_bounded_neutral_and_missing_flow_stays_unknown(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    seed_exchange(exchange, 90)
+    value, image_path = ms.build_market_perception(packet(89), exchange)
+
+    assert value["instrument_order"] == ["MES", "MNQ", "M2K"]
+    assert image_path is not None and image_path.is_file()
+    assert len(json.dumps(value, separators=(",", ":"))) <= ms.MAX_SERIALIZED_CHARS
+    by_root = {item["instrument"]: item for item in value["instruments"]}
+    assert by_root["M2K"]["vwap_path"]["status"] == "unavailable"
+    assert by_root["M2K"]["order_flow_response"]["status"] == "unavailable"
+    assert "vwap" in by_root["M2K"]["evidence_quality"]["missing"]
+    assert by_root["MES"]["evidence_quality"]["status"] == "ready"
+
+    forbidden_keys = {
+        "recommended_action", "trade_action", "probability", "permission",
+        "veto", "candidate_bracket", "quantity", "setup_score", "rank",
+    }
+
+    def keys(node):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                yield key
+                yield from keys(child)
+        elif isinstance(node, list):
+            for child in node:
+                yield from keys(child)
+
+    assert forbidden_keys.isdisjoint(set(keys(value)))
 
 
-class SwingTests(unittest.TestCase):
-    def test_uptrend_labels_higher_highs_and_lows(self):
-        pivots = ms.swing_pivots(uptrend_bars(), atr_1m=3.0)
-        labels = [p["label"] for p in pivots]
-        self.assertTrue(labels, "uptrend must produce pivots")
-        self.assertIn("HH", labels)
-        bias = ms.structure_bias(labels)
-        self.assertIn(bias, ("up", "mixed"))
+def test_measured_levels_keep_both_sides_and_missing_economics_stays_unknown() -> None:
+    state = ms._empty_state()
+    for index in range(80):
+        ms.ingest_frame(state, frame(index))
+    slot = state["instruments"]["MES"]
+    slot.pop("economics", None)
 
-    def test_flat_ledger_produces_no_false_trend(self):
-        flat = [bar(i, 28400, 28401, 28399, 28400) for i in range(40)]
-        pivots = ms.swing_pivots(flat, atr_1m=4.0)
-        self.assertEqual(pivots, [])
-        self.assertEqual(ms.structure_bias([]), "mixed")
+    perception = ms.instrument_perception("MES", slot)
 
-    def test_determinism(self):
-        bars = uptrend_bars()
-        self.assertEqual(ms.swing_pivots(bars, 3.0), ms.swing_pivots(bars, 3.0))
-
-
-class RangeAndBreakoutTests(unittest.TestCase):
-    def test_range_box_bounds(self):
-        box = ms.range_box(range_bars())
-        self.assertIsNotNone(box)
-        self.assertLessEqual(box["low"], box["mid"])
-        self.assertLessEqual(box["mid"], box["high"])
-
-    def test_accepted_breakout_above(self):
-        bars = range_bars()
-        top = max(b["h"] for b in bars[-60:])
-        for i in range(3):
-            price = top + 5 + i
-            bars.append(bar(100 + i, price - 1, price + 1, price - 2, price))
-        state = ms.breakout_state(bars, ms.range_box(bars))
-        self.assertEqual(state, "accepted_above")
-
-    def test_failed_break_high(self):
-        bars = range_bars()
-        top = max(b["h"] for b in bars[-60:])
-        bars.append(bar(100, top - 1, top + 4, top - 2, top - 1.5))  # poke and close back
-        bars.append(bar(101, top - 2, top - 1, top - 6, top - 5))
-        bars.append(bar(102, top - 5, top - 4, top - 9, top - 8))
-        state = ms.breakout_state(bars, ms.range_box(bars))
-        self.assertEqual(state, "failed_break_high")
-
-    def test_inside_range(self):
-        bars = range_bars()
-        state = ms.breakout_state(bars, ms.range_box(bars))
-        self.assertIn(state, ("inside", "testing_high", "testing_low"))
+    relations = {level["relative_to_current"] for level in perception["nearest_measured_levels"]}
+    assert "above" in relations
+    assert "below" in relations
+    assert "native_economics" in perception["evidence_quality"]["missing"]
+    assert perception["measurement_tolerance"]["ticks"] is None
+    assert all(
+        level["absolute_distance_ticks"] is None
+        and level["absolute_distance_one_contract_usd"] is None
+        for level in perception["nearest_measured_levels"]
+    )
 
 
-class RegimeHysteresisTests(unittest.TestCase):
-    def test_label_flips_only_after_repeated_agreement(self):
-        state = {"regime": {"label": "range", "stable_cycles": 10}}
-        box = {"high": 28440.0, "low": 28400.0, "mid": 28420.0, "width": 40.0}
-        first = ms.regime_hypothesis(state, adx_60m=30.0, box=box, atr_60m=20.0, bias="up")
-        self.assertEqual(first["label"], "range")  # not yet flipped
-        self.assertEqual(first["raw"], "directional_up")
-        ms.regime_hypothesis(state, 30.0, box, 20.0, "up")
-        third = ms.regime_hypothesis(state, 30.0, box, 20.0, "up")
-        self.assertEqual(third["label"], "directional_up")
+def test_geometry_converts_each_instrument_with_its_own_contract_math(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    seed_exchange(exchange, 80)
+    value, _ = ms.build_market_perception(packet(79), exchange)
+    by_root = {item["instrument"]: item for item in value["instruments"]}
 
-    def test_disagreeing_raw_resets_pending(self):
-        state = {"regime": {"label": "range", "stable_cycles": 5}}
-        box = {"high": 28440.0, "low": 28400.0, "mid": 28420.0, "width": 40.0}
-        ms.regime_hypothesis(state, 30.0, box, 20.0, "up")
-        ms.regime_hypothesis(state, 10.0, box, 20.0, "mixed")  # back to range agreement
-        result = ms.regime_hypothesis(state, 30.0, box, 20.0, "up")
-        self.assertEqual(result["label"], "range")
+    for root, perception in by_root.items():
+        level = perception["nearest_measured_levels"][0]
+        points = abs(level["signed_distance_points"])
+        assert level["absolute_distance_one_contract_usd"] == pytest.approx(
+            points * ECONOMICS[root]["point_value_usd"]
+        )
+        assert level["absolute_distance_ticks"] == pytest.approx(
+            points / ECONOMICS[root]["tick_size"], abs=1e-4
+        )
 
 
-class FvgTests(unittest.TestCase):
-    def test_bullish_gap_detected_until_filled(self):
-        bars = [bar(0, 28400, 28402, 28398, 28401),
-                bar(1, 28401, 28410, 28400, 28409),
-                bar(2, 28409, 28415, 28406, 28414)]  # low 28406 > first high 28402
-        zones = ms.fvg_zones(bars, current_price=28414.0)
-        self.assertEqual(len(zones), 1)
-        self.assertEqual(zones[0]["side"], "bullish")
-        bars.append(bar(3, 28414, 28414, 28401, 28402))  # trades through the gap bottom
-        self.assertEqual(ms.fvg_zones(bars, 28402.0), [])
+def test_map_and_png_are_byte_deterministic_for_identical_input(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    seed_exchange(exchange, 75)
+    admitted = packet(74)
+    first_map, first_path = ms.build_market_perception(admitted, exchange)
+    first_bytes = first_path.read_bytes()
+    second_map, second_path = ms.build_market_perception(admitted, exchange)
+
+    assert second_map == first_map
+    assert second_path == first_path
+    assert second_path.read_bytes() == first_bytes
 
 
-class LedgerTests(unittest.TestCase):
-    def test_update_bars_dedupes_and_prunes(self):
-        state = {"schema_version": ms.SCHEMA_VERSION, "bars": [], "regime": {}}
-        bars = uptrend_bars(12)
-        packet = packet_with_bars(bars, 28430.0)
-        ms.update_bars(state, packet)
-        count = len(state["bars"])
-        ms.update_bars(state, packet)  # same frames again
-        self.assertEqual(len(state["bars"]), count)
-        state["bars"] = [bar(i, 28400, 28401, 28399, 28400) for i in range(ms.MAX_BARS + 30)]
-        ms.update_bars(state, packet)
-        self.assertLessEqual(len(state["bars"]), ms.MAX_BARS)
+def test_position_view_renders_only_the_active_instrument(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    seed_exchange(exchange, 75)
+    trade_state = {
+        "trades": [{
+            "instrument": "MES", "side": "long", "quantity": 1,
+            "average_price": 7610.0, "peak_unrealized_pnl_usd": 25.0,
+            "deterministic_management_math": {
+                "point_value_usd": 5.0, "current_price": 7612.0,
+                "stop_legs": [{"price": 7605.0}], "target_legs": [{"price": 7625.0}],
+            },
+        }],
+    }
+    value, path = ms.build_market_perception(
+        packet(74), exchange, active_trade_state=trade_state, positioned_roots=["MES"]
+    )
 
-    def test_state_round_trip(self):
-        import tempfile
-        state = {"schema_version": ms.SCHEMA_VERSION, "bars": [bar(0, 1, 2, 0, 1)],
-                 "regime": {"label": "range"}, "last_minute_id": "20260731T0000Z"}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "state.json"
-            ms.save_state(path, state)
-            loaded = ms.load_state(path)
-        self.assertEqual(loaded["regime"]["label"], "range")
-        self.assertEqual(len(loaded["bars"]), 1)
+    assert value["view"] == "position_management"
+    assert value["instrument_order"] == ["MES"]
+    assert value["visual_context"]["panels"] == ["MES"]
+    assert path is not None and path.is_file()
 
 
-class ObservationTests(unittest.TestCase):
-    def _observe(self, bars, price, **kwargs):
-        state = {"schema_version": ms.SCHEMA_VERSION, "bars": list(bars), "regime": {}}
-        packet = packet_with_bars(bars, price, **kwargs)
-        return ms.build_observations(packet, state, Path("Z:/definitely-missing"),
-                                     now=datetime(2026, 7, 31, 5, 0, tzinfo=timezone.utc))
+def test_image_retention_is_bounded(tmp_path: Path) -> None:
+    exchange = tmp_path / "exchange"
+    seed_exchange(exchange, 75)
+    image_dir = exchange / "hermes" / "supervisor" / "market-context-images"
+    image_dir.mkdir(parents=True)
+    for index in range(ms.MAX_IMAGE_FILES + 5):
+        (image_dir / f"20000101T{index:04d}Z-portfolio_scan.png").write_bytes(b"old")
 
-    def test_block_shape_and_budget(self):
-        obs = self._observe(range_bars(), 28420.0)
-        self.assertTrue(obs["available"])
-        self.assertEqual(obs["schema_version"], ms.SCHEMA_VERSION)
-        for key in ("regime_60m", "location", "swings_1m", "structure_bias",
-                    "fvg_zones", "key_levels", "own_recent_attempts"):
-            self.assertIn(key, obs)
-        serialized = json.dumps(obs, separators=(",", ":"))
-        self.assertLessEqual(len(serialized), ms.MAX_SERIALIZED_CHARS + 400)
+    ms.build_market_perception(packet(74), exchange)
 
-    def test_warmup_is_neutral(self):
-        obs = self._observe(range_bars()[:4], 28420.0)
-        self.assertFalse(obs["available"])
-        self.assertEqual(obs["reason"], "ledger_warming_up")
-
-    def test_missing_outcome_files_do_not_break(self):
-        obs = self._observe(range_bars(), 28420.0)
-        self.assertEqual(obs["own_recent_attempts"]["last_trades"], [])
-        self.assertEqual(obs["own_recent_attempts"]["recent_losses_near_price"], 0)
-
-    def test_key_levels_include_session_and_touch_counts(self):
-        obs = self._observe(range_bars(), 28420.0)
-        kinds = {level["kind"] for level in obs["key_levels"]}
-        self.assertTrue(kinds & {"range_high", "range_low", "range_mid",
-                                 "session_high", "session_low"})
-        for level in obs["key_levels"]:
-            if "touches" in level:
-                self.assertGreaterEqual(level["touches"], 0)
-
-
-class AttemptTests(unittest.TestCase):
-    def test_recent_losses_near_price_counted(self):
-        import tempfile
-        now = datetime(2026, 7, 31, 5, 0, tzinfo=timezone.utc)
-        records = [
-            {"action": "ENTER_LONG", "planned_stop": 28418.0, "planned_target": 28480.0,
-             "master_realized_pnl_usd": -58.6, "exit_utc": "2026-07-31T04:40:00Z"},
-            {"action": "ENTER_LONG", "planned_stop": 28419.5, "planned_target": 28500.0,
-             "master_realized_pnl_usd": -42.0, "exit_utc": "2026-07-31T04:50:00Z"},
-            {"action": "ENTER_SHORT", "planned_stop": 28600.0, "planned_target": 28500.0,
-             "master_realized_pnl_usd": 140.0, "exit_utc": "2026-07-31T03:00:00Z"},
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            outcomes = Path(tmp) / "outcomes.jsonl"
-            outcomes.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
-            result = ms.recent_attempts(Path(tmp) / "missing.jsonl", outcomes,
-                                        current_price=28420.0, now=now)
-        self.assertEqual(result["recent_losses_near_price"], 2)
-        self.assertEqual(len(result["last_trades"]), 3)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    assert len(list(image_dir.glob("*.png"))) <= ms.MAX_IMAGE_FILES
