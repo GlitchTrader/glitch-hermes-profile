@@ -187,6 +187,53 @@ def test_normalize_batch_relocates_known_audit_fields_without_changing_evidence(
     assert audit["change_condition"] == "Review the next complete packet."
 
 
+def test_normalize_batch_relocates_paired_audit_tail_without_changing_values() -> None:
+    batch, scenario = valid_batch("2026-09-02T22:12:08Z")
+    audit = batch["decisions"][0]["decision_audit"]
+    audit["decisive_evidence"] = (
+        "INSTRUMENT_COMPARISON_V1\n"
+        "SELECTION_REASON=MNQ retains the strongest evidence. "
+        "DISCONFIRMING_EVIDENCE=Completed acceptance below 29147.75 would invalidate the path. "
+        "change_condition=Reassess MNQ below 29147.75 or above 29218.5."
+    )
+    audit.pop("disconfirming_evidence")
+    audit.pop("change_condition")
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert audit["decisive_evidence"] == (
+        "INSTRUMENT_COMPARISON_V1\n"
+        "SELECTION_REASON=MNQ retains the strongest evidence."
+    )
+    assert (
+        audit["disconfirming_evidence"]
+        == "Completed acceptance below 29147.75 would invalidate the path."
+    )
+    assert audit["change_condition"] == (
+        "Reassess MNQ below 29147.75 or above 29218.5."
+    )
+    DIRECT.validate_batch(batch, scenario)
+
+
+def test_normalize_batch_does_not_relocate_partial_audit_tail() -> None:
+    batch, scenario = valid_batch("2026-09-02T22:12:08Z")
+    audit = batch["decisions"][0]["decision_audit"]
+    original_evidence = (
+        "INSTRUMENT_COMPARISON_V1\n"
+        "DISCONFIRMING_EVIDENCE=Model-authored contrary evidence. "
+        "change_condition=Model-authored reassessment condition."
+    )
+    audit["decisive_evidence"] = original_evidence
+    audit.pop("disconfirming_evidence")
+    audit["change_condition"] = "Existing canonical condition."
+
+    DIRECT.normalize_batch(batch, scenario)
+
+    assert audit["decisive_evidence"] == original_evidence
+    assert "disconfirming_evidence" not in audit
+    assert audit["change_condition"] == "Existing canonical condition."
+
+
 def test_normalize_batch_moves_misplaced_selection_reason_into_evidence() -> None:
     batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
     audit = batch["decisions"][0]["decision_audit"]

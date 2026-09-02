@@ -3517,6 +3517,32 @@ def normalize_batch(
                         evidence,
                     )
                     audit["decisive_evidence"] = evidence
+                if (
+                    isinstance(evidence, str)
+                    and "disconfirming_evidence" not in audit
+                    and "change_condition" not in audit
+                ):
+                    misplaced_audit_tail = re.search(
+                        r"(?i)(?:\r?\n|[ \t]+)"
+                        r"DISCONFIRMING_EVIDENCE[ \t]*=[ \t]*"
+                        r"(?P<disconfirming>[^\r\n]+?)"
+                        r"(?:\r?\n|[ \t]+)change_condition[ \t]*=[ \t]*"
+                        r"(?P<condition>[^\r\n]+?)[ \t]*$",
+                        evidence,
+                    )
+                    if misplaced_audit_tail:
+                        decisive_evidence = evidence[:misplaced_audit_tail.start()].rstrip()
+                        disconfirming = misplaced_audit_tail.group("disconfirming").strip()
+                        condition = misplaced_audit_tail.group("condition").strip()
+                        if decisive_evidence and disconfirming and condition:
+                            # A contract-only correction can preserve these two
+                            # sibling values but serialize them as labeled tail
+                            # text. Relocate only the exact paired authored
+                            # values; partial or non-terminal shapes stay invalid.
+                            audit["decisive_evidence"] = decisive_evidence
+                            audit["disconfirming_evidence"] = disconfirming
+                            audit["change_condition"] = condition
+                            evidence = decisive_evidence
                 misplaced_reason = audit.get("SELECTION_REASON")
                 has_selection_ledger = (
                     isinstance(evidence, str)
@@ -4361,6 +4387,8 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         + ". decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
         "SELECTION_REASON and SELECTION_EV are text lines inside decision_audit.decisive_evidence, "
         "never JSON keys. "
+        "disconfirming_evidence and change_condition are JSON siblings after decisive_evidence, "
+        "never labeled text inside decisive_evidence. "
         "Every SELECTION_EV must contain direction, entry, stop, target, risk_points, reward_points, "
         "friction_points, breakeven_target_first, estimated_target_first_range, now_ev, wait_price, "
         "wait_ev, and decisive_reason. ENTER_LONG and ENTER_SHORT also require quantity, "
