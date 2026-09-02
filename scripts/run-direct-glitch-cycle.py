@@ -1252,7 +1252,7 @@ def deterministic_management_math(
             "native_current_price_to_working_stop_and_target_"
             "gross_before_incremental_execution_costs"
         ),
-        "formula": "giveback_to_stop / (giveback_to_stop + remaining_reward_to_target)",
+        "formula": "P(TARGET_BEFORE_STOP)_break_even = giveback_to_stop / (giveback_to_stop + remaining_reward_to_target)",
         "current_price": None,
         "point_value_usd": None,
         "tick_size": None,
@@ -1268,7 +1268,9 @@ def deterministic_management_math(
         "target_legs": [],
         "aggregate_giveback_to_stop_usd": None,
         "aggregate_remaining_reward_to_target_usd": None,
+        "hold_break_even_event": "TARGET_BEFORE_STOP",
         "hold_target_before_stop_break_even_probability": None,
+        "hold_stop_before_target_maximum_probability": None,
         "calculation_issues": [],
     }
     try:
@@ -1352,8 +1354,12 @@ def deterministic_management_math(
     result["status"] = "complete"
     result["aggregate_giveback_to_stop_usd"] = round(giveback, 8)
     result["aggregate_remaining_reward_to_target_usd"] = round(reward, 8)
+    target_before_stop_break_even = giveback / denominator
     result["hold_target_before_stop_break_even_probability"] = round(
-        giveback / denominator, 8
+        target_before_stop_break_even, 8
+    )
+    result["hold_stop_before_target_maximum_probability"] = round(
+        1 - target_before_stop_break_even, 8
     )
     return result
 
@@ -2611,10 +2617,16 @@ def position_management_template(book: dict[str, Any]) -> str:
     instruments = positioned_instruments(book)
     instrument = instruments[0] if len(instruments) == 1 else "COPY_ACTIVE_INSTRUMENT"
     lines = [POSITION_MANAGEMENT_MARKER, f"INSTRUMENT={instrument}"]
-    lines.extend(
-        f"{field}=REPLACE_WITH_CURRENT_POSITION_EVIDENCE"
-        for field in POSITION_MANAGEMENT_FIELDS
-    )
+    for field in POSITION_MANAGEMENT_FIELDS:
+        if field == "HOLD_EV":
+            lines.append(
+                "HOLD_EV=target_before_stop_probability_range=REPLACE;"
+                "target_before_stop_break_even=REPLACE;"
+                "gross_hold_terminal_ev=REPLACE_WITH_POSITIVE_NEGATIVE_OR_STRADDLES;"
+                "reason=REPLACE_WITH_CURRENT_POSITION_EVIDENCE"
+            )
+        else:
+            lines.append(f"{field}=REPLACE_WITH_CURRENT_POSITION_EVIDENCE")
     return "\n".join(lines)
 
 
@@ -2623,6 +2635,7 @@ def validate_position_management(
     expected_instrument: str,
     action: str,
     index: int,
+    management_math: dict[str, Any] | None = None,
 ) -> None:
     if not isinstance(text, str) or POSITION_MANAGEMENT_MARKER not in text:
         raise ValueError(f"position_management_missing:{index}")
@@ -2640,6 +2653,90 @@ def validate_position_management(
         values[field] = value
     if values["SELECTION_ACTION"].upper() != action:
         raise ValueError(f"position_management_action_mismatch:{index}")
+    if not isinstance(management_math, dict) or management_math.get("status") != "complete":
+        return
+    expected_break_even = management_math.get(
+        "hold_target_before_stop_break_even_probability"
+    )
+    if not isinstance(expected_break_even, (int, float)) or isinstance(expected_break_even, bool):
+        return
+    expected_break_even = float(expected_break_even)
+    if not math.isfinite(expected_break_even) or not 0 <= expected_break_even <= 1:
+        return
+    hold_fields = _selection_ev_fields(values["HOLD_EV"])
+    required_hold_fields = {
+        "target_before_stop_probability_range",
+        "target_before_stop_break_even",
+        "gross_hold_terminal_ev",
+    }
+    missing_hold_fields = sorted(
+        field for field in required_hold_fields if not hold_fields.get(field)
+    )
+    if missing_hold_fields:
+        raise ValueError(
+            f"position_management_hold_ev_fields_missing:{index}:"
+            f"{','.join(missing_hold_fields)}:"
+            f"authoritative_target_first_break_even={expected_break_even:.8f}"
+        )
+    estimated_range = _selection_ev_probability_range(
+        hold_fields["target_before_stop_probability_range"]
+    )
+    if estimated_range is None:
+        raise ValueError(f"position_management_hold_ev_probability_range_invalid:{index}")
+    declared_break_even = _selection_ev_probability(
+        hold_fields["target_before_stop_break_even"]
+    )
+    if declared_break_even is None:
+        raise ValueError(f"position_management_hold_ev_break_even_invalid:{index}")
+    if abs(declared_break_even - expected_break_even) > 0.005:
+        raise ValueError(
+            f"position_management_hold_ev_break_even_mismatch:{index}:"
+            f"declared={declared_break_even:.8f}:"
+            f"authoritative_target_first_break_even={expected_break_even:.8f}"
+        )
+    verdict_match = re.fullmatch(
+        r"(?i)\s*(POSITIVE|NEGATIVE|STRADDLES)\s*",
+        hold_fields["gross_hold_terminal_ev"],
+    )
+    if not verdict_match:
+        raise ValueError(f"position_management_hold_ev_verdict_invalid:{index}")
+    if estimated_range[1] < expected_break_even:
+        expected_verdict = "NEGATIVE"
+    elif estimated_range[0] > expected_break_even:
+        expected_verdict = "POSITIVE"
+    else:
+        expected_verdict = "STRADDLES"
+    declared_verdict = verdict_match.group(1).upper()
+    if declared_verdict != expected_verdict:
+        raise ValueError(
+            f"position_management_hold_ev_event_inversion:{index}:"
+            f"declared={declared_verdict}:expected={expected_verdict}:"
+            f"authoritative_target_first_break_even={expected_break_even:.8f}"
+        )
+
+
+def position_management_math_for_book(
+    active_trade_state: dict[str, Any] | None,
+    book: dict[str, Any],
+    instrument: str,
+) -> dict[str, Any] | None:
+    if not isinstance(active_trade_state, dict):
+        return None
+    trades = active_trade_state.get("trades")
+    if not isinstance(trades, list):
+        return None
+    root = instrument_root(instrument)
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        if (
+            trade.get("route_id") == book.get("route_id")
+            and trade.get("master_account") == book.get("master_account")
+            and instrument_root(trade.get("instrument")) == root
+        ):
+            value = trade.get("deterministic_management_math")
+            return value if isinstance(value, dict) else None
+    return None
 
 
 def validate_candidate_comparison(
@@ -3040,6 +3137,7 @@ def validate_batch(
     *,
     allow_entry_revalidation: bool = False,
     expected_decision_mode: str | None = None,
+    active_trade_state: dict[str, Any] | None = None,
 ) -> list[str]:
     observations: list[str] = []
     forced_scope = (
@@ -3161,6 +3259,9 @@ def validate_batch(
                 active_instruments[0],
                 action,
                 index,
+                position_management_math_for_book(
+                    active_trade_state, book, active_instruments[0]
+                ),
             )
         elif candidate_roots:
             evidence = audit["decisive_evidence"]
@@ -4069,6 +4170,7 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "hermes_output_",
     "intent_contract_",
     "intent_unknown_fields:",
+    "position_management_hold_ev_",
     "selection_ev_",
     "trigger_review_",
     "wake_triggers_",
@@ -4102,6 +4204,27 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
     error_text = str(error)
     audit_fields = ",".join(DECISION_AUDIT_FIELD_ORDER)
+    if error_text.startswith("position_management_hold_ev_"):
+        return (
+            "POSITION_MANAGEMENT_SELF_CONSISTENCY_CORRECTION_ONLY: Do not make a new market "
+            "judgment or add evidence. Preserve native prices, geometry, probability estimates, "
+            "protection, and unrelated evidence from PREVIOUS_RESPONSE. The authoritative HOLD "
+            "break-even event is TARGET_BEFORE_STOP: the supplied break-even is the minimum "
+            "P(TARGET_BEFORE_STOP) for nonnegative gross terminal HOLD EV. Its complement is only "
+            "the maximum P(STOP_BEFORE_TARGET), never the required target-first probability. "
+            "Correct HOLD_EV, the comparative EV conclusions, reasons, and action/final_choice/"
+            "SELECTION_ACTION only where the corrected event meaning requires it. Remove any claim "
+            "that pre-entry chart history occurred during the current position; native MFE, MAE, "
+            "rollback, and explicitly post-entry timestamps are authoritative for that chronology. "
+            "Return exactly one complete strict glitch.intent.batch.v1 JSON object with no Markdown "
+            "or prose. HOLD_EV must contain target_before_stop_probability_range, "
+            "target_before_stop_break_even, gross_hold_terminal_ev, and reason in that order as "
+            "semicolon-delimited key=value fields; the verdict must be POSITIVE, NEGATIVE, or "
+            "STRADDLES.\nCONTRACT_ERROR="
+            + error_text
+            + "\nPREVIOUS_RESPONSE="
+            + prior
+        )
     return (
         "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
         "quantity, protection, confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
@@ -4190,6 +4313,7 @@ def invoke_validated_batch(
     prompt_version: str = DIRECT_PROMPT_VERSION,
     model_call_admission: Any = None,
     image_path: Path | None = None,
+    active_trade_state: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int, int]:
     """Make one bounded Luna call plus at most one contract-only correction."""
     positioned_only = all_scoped_books_positioned(scenario)
@@ -4230,6 +4354,7 @@ def invoke_validated_batch(
             scenario,
             directive,
             expected_decision_mode=decision_mode,
+            active_trade_state=active_trade_state,
         )
         if decision_mode == "trigger_review" and trigger_review_has_held_nothing(batch):
             batch["next_review_seconds"] = 60
@@ -4248,8 +4373,8 @@ def invoke_validated_batch(
         if not retryable_model_contract_error(error):
             raise
         failed_output: Any = error.output if isinstance(error, InvalidModelResponseError) else raw
-        # The correction is format-only; the original visual evidence must not
-        # invite a second market judgment.
+        # The correction is contract-only or same-evidence self-consistency;
+        # the original visual evidence must not invite a second market judgment.
         repaired_raw = invoke(contract_repair_prompt(prompt, failed_output, error), None)
         return prepare(repaired_raw), 1, transport_retry_count
 
@@ -4856,8 +4981,8 @@ def build_prompt(
         instructions = (
             "Apply the injected SOUL, glitch-setup-state, glitch-order-flow, glitch-position-management, and glitch-build-intent exactly. "
             "This is a fast position-management pass. Do not rescan flat instruments, retrieve memory, or propose new exposure. "
-            "For each active native position, compare remaining expected value of HOLD, MOVE_STOP, MOVE_TP, and EXIT using entry, current price, working stop and target, initial risk, current noise, MFE, MAE, rollback, accepted response, delta-price agreement, remaining objective, and giveback risk. For each recent_glitch_ledger.active_trade_state.trades row, when deterministic_management_math.status is complete, use its native stop/target distances, gross dollars, rollback, and HOLD break-even as the arithmetic authority and do not recompute them; otherwise cite its calculation_issues and do not invent missing values. When its price_basis.status is complete, use selected_current_price for position economics because it is derived from the same native average price and unrealized PnL; retain a conflicting analytics_current_price as time-stamped market-path evidence and explicitly account for the reported disagreement. This resolves factual basis only and does not prefer a management action. Hermes still estimates target-before-stop probability from current market evidence and chooses the action: the supplied math is decision support, never an execution gate. In HOLD_EV state one coarse target-before-stop probability range and compare it with the supplied HOLD break-even. Do not call HOLD positive when that entire estimated range is below break-even; when it straddles break-even, resolve from current evidence, execution costs, and giveback risk rather than defaulting to the entry thesis. "
-            "Favorable excursion is earned optionality. Once it is material relative to initial risk and current noise, HOLD bears the burden of proof. Quantify remaining reward from current price to target, potential giveback from current price to stop, rollback relative to peak MFE and initial risk, and the immediate completed one- and five-minute response; never call rollback limited or modest without those comparisons. HOLD must explain why rebased continuation value clearly exceeds EXIT. A still-reachable target, intact original thesis or invalidation, higher-timeframe alignment, or lack of accepted reversal through entry is not sufficient, and EXIT after material MFE does not require original invalidation or accepted reversal. Derive and evaluate at least one candidate protection level from recent completed one- or five-minute structure instead of requiring a pre-labeled level. If no technically supported level can survive current noise, that strengthens EXIT and cannot reject both MOVE_STOP and EXIT. Never use a fixed MFE percentage, trailing distance, mechanical breakeven, or automatic exit. "
+            "For each active native position, compare remaining expected value of HOLD, MOVE_STOP, MOVE_TP, and EXIT using entry, current price, working stop and target, initial risk, current noise, MFE, MAE, rollback, accepted response, delta-price agreement, remaining objective, and giveback risk. For each recent_glitch_ledger.active_trade_state.trades row, when deterministic_management_math.status is complete, use its native stop/target distances, gross dollars, rollback, and HOLD break-even as the arithmetic authority and do not recompute them; otherwise cite its calculation_issues and do not invent missing values. The break-even event is TARGET_BEFORE_STOP: hold_target_before_stop_break_even_probability is the minimum target-first probability for nonnegative gross terminal HOLD EV. Its complement, hold_stop_before_target_maximum_probability, is the maximum stop-first probability, never the required target-first probability. For example, $3 giveback and $16 reward gives 15.79% target-first break-even; a 35%-50% target-first estimate is above it and therefore positive gross terminal HOLD EV, not below an 84.21% requirement. When its price_basis.status is complete, use selected_current_price for position economics because it is derived from the same native average price and unrealized PnL; retain a conflicting analytics_current_price as time-stamped market-path evidence and explicitly account for the reported disagreement. This resolves factual basis only and does not prefer a management action. Hermes still estimates target-before-stop probability from current market evidence and chooses the action: the supplied math is decision support, never an execution gate. Begin HOLD_EV exactly with target_before_stop_probability_range=LOW%-HIGH%;target_before_stop_break_even=VALUE%;gross_hold_terminal_ev=POSITIVE|NEGATIVE|STRADDLES;, then explain the comparison. When the entire range is above break-even, gross HOLD terminal EV is POSITIVE; when entirely below it, NEGATIVE; otherwise STRADDLES. Another action may still win, but never by reversing this event or arithmetic. "
+            "Chart history before entry is setup context only, never evidence of what happened during the current position. Only native MFE, MAE, rollback, and evidence explicitly timestamped after entry may support a post-entry visit, rebound, recovery, or deterioration claim; when native MFE shows no favorable excursion, do not claim price visited or rebounded from the favorable target area. Favorable excursion is earned optionality. Once it is material relative to initial risk and current noise, HOLD bears the burden of proof. Quantify remaining reward from current price to target, potential giveback from current price to stop, rollback relative to peak MFE and initial risk, and the immediate completed one- and five-minute response; never call rollback limited or modest without those comparisons. HOLD must explain why rebased continuation value clearly exceeds EXIT. A still-reachable target, intact original thesis or invalidation, higher-timeframe alignment, or lack of accepted reversal through entry is not sufficient, and EXIT after material MFE does not require original invalidation or accepted reversal. Derive and evaluate at least one candidate protection level from recent completed one- or five-minute structure instead of requiring a pre-labeled level. If no technically supported level can survive current noise, that strengthens EXIT and cannot reject both MOVE_STOP and EXIT. Never use a fixed MFE percentage, trailing distance, mechanical breakeven, or automatic exit. "
             "Extend a target only after price accepts beyond the prior objective, and only while ratcheting the stop in the same MOVE_TP update so extra upside is not financed by surrendering earned protection. "
             "A profit-protecting stop is at or above entry for a long and at or below entry for a short. "
             "Write the compact POSITION_MANAGEMENT_V1 template in decision_audit.decisive_evidence and replace every placeholder. "
@@ -5571,12 +5696,14 @@ def run_once(
             prompt_version,
             current_model_call_admission,
             market_image_path,
+            active_trade_state=trade_state,
         )
         admission_observations = validate_batch(
             batch,
             scenario,
             directive,
             expected_decision_mode=decision_mode,
+            active_trade_state=trade_state,
         )
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet, glitch_data)

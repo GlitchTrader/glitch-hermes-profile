@@ -315,6 +315,104 @@ def test_position_management_validator_accepts_full_native_contract_name() -> No
     DIRECT.validate_position_management(evidence, "MNQ", "HOLD", 0)
 
 
+def position_management_evidence(action: str, gross_hold_terminal_ev: str) -> str:
+    values = {
+        field: "model evidence" for field in DIRECT.POSITION_MANAGEMENT_FIELDS
+    }
+    values["HOLD_EV"] = (
+        "target_before_stop_probability_range=35%-50%;"
+        "target_before_stop_break_even=15.79%;"
+        f"gross_hold_terminal_ev={gross_hold_terminal_ev};"
+        "reason=compare the same target-first event"
+    )
+    values["SELECTION_ACTION"] = action
+    return "\n".join([
+        DIRECT.POSITION_MANAGEMENT_MARKER,
+        "INSTRUMENT=M2K",
+        *(f"{field}={values[field]}" for field in DIRECT.POSITION_MANAGEMENT_FIELDS),
+    ])
+
+
+def test_position_management_rejects_the_observed_target_first_event_inversion() -> None:
+    management_math = {
+        "status": "complete",
+        "hold_target_before_stop_break_even_probability": 0.15789474,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"^position_management_hold_ev_event_inversion:0:declared=NEGATIVE:expected=POSITIVE",
+    ):
+        DIRECT.validate_position_management(
+            position_management_evidence("EXIT", "NEGATIVE"),
+            "M2K",
+            "EXIT",
+            0,
+            management_math,
+        )
+
+
+def test_position_management_consistency_check_never_chooses_the_action() -> None:
+    management_math = {
+        "status": "complete",
+        "hold_target_before_stop_break_even_probability": 0.15789474,
+    }
+
+    DIRECT.validate_position_management(
+        position_management_evidence("EXIT", "POSITIVE"),
+        "M2K",
+        "EXIT",
+        0,
+        management_math,
+    )
+
+
+def test_position_management_rejects_an_unselected_verdict_placeholder() -> None:
+    management_math = {
+        "status": "complete",
+        "hold_target_before_stop_break_even_probability": 0.15789474,
+    }
+
+    with pytest.raises(ValueError, match="position_management_hold_ev_verdict_invalid"):
+        DIRECT.validate_position_management(
+            position_management_evidence("EXIT", "POSITIVE|NEGATIVE|STRADDLES"),
+            "M2K",
+            "EXIT",
+            0,
+            management_math,
+        )
+
+
+def test_validate_batch_applies_native_management_math_to_positioned_response() -> None:
+    batch, scenario = valid_batch("2026-09-02T02:30:24Z")
+    scenario["books"][0]["instrument_contexts"] = {
+        "M2K": {"current_signed_quantity": -1},
+    }
+    intent = batch["decisions"][0]
+    intent["instrument"] = "M2K"
+    intent["action"] = "EXIT"
+    intent["decision_audit"]["decisive_evidence"] = position_management_evidence(
+        "EXIT", "NEGATIVE"
+    )
+    intent["decision_audit"]["final_choice"] = "EXIT"
+    active_trade_state = {"trades": [{
+        "route_id": "glitch",
+        "master_account": "Sim101",
+        "instrument": "M2K",
+        "deterministic_management_math": {
+            "status": "complete",
+            "hold_target_before_stop_break_even_probability": 0.15789474,
+        },
+    }]}
+
+    with pytest.raises(ValueError, match="position_management_hold_ev_event_inversion"):
+        DIRECT.validate_batch(
+            batch,
+            scenario,
+            active_trade_state=active_trade_state,
+        )
+
+
 def test_native_gl1_protection_uses_authoritative_order_fields() -> None:
     account = {
         "positions": [{"instrument_root": "MNQ", "market_position": "Short", "quantity": 1}],
@@ -442,7 +540,9 @@ def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometr
     assert support["calculation_basis"].endswith("gross_before_incremental_execution_costs")
     assert support["aggregate_giveback_to_stop_usd"] == 142.0
     assert support["aggregate_remaining_reward_to_target_usd"] == 78.0
+    assert support["hold_break_even_event"] == "TARGET_BEFORE_STOP"
     assert support["hold_target_before_stop_break_even_probability"] == 0.64545455
+    assert support["hold_stop_before_target_maximum_probability"] == 0.35454545
 
 
 def test_deterministic_management_math_supports_long_multileg_brackets() -> None:
@@ -467,6 +567,7 @@ def test_deterministic_management_math_supports_long_multileg_brackets() -> None
     assert support["aggregate_giveback_to_stop_usd"] == 25.0
     assert support["aggregate_remaining_reward_to_target_usd"] == 30.0
     assert support["hold_target_before_stop_break_even_probability"] == 0.45454545
+    assert support["hold_stop_before_target_maximum_probability"] == 0.54545455
     assert support["rollback_from_peak_usd"] == 20.0
     assert support["profit_retained_fraction_of_peak"] == pytest.approx(1 / 3)
 
@@ -1681,6 +1782,61 @@ def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
     assert "Preserve the same market judgment" in calls[1]
 
 
+def test_position_management_event_inversion_gets_one_bounded_consistency_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid, scenario = valid_batch("2026-09-02T02:30:24Z")
+    scenario["books"][0]["instrument_contexts"] = {
+        "M2K": {"current_signed_quantity": -1},
+    }
+    intent = invalid["decisions"][0]
+    intent["instrument"] = "M2K"
+    intent["action"] = "EXIT"
+    intent["decision_audit"]["decisive_evidence"] = position_management_evidence(
+        "EXIT", "NEGATIVE"
+    )
+    intent["decision_audit"]["final_choice"] = "EXIT"
+    corrected = json.loads(json.dumps(invalid))
+    corrected["decisions"][0]["decision_audit"]["decisive_evidence"] = (
+        position_management_evidence("EXIT", "POSITIVE")
+    )
+    active_trade_state = {"trades": [{
+        "route_id": "glitch",
+        "master_account": "Sim101",
+        "instrument": "M2K",
+        "deterministic_management_math": {
+            "status": "complete",
+            "hold_target_before_stop_break_even_probability": 0.15789474,
+        },
+    }]}
+    calls: list[str] = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return invalid if len(calls) == 1 else corrected
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+
+    batch, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
+        "glitch",
+        "ORIGINAL_PROMPT",
+        scenario,
+        None,
+        30,
+        decision_mode="position_management",
+        active_trade_state=active_trade_state,
+    )
+
+    assert batch["decisions"][0]["action"] == "EXIT"
+    assert output_repair_count == 1
+    assert transport_retry_count == 0
+    assert len(calls) == 2
+    assert calls[1].startswith("POSITION_MANAGEMENT_SELF_CONSISTENCY_CORRECTION_ONLY:")
+    assert "Do not make a new market judgment" in calls[1]
+    assert "minimum P(TARGET_BEFORE_STOP)" in calls[1]
+    assert "only where the corrected event meaning requires it" in calls[1]
+
+
 def test_contract_retry_uses_the_pristine_model_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2086,7 +2242,12 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "When its price_basis.status is complete" in positioned_prompt
     assert "This resolves factual basis only and does not prefer a management action" in positioned_prompt
     assert "the supplied math is decision support, never an execution gate" in positioned_prompt
-    assert "In HOLD_EV state one coarse target-before-stop probability range" in positioned_prompt
+    assert "The break-even event is TARGET_BEFORE_STOP" in positioned_prompt
+    assert "not below an 84.21% requirement" in positioned_prompt
+    assert "gross_hold_terminal_ev=POSITIVE|NEGATIVE|STRADDLES" in positioned_prompt
+    assert "gross_hold_terminal_ev=REPLACE_WITH_POSITIVE_NEGATIVE_OR_STRADDLES" in positioned_prompt
+    assert "Chart history before entry is setup context only" in positioned_prompt
+    assert "do not claim price visited or rebounded from the favorable target area" in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" in positioned_prompt
     assert "HOLD must explain why rebased continuation value clearly exceeds EXIT" in positioned_prompt
     assert "EXIT after material MFE does not require original invalidation or accepted reversal" in positioned_prompt
