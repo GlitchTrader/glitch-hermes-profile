@@ -103,6 +103,21 @@ def entry_batch() -> tuple[dict, dict]:
     return batch, scenario
 
 
+def native_packet(packet_id: str, observed_utc: str, positions: list[dict]) -> dict:
+    return {
+        "packet_id": packet_id,
+        "frames": [{
+            "created_utc": observed_utc,
+            "portfolio_snapshot": {"accounts": [{
+                "account": "Sim101",
+                "native_state_available": True,
+                "positions": positions,
+                "working_orders": 2 if positions else 0,
+            }]},
+        }],
+    }
+
+
 def test_prompt_version_tracks_the_exact_cognitive_bundle() -> None:
     assert DIRECT.DIRECT_PROMPT_VERSION.startswith(DIRECT.DIRECT_PROMPT_REVISION + "-")
     assert DIRECT.DIRECT_PROMPT_VERSION.endswith(DIRECT.cognitive_bundle_hash())
@@ -339,6 +354,176 @@ def test_entry_revalidation_rejects_a_distinct_native_entry_newer_than_the_flat_
         "instrument": "MES",
     }
     assert evidence["reassessment_eligible"] is False
+
+
+def test_position_revalidation_supersedes_hold_after_native_exit(tmp_path: Path) -> None:
+    position = [{
+        "instrument": "MNQ 09-26",
+        "instrument_root": "MNQ",
+        "market_position": "Long",
+        "quantity": 1,
+        "average_price": 29180.25,
+    }]
+    source = native_packet("20260902T1602Z", "2026-09-02T16:02:00Z", position)
+    latest = native_packet("20260902T1603Z", "2026-09-02T16:03:00Z", [])
+    batch = {"decisions": [{
+        "intent_id": "33333333-3333-4333-8333-333333333333",
+        "account": "Sim101",
+        "instrument": "MNQ",
+        "action": "HOLD",
+    }]}
+
+    assert DIRECT.apply_position_revalidation(batch, source, latest, tmp_path) is True
+    evidence = batch["decisions"][0]["position_revalidation"]
+    assert evidence["status"] == "superseded"
+    assert evidence["reason"] == "latest_master_position_changed"
+    assert evidence["source_signed_quantity"] == 1
+    assert evidence["latest_signed_quantity"] == 0
+
+
+def test_position_revalidation_detects_transition_before_next_packet(tmp_path: Path) -> None:
+    position = [{
+        "instrument": "MNQ 09-26",
+        "instrument_root": "MNQ",
+        "market_position": "Long",
+        "quantity": 1,
+        "average_price": 29180.25,
+    }]
+    packet = native_packet("20260902T1602Z", "2026-09-02T16:02:00Z", position)
+    executions = tmp_path / "intents" / "executions.jsonl"
+    executions.parent.mkdir(parents=True)
+    executions.write_text(json.dumps({
+        "intent_id": "44444444-4444-4444-8444-444444444444",
+        "recorded_utc": "2026-09-02T16:02:18Z",
+        "code": "master_exit_fill_observed",
+        "message": "account=Sim101|contract=MNQ 09-26|fill=29181.75|signed_quantity=-1",
+    }) + "\n", encoding="utf-8")
+    scenario = {"books": [{"master_account": "Sim101"}]}
+    batch = {"decisions": [{
+        "intent_id": "55555555-5555-4555-8555-555555555555",
+        "account": "Sim101",
+        "instrument": "MNQ",
+        "action": "HOLD",
+    }]}
+
+    transition = DIRECT.scoped_native_position_transition_after_packet(
+        packet, scenario, tmp_path
+    )
+    assert transition == {
+        "intent_id": "44444444-4444-4444-8444-444444444444",
+        "recorded_utc": "2026-09-02T16:02:18Z",
+        "code": "master_exit_fill_observed",
+        "instrument": "MNQ",
+        "signed_quantity": "-1",
+        "account": "Sim101",
+        "packet_id": "20260902T1602Z",
+        "packet_observed_utc": "2026-09-02T16:02:00Z",
+    }
+    assert DIRECT.apply_position_revalidation(batch, packet, packet, tmp_path) is True
+    evidence = batch["decisions"][0]["position_revalidation"]
+    assert evidence["reason"] == "latest_master_state_precedes_native_transition"
+    assert evidence["newer_native_transition"]["code"] == "master_exit_fill_observed"
+
+
+def test_position_revalidation_preserves_unchanged_management_intent(tmp_path: Path) -> None:
+    position = [{
+        "instrument": "MES 09-26",
+        "instrument_root": "MES",
+        "market_position": "Short",
+        "quantity": 1,
+        "average_price": 7682.25,
+    }]
+    source = native_packet("source", "2026-09-02T16:01:00Z", position)
+    latest = native_packet("latest", "2026-09-02T16:02:00Z", position)
+    batch = {"decisions": [{
+        "intent_id": "66666666-6666-4666-8666-666666666666",
+        "account": "Sim101",
+        "instrument": "MES",
+        "action": "EXIT",
+    }]}
+
+    assert DIRECT.apply_position_revalidation(batch, source, latest, tmp_path) is False
+    evidence = batch["decisions"][0]["position_revalidation"]
+    assert evidence["status"] == "accepted_current_position"
+    assert evidence["reason"] is None
+    assert evidence["source_signed_quantity"] == -1
+    assert evidence["latest_signed_quantity"] == -1
+
+
+def test_position_revalidation_does_not_gate_on_unavailable_latest_state(tmp_path: Path) -> None:
+    position = [{
+        "instrument": "MES 09-26",
+        "instrument_root": "MES",
+        "market_position": "Long",
+        "quantity": 1,
+        "average_price": 7682.25,
+    }]
+    source = native_packet("source", "2026-09-02T16:01:00Z", position)
+    latest = native_packet("latest", "2026-09-02T16:02:00Z", position)
+    latest["frames"][-1]["portfolio_snapshot"]["accounts"][0]["native_state_available"] = False
+    batch = {"decisions": [{
+        "intent_id": "88888888-8888-4888-8888-888888888888",
+        "account": "Sim101",
+        "instrument": "MES",
+        "action": "EXIT",
+    }]}
+
+    assert DIRECT.apply_position_revalidation(batch, source, latest, tmp_path) is False
+    evidence = batch["decisions"][0]["position_revalidation"]
+    assert evidence["status"] == "unverified"
+    assert evidence["reason"] == "latest_master_state_unavailable"
+
+
+def test_scoped_position_change_detects_flat_to_position_rollover() -> None:
+    source = native_packet("source", "2026-09-02T16:00:00Z", [])
+    latest = native_packet("latest", "2026-09-02T16:01:00Z", [{
+        "instrument": "MNQ 09-26",
+        "instrument_root": "MNQ",
+        "market_position": "Long",
+        "quantity": 1,
+        "average_price": 29180.25,
+    }])
+
+    change = DIRECT.scoped_master_position_change(
+        source, latest, {"books": [{"master_account": "Sim101"}]}
+    )
+
+    assert change is not None
+    assert change["source_positions"] == []
+    assert change["latest_positions"][0]["signed_quantity"] == 1
+
+
+def test_submit_batch_does_not_post_superseded_position_management(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    exchange = tmp_path / "exchange"
+    glitch_data.mkdir()
+    (glitch_data / "telemetry.token").write_text("test-token", encoding="utf-8")
+    monkeypatch.setattr(
+        DIRECT,
+        "post_intent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("superseded management must not be posted")
+        ),
+    )
+    batch = {
+        "cycle_id": "cycle-1",
+        "decisions": [{
+            "intent_id": "77777777-7777-4777-8777-777777777777",
+            "position_revalidation": {
+                "status": "superseded",
+                "reason": "latest_master_position_changed",
+            },
+        }],
+    }
+
+    receipt = DIRECT.submit_batch(batch, glitch_data, exchange)
+
+    assert DIRECT.receipt_classification(receipt) == "superseded_no_op"
+    result = receipt["results"][0]["result"]
+    assert result["delivery_status"] == "not_posted"
+    assert result["body"]["executor_code"] == "position_state_superseded"
 
 
 def test_partial_multibook_supersession_does_not_request_a_duplicate_cycle() -> None:

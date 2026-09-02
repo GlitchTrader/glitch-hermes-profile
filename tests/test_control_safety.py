@@ -171,6 +171,54 @@ def test_current_scope_retries_same_intent_id(
     assert submitted[0]["decisions"][0]["intent_id"] == "11111111-1111-4111-8111-111111111111"
 
 
+def test_native_transition_newer_than_packet_defers_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exchange = tmp_path / "exchange"
+    glitch_data = tmp_path / "GlitchData"
+    packet_path = exchange / "glitch" / "latest-decision-packet.json"
+    packet_path.parent.mkdir(parents=True)
+    packet_path.write_text(json.dumps({"packet_id": "current"}), encoding="utf-8")
+    current_scenario = scenario("current", ("glitch", "Sim101"))
+    monkeypatch.setattr(DIRECT, "trading_runtime_enabled", lambda _path: True)
+    monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "build_scenario", lambda _packet: current_scenario)
+    monkeypatch.setattr(DIRECT, "active_trade_state", lambda *_args: {})
+    monkeypatch.setattr(
+        DIRECT,
+        "scoped_native_position_transition_after_packet",
+        lambda *_args: {
+            "account": "Sim101",
+            "code": "master_exit_fill_observed",
+            "recorded_utc": "2026-09-02T16:02:18Z",
+        },
+    )
+    monkeypatch.setattr(
+        DIRECT,
+        "invoke_validated_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("model must not be called from an obsolete position packet")
+        ),
+    )
+
+    result = DIRECT.run_once(
+        SimpleNamespace(dry_run=False, packet_rollover_wait_seconds=0),
+        glitch_data,
+        exchange,
+    )
+
+    assert result == 0
+    events = [
+        json.loads(line)
+        for line in (exchange / "hermes" / "events" / "cycles.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert events[-1]["reason"] == "position_state_packet_lagging_native_transition"
+    assert events[-1]["native_transition"]["code"] == "master_exit_fill_observed"
+
+
 def configure_plugin_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     directive_directory = tmp_path / "directives"
     monkeypatch.setattr(PLUGIN, "DIRECTIVE_DIR", directive_directory)

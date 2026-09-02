@@ -1305,6 +1305,7 @@ def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
             "created_utc": "2026-08-03T04:02:41.5-03:00",
             "entry_range_low": 99.5,
             "entry_range_high": 100.5,
+            "position_revalidation": {"status": "accepted_current_position"},
             "wake_triggers": [],
             "forecast": {
                 "event": "STOP_BEFORE_PRIMARY_TARGET",
@@ -1320,6 +1321,7 @@ def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
     assert posted[0]["created_utc"] == "2026-08-03T07:02:41.5000000Z"
     assert "wake_triggers" not in posted[0]
     assert "forecast" not in posted[0]
+    assert "position_revalidation" not in posted[0]
     assert posted[0]["entry_range_low"] == 99.5
     assert posted[0]["entry_range_high"] == 100.5
 

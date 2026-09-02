@@ -32,6 +32,15 @@ from win_subprocess import hermes_profile_lock, hide_flags, resolve_python_invoc
 
 
 ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", "NOTHING"}
+POSITION_MANAGEMENT_ACTIONS = {"HOLD", "MOVE_STOP", "MOVE_TP", "EXIT"}
+MASTER_POSITION_TRANSITION_CODES = {
+    "master_entry_submitted",
+    "master_entry_fill_observed",
+    "master_exit_submitted",
+    "master_exit_fill_observed",
+    "master_stop_exit_fill_observed",
+    "master_target_exit_fill_observed",
+}
 ACTION_ALIASES = {"NO_ACTION": "NOTHING"}
 # Compatibility only for historically observed model synonyms. These are
 # normalized before strict validation and never forwarded to Glitch.
@@ -70,7 +79,7 @@ DECISION_FIELDS = {
 # Hermes-only control-plane metadata is stripped before the Glitch API call.
 ENTRY_RANGE_FIELDS = {"entry_range_low", "entry_range_high"}
 ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS | ENTRY_RANGE_FIELDS | {
-    "protection_updates", "entry_revalidation",
+    "protection_updates", "entry_revalidation", "position_revalidation",
 }
 DECISION_AUDIT_FIELD_ORDER = (
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
@@ -125,6 +134,7 @@ INTENT_CREATED_UTC_PATTERN = re.compile(
 SUPERSEDED_NO_OP_EXECUTOR_CODES = {
     "entry_range_superseded",
     "group_exit_human_override_flat",
+    "position_state_superseded",
     "stale_outbox_scope_superseded",
 }
 COMPLETED_RECEIPT_CLASSIFICATIONS = {"successful", "superseded_no_op"}
@@ -3261,6 +3271,8 @@ def validate_batch(
             raise ValueError(f"intent_unknown_fields:{index}:{','.join(unknown)}")
         if "entry_revalidation" in intent and not allow_entry_revalidation:
             raise ValueError(f"entry_revalidation_runtime_owned:{index}")
+        if "position_revalidation" in intent and not allow_entry_revalidation:
+            raise ValueError(f"position_revalidation_runtime_owned:{index}")
         validate_wake_triggers(intent.get("wake_triggers"), index)
         if intent.get("schema_version") != "glitch.intent.v3":
             raise ValueError(f"intent_schema_version_invalid:{index}")
@@ -4612,6 +4624,167 @@ def execution_message_fields(message: Any) -> dict[str, str]:
     return fields
 
 
+def packet_master_position_state(
+    packet: dict[str, Any],
+    account_name: str,
+) -> dict[str, Any]:
+    """Return one packet's authoritative native position identity for a master."""
+    frames = packet.get("frames")
+    latest = frames[-1] if isinstance(frames, list) and frames and isinstance(frames[-1], dict) else {}
+    portfolio = latest.get("portfolio_snapshot") if isinstance(latest, dict) else None
+    accounts = portfolio.get("accounts") if isinstance(portfolio, dict) else None
+    observed_utc = str(
+        latest.get("created_utc")
+        or (portfolio.get("created_utc") if isinstance(portfolio, dict) else "")
+        or ""
+    )
+    state: dict[str, Any] = {
+        "available": False,
+        "observed_utc": observed_utc if _utc_datetime(observed_utc) is not None else None,
+        "positions": [],
+    }
+    if not isinstance(accounts, list) or state["observed_utc"] is None:
+        return state
+    account = next((
+        value for value in accounts
+        if isinstance(value, dict)
+        and str(value.get("account") or "").casefold() == str(account_name or "").casefold()
+    ), None)
+    positions = account.get("positions") if isinstance(account, dict) else None
+    if (
+        not isinstance(account, dict)
+        or account.get("native_state_available") is not True
+        or not isinstance(positions, list)
+    ):
+        return state
+    normalized = []
+    for position in positions:
+        if not isinstance(position, dict):
+            return state
+        try:
+            quantity = int(round(abs(float(position.get("quantity", 0) or 0))))
+        except (TypeError, ValueError):
+            return state
+        side = str(position.get("market_position") or "").casefold()
+        if quantity <= 0 or side not in {"long", "short"}:
+            return state
+        try:
+            average_price = float(position.get("average_price"))
+            if not math.isfinite(average_price):
+                average_price = None
+        except (TypeError, ValueError):
+            average_price = None
+        normalized.append({
+            "instrument": str(position.get("instrument") or ""),
+            "instrument_root": instrument_root(
+                position.get("instrument_root") or position.get("instrument")
+            ),
+            "signed_quantity": -quantity if side == "short" else quantity,
+            "average_price": average_price,
+        })
+    normalized.sort(key=lambda value: (
+        value["instrument_root"], value["instrument"], value["signed_quantity"]
+    ))
+    state["available"] = True
+    state["positions"] = normalized
+    return state
+
+
+def position_quantity(state: dict[str, Any], instrument: str) -> int:
+    root = instrument_root(instrument)
+    return sum(
+        int(position.get("signed_quantity", 0) or 0)
+        for position in state.get("positions", [])
+        if isinstance(position, dict) and position.get("instrument_root") == root
+    )
+
+
+def master_position_transition_after_snapshot(
+    glitch_data: Path,
+    account_name: str,
+    observed_utc: str | None,
+) -> dict[str, Any] | None:
+    """Detect a native master lifecycle transition newer than a packet."""
+    boundary = _utc_datetime(observed_utc)
+    if boundary is None:
+        return None
+    transitions = []
+    for row in _jsonl_objects(glitch_data / "intents" / "executions.jsonl"):
+        if row.get("code") not in MASTER_POSITION_TRANSITION_CODES:
+            continue
+        recorded = _utc_datetime(row.get("recorded_utc"))
+        if recorded is None or recorded <= boundary:
+            continue
+        fields = execution_message_fields(row.get("message"))
+        if str(fields.get("account") or "").casefold() != str(account_name or "").casefold():
+            continue
+        transitions.append((recorded, row, fields))
+    if not transitions:
+        return None
+    recorded, row, fields = min(transitions, key=lambda value: value[0])
+    return {
+        "intent_id": str(row.get("intent_id") or ""),
+        "recorded_utc": recorded.isoformat().replace("+00:00", "Z"),
+        "code": str(row.get("code") or ""),
+        "instrument": instrument_root(fields.get("contract")),
+        "signed_quantity": fields.get("signed_quantity"),
+    }
+
+
+def scoped_native_position_transition_after_packet(
+    packet: dict[str, Any],
+    scenario: dict[str, Any],
+    glitch_data: Path,
+) -> dict[str, Any] | None:
+    """Return the first scoped native transition not yet represented by a packet."""
+    transitions = []
+    for book in scenario.get("books", []):
+        if not isinstance(book, dict):
+            continue
+        account = str(book.get("master_account") or "")
+        state = packet_master_position_state(packet, account)
+        transition = master_position_transition_after_snapshot(
+            glitch_data, account, state.get("observed_utc")
+        )
+        if transition is not None:
+            transitions.append({
+                **transition,
+                "account": account,
+                "packet_id": packet.get("packet_id"),
+                "packet_observed_utc": state.get("observed_utc"),
+            })
+    return min(transitions, key=lambda value: value["recorded_utc"]) if transitions else None
+
+
+def scoped_master_position_change(
+    source_packet: dict[str, Any],
+    latest_packet: dict[str, Any],
+    scenario: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Prove that a prompt's scoped native position identity has changed."""
+    for book in scenario.get("books", []):
+        if not isinstance(book, dict):
+            continue
+        account = str(book.get("master_account") or "")
+        source = packet_master_position_state(source_packet, account)
+        latest = packet_master_position_state(latest_packet, account)
+        if (
+            source.get("available") is True
+            and latest.get("available") is True
+            and source.get("positions") != latest.get("positions")
+        ):
+            return {
+                "account": account,
+                "source_packet_id": source_packet.get("packet_id"),
+                "latest_packet_id": latest_packet.get("packet_id"),
+                "source_observed_utc": source.get("observed_utc"),
+                "latest_observed_utc": latest.get("observed_utc"),
+                "source_positions": source.get("positions"),
+                "latest_positions": latest.get("positions"),
+            }
+    return None
+
+
 def distinct_master_entry_after_snapshot(
     glitch_data: Path,
     account_name: str,
@@ -4645,6 +4818,71 @@ def distinct_master_entry_after_snapshot(
         "code": str(row.get("code") or ""),
         "instrument": instrument_root(fields.get("contract")),
     }
+
+
+def apply_position_revalidation(
+    batch: dict[str, Any],
+    source_packet: dict[str, Any],
+    latest_packet: dict[str, Any],
+    glitch_data: Path,
+) -> bool:
+    """Suppress a management result only when native position drift is proven."""
+    superseded = False
+    for intent in batch.get("decisions", []):
+        if not isinstance(intent, dict) or intent.get("action") not in POSITION_MANAGEMENT_ACTIONS:
+            continue
+        account = str(intent.get("account") or "")
+        root = instrument_root(intent.get("instrument"))
+        source = packet_master_position_state(source_packet, account)
+        latest = packet_master_position_state(latest_packet, account)
+        source_quantity = position_quantity(source, root)
+        latest_quantity = position_quantity(latest, root)
+        transition = master_position_transition_after_snapshot(
+            glitch_data, account, latest.get("observed_utc")
+        )
+        source_time = _utc_datetime(source.get("observed_utc"))
+        latest_time = _utc_datetime(latest.get("observed_utc"))
+        status = "accepted_current_position"
+        reason = None
+        if transition is not None:
+            status = "superseded"
+            reason = "latest_master_state_precedes_native_transition"
+        elif source.get("available") is not True:
+            status = "unverified"
+            reason = "source_master_state_unavailable"
+        elif latest.get("available") is not True:
+            status = "unverified"
+            reason = "latest_master_state_unavailable"
+        elif source_time is not None and latest_time is not None and latest_time < source_time:
+            status = "unverified"
+            reason = "latest_master_state_older_than_source"
+        elif source_quantity == 0:
+            status = "superseded"
+            reason = "source_master_position_missing"
+        elif source.get("positions") != latest.get("positions"):
+            status = "superseded"
+            reason = "latest_master_position_changed"
+        intent["position_revalidation"] = {
+            "schema_version": "glitch.hermes.position_revalidation.v1",
+            "checked_utc": utc_now(),
+            "status": status,
+            "reason": reason,
+            "source_packet_id": source_packet.get("packet_id"),
+            "latest_packet_id": latest_packet.get("packet_id"),
+            "account": account,
+            "instrument": root,
+            "source_master_state_available": source.get("available"),
+            "latest_master_state_available": latest.get("available"),
+            "source_master_state_observed_utc": source.get("observed_utc"),
+            "latest_master_state_observed_utc": latest.get("observed_utc"),
+            "source_signed_quantity": source_quantity,
+            "latest_signed_quantity": latest_quantity,
+            "source_positions": source.get("positions"),
+            "latest_positions": latest.get("positions"),
+            "newer_native_transition": transition,
+        }
+        superseded = superseded or status == "superseded"
+    return superseded
 
 
 def apply_entry_revalidation(
@@ -4912,12 +5150,31 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
                 },
             })
             continue
+        position_revalidation = intent.get("position_revalidation")
+        if (
+            isinstance(position_revalidation, dict)
+            and position_revalidation.get("status") == "superseded"
+        ):
+            results.append({
+                "intent_id": intent["intent_id"],
+                "result": {
+                    "delivery_status": "not_posted",
+                    "body": {
+                        "executor": "skipped",
+                        "executor_code": "position_state_superseded",
+                        "reason": position_revalidation.get("reason"),
+                        "position_revalidation": position_revalidation,
+                    },
+                },
+            })
+            continue
         # Keep the trigger in Hermes' outbox/audit trail, but never send this
         # Hermes-only field across the strict Glitch execution API boundary.
         wire_intent = dict(intent)
         wire_intent.pop("wake_triggers", None)
         wire_intent.pop("forecast", None)
         wire_intent.pop("entry_revalidation", None)
+        wire_intent.pop("position_revalidation", None)
         wire_intent["created_utc"] = canonical_intent_created_utc(wire_intent.get("created_utc"))
         try:
             result = post_intent(wire_intent, token)
@@ -5725,6 +5982,7 @@ def run_once(
             allow_entry_revalidation=True,
         )
         apply_entry_revalidation(pending_batch, original_packet, packet, glitch_data)
+        apply_position_revalidation(pending_batch, original_packet, packet, glitch_data)
         supersession_reassessment = maybe_request_supersession_reassessment(
             pending_batch, exchange, original_packet, packet
         )
@@ -5764,6 +6022,7 @@ def run_once(
         validate_batch(batch, scenario, allow_entry_revalidation=True)
         current_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, current_packet, glitch_data)
+        apply_position_revalidation(batch, packet, current_packet, glitch_data)
         supersession_reassessment = maybe_request_supersession_reassessment(
             batch, exchange, packet, current_packet
         )
@@ -5788,6 +6047,20 @@ def run_once(
         return 0 if receipt_classification(receipt) in COMPLETED_RECEIPT_CLASSIFICATIONS else 1
     if receipt_path.is_file():
         raise ValueError("receipt_without_outbox")
+
+    native_transition = scoped_native_position_transition_after_packet(
+        packet, scenario, glitch_data
+    )
+    if native_transition is not None:
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": "position_state_packet_lagging_native_transition",
+            "native_transition": native_transition,
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+        })
+        return 0
 
     admission_reason = model_call_admission_reason(glitch_data, packet)
     if admission_reason is not None:
@@ -5894,7 +6167,16 @@ def run_once(
             current_packet = read_json(packet_path)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return "decision_packet_unavailable"
-        return model_call_admission_reason(glitch_data, current_packet)
+        current_reason = model_call_admission_reason(glitch_data, current_packet)
+        if current_reason is not None:
+            return current_reason
+        if scoped_master_position_change(packet, current_packet, scenario) is not None:
+            return "position_state_changed_since_prompt"
+        if scoped_native_position_transition_after_packet(
+            current_packet, scenario, glitch_data
+        ) is not None:
+            return "position_state_packet_lagging_native_transition"
+        return None
 
     try:
         batch, output_repair_count, transport_retry_count = invoke_validated_batch(
@@ -5919,6 +6201,7 @@ def run_once(
         )
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet, glitch_data)
+        apply_position_revalidation(batch, packet, latest_packet, glitch_data)
         supersession_reassessment = maybe_request_supersession_reassessment(
             batch, exchange, packet, latest_packet,
             suppress_followup=bool(
