@@ -217,8 +217,23 @@ $previousHermesHome = $env:HERMES_HOME
 try {
     $env:HERMES_HOME = $profileRoot
     Remove-ObsoleteCronJobs
-    & $python (Join-Path $profileRoot 'scripts\ensure-named-sessions.py') | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not seed the named chat and trading sessions.' }
+    $previousPythonPath = $env:PYTHONPATH
+    try {
+        $hermesAgentRoot = Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'
+        if (Test-Path -LiteralPath (Join-Path $hermesAgentRoot 'hermes_state.py') -PathType Leaf) {
+            $env:PYTHONPATH = if ([string]::IsNullOrWhiteSpace($previousPythonPath)) {
+                $hermesAgentRoot
+            }
+            else {
+                $hermesAgentRoot + [IO.Path]::PathSeparator + $previousPythonPath
+            }
+        }
+        & $python (Join-Path $profileRoot 'scripts\ensure-named-sessions.py') | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Could not seed the named chat and trading sessions.' }
+    }
+    finally {
+        $env:PYTHONPATH = $previousPythonPath
+    }
 
     $directJob = Ensure-CronJob `
         -Name 'glitch-direct-operator' `

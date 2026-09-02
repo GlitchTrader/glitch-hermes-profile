@@ -36,6 +36,21 @@ class RailRepairTests(unittest.TestCase):
         setup = (ROOT / "setup.ps1").read_text(encoding="utf-8")
         self.assertIn("hermes\\hermes-agent\\venv\\Scripts\\python.exe", setup)
 
+    def test_setup_exposes_split_hermes_state_modules_only_to_session_seeder(self):
+        setup = (ROOT / "setup.ps1").read_text(encoding="utf-8")
+        seeder_invocation = "& $python (Join-Path $profileRoot 'scripts\\ensure-named-sessions.py')"
+        self.assertIn("Join-Path $env:LOCALAPPDATA 'hermes\\hermes-agent'", setup)
+        self.assertIn("$previousPythonPath = $env:PYTHONPATH", setup)
+        self.assertIn("$env:PYTHONPATH = $previousPythonPath", setup)
+        self.assertLess(
+            setup.index("$previousPythonPath = $env:PYTHONPATH"),
+            setup.index(seeder_invocation),
+        )
+        self.assertLess(
+            setup.index(seeder_invocation),
+            setup.index("$env:PYTHONPATH = $previousPythonPath"),
+        )
+
     def test_distribution_checksum_manifest_matches_every_owned_file(self):
         manifest = (ROOT / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
         self.assertTrue(manifest)
