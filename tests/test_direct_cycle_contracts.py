@@ -1046,7 +1046,7 @@ def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
     assert DIRECT.packet_fingerprint(first) == DIRECT.packet_fingerprint(second)
 
 
-def test_selection_ev_positive_nothing_is_observed_without_gating() -> None:
+def test_selection_ev_positive_nothing_remains_observational() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
@@ -1057,7 +1057,7 @@ def test_selection_ev_positive_nothing_is_observed_without_gating() -> None:
     ]
 
 
-def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
+def test_selection_ev_observes_numeric_gaps_then_canonicalizes_exact_math() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;"
         "risk_points=approximately 5 points (20 ticks);reward_points=10 pts;"
@@ -1065,23 +1065,30 @@ def test_selection_ev_numeric_arithmetic_is_audit_only() -> None:
         "estimated_target_first_range=40-50%;now_ev=NEGATIVE;wait_price=105;"
         "wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    observations = DIRECT.validate_selection_ev(value, "NOTHING", 0, "test")
+    assert "selection_ev_numeric_invalid:0:test" in observations
 
-    inconsistent_audit = value.replace(
-        "friction_points=not material",
-        "friction_points=0",
-    ).replace(
-        "breakeven_target_first=about 33.3%",
-        "breakeven_target_first=62% after qualitative discount",
-    ).replace("now_ev=NEGATIVE", "now_ev=NEGATIVE (wait dominates)")
-    observations = DIRECT.validate_selection_ev(
-        inconsistent_audit, "NOTHING", 0, "test"
+    inconsistent = (
+        "direction=LONG;entry=100;stop=95;target=110;risk_points=4;reward_points=9;"
+        "friction_points=0.5;breakeven_target_first=25%;"
+        "estimated_target_first_range=40-50%;now_ev=POSITIVE;wait_price=99;"
+        "wait_ev=POSITIVE;decisive_reason=fixture"
     )
+    canonical = DIRECT.canonicalize_selection_ev_math(inconsistent)
+    fields = DIRECT._selection_ev_fields(canonical)
 
-    assert "selection_ev_arithmetic_mismatch:0:test" in observations
+    assert fields["direction"] == "LONG"
+    assert fields["entry"] == "100"
+    assert fields["stop"] == "95"
+    assert fields["target"] == "110"
+    assert fields["risk_points"] == "5"
+    assert fields["reward_points"] == "10"
+    assert float(fields["breakeven_target_first"]) == pytest.approx(5.5 / 15)
+    assert fields["now_ev"] == "POSITIVE"
+    DIRECT.validate_selection_ev(canonical, "ENTER_LONG", 0, "test")
 
 
-def test_selection_ev_forecast_range_and_verdict_are_audit_only() -> None:
+def test_selection_ev_forecast_range_and_verdict_remain_observational() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
@@ -1247,6 +1254,32 @@ def test_coalesced_request_claim_preserves_newer_launcher_marker(
 
     assert claimed["requested_utc"] == "2026-08-07T12:00:00Z"
     assert original_read(marker)["requested_utc"] == "2026-08-07T12:01:00Z"
+
+
+def test_entry_reassessment_waits_for_a_fresh_unused_packet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exchange = tmp_path / "exchange"
+    packet_path = exchange / "glitch" / "latest-decision-packet.json"
+    DIRECT.write_json_atomic(packet_path, {"packet_id": "cycle-used"})
+    DIRECT.write_json_atomic(
+        DIRECT.model_attempt_path(exchange, "cycle-used"),
+        {"status": "completed"},
+    )
+    monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "market_snapshot_is_fresh", lambda _packet: True)
+    request = {
+        "schema_version": "glitch.hermes.direct_cycle_request.v1",
+        "requested_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "kind": "entry_range_supersession",
+        "reassessment_context": {"instrument": "MNQ", "latest_price": 100.0},
+    }
+
+    assert DIRECT.defer_reassessment_until_unused_packet(exchange, request) is True
+    deferred = DIRECT.read_json(exchange / "hermes" / "direct-cycle-request.json")
+    assert deferred["kind"] == "entry_range_supersession"
+    assert deferred["reassessment_context"]["latest_price"] == 100.0
 
 
 def test_submit_batch_canonicalizes_created_utc_at_wire_boundary(
@@ -2208,6 +2241,7 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "cannot become now_ev POSITIVE by selecting its favorable end" in prompt
     assert "a range that clears only nominally needs current path evidence" in prompt
     assert "Neither judgment requires a fixed numerical margin or completed confirmation" in prompt
+    assert "An entry cannot remain positive while its own selected geometry calls the stop shallow" in prompt
     assert "must not raise estimated probability or confidence" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
     assert "seconds_until_must_flat as the actual schedule horizon" in prompt

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -191,6 +192,63 @@ def test_latest_price_revalidation_accepts_inside_and_supersedes_outside(monkeyp
     assert batch["decisions"][0]["entry_revalidation"]["reassessment_eligible"] is True
     assert batch["decisions"][0]["entry_revalidation"]["favorable_supersession"] is True
     assert batch["decisions"][0]["entry_revalidation"]["supersession_direction"] == "better_price"
+
+
+def test_entry_revalidation_prefers_fresh_executable_quote_and_rejects_stale_cache(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    batch, _ = entry_batch()
+    source = {"packet_id": "source"}
+    latest = {
+        "packet_id": "latest",
+        "frames": [{"created_utc": "2026-08-12T12:00:00Z", "portfolio_snapshot": {"accounts": [{
+            "account": "Sim101",
+            "native_state_available": True,
+            "positions": [],
+            "working_orders": 0,
+        }]}}],
+    }
+    monkeypatch.setattr(DIRECT, "candidate_price", lambda _packet, _instrument: 105.0)
+    monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "market_snapshot_is_fresh", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "latest_market", lambda _packet: ({"snapshot_hash": "latest-hash"}, {}, []))
+
+    def write_cache(as_of: datetime, ask: float) -> None:
+        (tmp_path / "AnalyticsBridgeCache.json").write_text(json.dumps({
+            "Instruments": [{
+                "InstrumentRoot": "MNQ",
+                "LastUpdatedUtc": as_of.isoformat().replace("+00:00", "Z"),
+                "Readings": [{
+                    "Minutes": 1,
+                    "UtcTime": as_of.isoformat().replace("+00:00", "Z"),
+                    "DescriptiveStateJson": json.dumps({
+                        "descriptive_state": {
+                            "liquidity": {
+                                "best_bid": ask - 0.25,
+                                "best_ask": ask,
+                                "last_quote_age_seconds": 0.1,
+                            },
+                            "quality": {
+                                "as_of_utc": as_of.isoformat().replace("+00:00", "Z"),
+                            },
+                        },
+                    }),
+                }],
+            }],
+        }), encoding="utf-8")
+
+    write_cache(datetime.now(timezone.utc), 107.0)
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is True
+    evidence = batch["decisions"][0]["entry_revalidation"]
+    assert evidence["latest_price"] == 107.0
+    assert evidence["latest_packet_price"] == 105.0
+    assert evidence["latest_price_source"] == "analytics_bridge_best_ask"
+
+    write_cache(datetime.now(timezone.utc) - timedelta(seconds=30), 107.0)
+    assert DIRECT.apply_entry_revalidation(batch, source, latest, tmp_path) is False
+    evidence = batch["decisions"][0]["entry_revalidation"]
+    assert evidence["latest_price"] == 105.0
+    assert evidence["latest_price_source"] == "decision_packet"
 
 
 def test_entry_revalidation_requires_latest_master_flat_and_order_free(monkeypatch, tmp_path: Path) -> None:

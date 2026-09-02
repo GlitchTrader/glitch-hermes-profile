@@ -2982,6 +2982,69 @@ def deterministic_selection_math(
     return result
 
 
+def _compact_decimal(value: float) -> str:
+    return f"{value:.8f}".rstrip("0").rstrip(".")
+
+
+def canonicalize_selection_ev_math(
+    value: str,
+    forecast: dict[str, Any] | None = None,
+) -> str:
+    """Own exact arithmetic while preserving Hermes-authored geometry and judgment."""
+    support = deterministic_selection_math(value, forecast)
+    if support.get("status") != "complete":
+        return value
+    replacements = {
+        "risk_points": _compact_decimal(float(support["computed_risk_points"])),
+        "reward_points": _compact_decimal(float(support["computed_reward_points"])),
+        "breakeven_target_first": _compact_decimal(
+            float(support["computed_breakeven_target_first"])
+        ),
+    }
+    result = value
+    for key, replacement in replacements.items():
+        pattern = re.compile(rf"(?i)(^|;)\s*{re.escape(key)}\s*=\s*[^;]*")
+        if pattern.search(result):
+            result = pattern.sub(
+                lambda match, name=key, exact=replacement: (
+                    f"{match.group(1)}{name}={exact}"
+                ),
+                result,
+                count=1,
+            )
+        else:
+            result = result.rstrip(";") + f";{key}={replacement}"
+    return result
+
+
+def canonicalize_batch_selection_math(batch: dict[str, Any]) -> int:
+    """Canonicalize only deterministic SELECTION_EV fields in model-authored text."""
+    corrected = 0
+    for intent in batch.get("decisions") or []:
+        if not isinstance(intent, dict):
+            continue
+        audit = intent.get("decision_audit")
+        evidence = audit.get("decisive_evidence") if isinstance(audit, dict) else None
+        if not isinstance(evidence, str):
+            continue
+        forecast = intent.get("forecast") if isinstance(intent.get("forecast"), dict) else None
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal corrected
+            original = match.group(2)
+            canonical = canonicalize_selection_ev_math(original, forecast)
+            if canonical != original:
+                corrected += 1
+            return match.group(1) + canonical
+
+        audit["decisive_evidence"] = re.sub(
+            r"(?mi)^(SELECTION_EV\s*=\s*)(.+?)\s*$",
+            replace,
+            evidence,
+        )
+    return corrected
+
+
 def _wait_claims_improvement(value: str) -> bool:
     return bool(re.search(r"(?i)\b(?:positive|improv\w*|better|dominates?)\b", value))
 
@@ -2993,7 +3056,7 @@ def validate_selection_ev(
     source: str,
     forecast: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Reject contradictory direction; keep EV prose quality observational."""
+    """Reject contradictory direction; keep EV judgment quality observational."""
     observations: list[str] = []
     if not isinstance(value, str) or not value.strip():
         return [f"selection_ev_missing:{index}:{source}"]
@@ -4229,7 +4292,9 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
         "quantity, protection, confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
         "and the required field or nesting contract named by CONTRACT_ERROR. Return exactly one "
-        "complete strict glitch.intent.batch.v1 JSON object with no Markdown or prose. "
+        "complete strict glitch.intent.batch.v1 JSON object under 9000 characters with no Markdown "
+        "or surrounding prose. Keep each case and ledger field to one short evidence-dense clause; "
+        "remove duplicate wording but never omit a required field. "
         "decision_audit must contain exactly these JSON keys once: "
         + audit_fields
         + ". decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
@@ -4237,7 +4302,9 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         "never JSON keys. "
         "Every SELECTION_EV must contain direction, entry, stop, target, risk_points, reward_points, "
         "friction_points, breakeven_target_first, estimated_target_first_range, now_ev, wait_price, "
-        "wait_ev, and decisive_reason.\nCONTRACT_ERROR="
+        "wait_ev, and decisive_reason. ENTER_LONG and ENTER_SHORT also require quantity, "
+        "order_type=MARKET, stop_loss, take_profit_1, entry_range_low, and entry_range_high; "
+        "non-entry actions must omit those entry-only fields.\nCONTRACT_ERROR="
         + error_text
         + "\nPREVIOUS_RESPONSE="
         + prior
@@ -4349,6 +4416,7 @@ def invoke_validated_batch(
             batch,
             allow_not_applicable=prior_cognition is None,
         )
+        canonicalize_batch_selection_math(batch)
         validate_batch(
             batch,
             scenario,
@@ -4373,6 +4441,9 @@ def invoke_validated_batch(
         if not retryable_model_contract_error(error):
             raise
         failed_output: Any = error.output if isinstance(error, InvalidModelResponseError) else raw
+        if isinstance(failed_output, dict):
+            failed_output = copy.deepcopy(failed_output)
+            canonicalize_batch_selection_math(failed_output)
         # The correction is contract-only or same-evidence self-consistency;
         # the original visual evidence must not invite a second market judgment.
         repaired_raw = invoke(contract_repair_prompt(prompt, failed_output, error), None)
@@ -4416,6 +4487,84 @@ def candidate_price(packet: dict[str, Any], instrument: str) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if value is not None and math.isfinite(value) else None
+
+
+def fresh_executable_quote(
+    glitch_data: Path,
+    instrument: str,
+    action: str,
+    *,
+    max_age_seconds: float = 15.0,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Read the native bid/ask cache without weakening packet or account freshness."""
+    quote_key = (
+        "best_ask" if action == "ENTER_LONG"
+        else "best_bid" if action == "ENTER_SHORT"
+        else None
+    )
+    if quote_key is None:
+        return None
+    try:
+        cache = read_json(glitch_data / "AnalyticsBridgeCache.json")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    instruments = cache.get("Instruments") if isinstance(cache, dict) else None
+    if not isinstance(instruments, list):
+        return None
+    root = instrument_root(instrument)
+    observed = next((
+        row for row in instruments
+        if isinstance(row, dict)
+        and instrument_root(row.get("InstrumentRoot") or row.get("InstrumentFullName")) == root
+    ), None)
+    readings = observed.get("Readings") if isinstance(observed, dict) else None
+    one_minute = next((
+        row for row in readings or []
+        if isinstance(row, dict) and row.get("Minutes") == 1
+    ), None)
+    if not isinstance(one_minute, dict):
+        return None
+    descriptive_raw = one_minute.get("DescriptiveStateJson")
+    try:
+        descriptive = json.loads(descriptive_raw) if isinstance(descriptive_raw, str) else None
+    except json.JSONDecodeError:
+        return None
+    state = descriptive.get("descriptive_state") if isinstance(descriptive, dict) else None
+    liquidity = state.get("liquidity") if isinstance(state, dict) else None
+    quality = state.get("quality") if isinstance(state, dict) else None
+    if not isinstance(liquidity, dict):
+        return None
+    try:
+        price = float(liquidity.get(quote_key))
+        quote_age_at_capture = float(liquidity.get("last_quote_age_seconds"))
+    except (TypeError, ValueError):
+        return None
+    as_of_text = (
+        quality.get("as_of_utc") if isinstance(quality, dict) else None
+    ) or one_minute.get("UtcTime") or observed.get("LastUpdatedUtc")
+    as_of = _utc_datetime(as_of_text)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if (
+        as_of is None
+        or not math.isfinite(price)
+        or price <= 0
+        or not math.isfinite(quote_age_at_capture)
+        or quote_age_at_capture < 0
+    ):
+        return None
+    capture_age = (current - as_of).total_seconds()
+    if capture_age < -5:
+        return None
+    total_age = max(0.0, capture_age) + quote_age_at_capture
+    if total_age > max_age_seconds:
+        return None
+    return {
+        "price": price,
+        "source": f"analytics_bridge_{quote_key}",
+        "observed_utc": as_of.isoformat().replace("+00:00", "Z"),
+        "age_seconds": round(total_age, 6),
+    }
 
 
 def latest_master_entry_state(
@@ -4517,7 +4666,17 @@ def apply_entry_revalidation(
             continue
         root = instrument_root(intent.get("instrument"))
         source_price = candidate_price(source_packet, root)
-        current_price = candidate_price(latest_packet, root)
+        packet_price = candidate_price(latest_packet, root)
+        live_quote = fresh_executable_quote(
+            glitch_data,
+            root,
+            str(intent.get("action") or ""),
+        )
+        current_price = (
+            float(live_quote["price"])
+            if isinstance(live_quote, dict)
+            else packet_price
+        )
         master_state_available, master_position_contracts, master_working_orders, master_observed_utc = (
             latest_master_entry_state(latest_packet, str(intent.get("account") or ""))
         )
@@ -4595,6 +4754,16 @@ def apply_entry_revalidation(
             "newer_distinct_master_entry": distinct_entry,
             "source_price": source_price,
             "latest_price": current_price,
+            "latest_packet_price": packet_price,
+            "latest_price_source": (
+                live_quote.get("source") if isinstance(live_quote, dict) else "decision_packet"
+            ),
+            "latest_price_observed_utc": (
+                live_quote.get("observed_utc") if isinstance(live_quote, dict) else None
+            ),
+            "latest_price_age_seconds": (
+                live_quote.get("age_seconds") if isinstance(live_quote, dict) else None
+            ),
             "entry_range_low": low if math.isfinite(low) else None,
             "entry_range_high": high if math.isfinite(high) else None,
             "stop": stop if math.isfinite(stop) else None,
@@ -4672,6 +4841,52 @@ def request_immediate_cycle(exchange: Path, request: dict[str, Any]) -> None:
         "requested_utc": utc_now(),
         **request,
     })
+
+
+def is_entry_reassessment_request(request: Any) -> bool:
+    return isinstance(request, dict) and request.get("kind") in {
+        "entry_range_supersession",
+        "favorable_entry_supersession",
+    }
+
+
+def defer_reassessment_until_unused_packet(
+    exchange: Path,
+    request: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Keep a native supersession wake until a fresh, unused packet can own it."""
+    if not is_entry_reassessment_request(request):
+        return False
+    requested = _utc_datetime(request.get("requested_utc"))
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if requested is None or (current - requested).total_seconds() > 120:
+        return False
+    packet_path = exchange / "glitch" / "latest-decision-packet.json"
+    try:
+        packet = read_json(packet_path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    packet_id = str(packet.get("packet_id") or "")
+    if not packet_id or not packet_is_current(packet) or not market_snapshot_is_fresh(packet):
+        return False
+    used = any(path.is_file() for path in (
+        model_attempt_path(exchange, packet_id),
+        exchange / "hermes" / "outbox" / f"{packet_id}.json",
+        exchange / "hermes" / "receipts" / f"{packet_id}.json",
+    ))
+    if not used:
+        return False
+    request_immediate_cycle(exchange, request)
+    append_event(exchange / "hermes" / "events" / "cycles.jsonl", {
+        "schema_version": "glitch.hermes.cycle_event.v1",
+        "event": "entry_reassessment_deferred",
+        "reason": "awaiting_unused_decision_packet",
+        "packet_id": packet_id,
+        "recorded_utc": utc_now(),
+    })
+    return True
 
 
 def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> dict[str, Any]:
@@ -5001,8 +5216,8 @@ def build_prompt(
             "A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
             "Check the other supplied candidates compactly and select one when its current setup is better. If the fired path failed or expired, construct the strongest fresh compact setup from current evidence rather than waiting for a full scan. Do not produce the full INSTRUMENT_COMPARISON_V1 ledger and do not retrieve memory. "
             "Use the supplied recent factual ledger. A native master_stop_exit_fill_observed, master_target_exit_fill_observed, or master_exit_fill_observed row is a completed factual result even when the learner's fuller outcome record has not arrived; use its fill and realized_pnl_usd evidence immediately. Before re-entering the same instrument and direction after a recent EXIT or completed result, state what materially changed after that exit and why the current setup is distinct; a renewed crossing or an EXPIRED label alone is insufficient. This is evidence reconciliation, not a cooldown: re-enter whenever genuinely new current evidence restores positive expected value. "
-            "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder, including SELECTION_EV. CURRENT_AUCTION must include current context, price response, and material evidence quality; ALTERNATIVE_CANDIDATES must include comparative asymmetry and rejection. Keep every field to one compact evidence-dense sentence, avoid repeated facts, and keep the complete ledger under 6000 characters. "
-            "Use one numeric total in friction_points. Compute breakeven_target_first exactly as (risk_points + friction_points) / (risk_points + reward_points); because forecast.probability is STOP_BEFORE_PRIMARY_TARGET, reconcile 1 - forecast.probability with estimated_target_first_range and keep now_ev consistent with that range relative to computed break-even. This self-audit is observational, not a fixed probability or reward/risk rule. "
+            "Write the compact TRIGGER_REVIEW_V1 template in decision_audit.decisive_evidence and replace every placeholder, including SELECTION_EV. CURRENT_AUCTION must include current context, price response, and material evidence quality; ALTERNATIVE_CANDIDATES must include comparative asymmetry and rejection. Keep every field to one compact evidence-dense clause, avoid repeated facts, and keep the complete ledger under 4000 characters. "
+            "Use one numeric total in friction_points. The runtime canonicalizes risk_points, reward_points, and breakeven_target_first from your chosen direction, entry, stop, target, and friction as (risk_points + friction_points) / (risk_points + reward_points); then reconcile 1 - forecast.probability with estimated_target_first_range and keep now_ev and action consistent with that range relative to the exact break-even. This checks only the internal consistency of Hermes-authored judgment; it does not set probability, geometry, instrument, or action and is not a fixed probability or reward/risk rule. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "A valid tiny bracket is not proof of edge. In ENTRY_RANGE_NOISE_GEOMETRY state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. Reject a shallow pivot that cannot survive the intended five-to-ten-bar path; improve entry location, use a deeper genuine invalidation, or choose NOTHING. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with evidence-grounded probability and confidence from 0 to 1. "
@@ -5013,12 +5228,12 @@ def build_prompt(
             "Complete the compact INSTRUMENT_COMPARISON_V1 ledger for every supplied candidate before ranking. Every candidate needs CURRENT_AUCTION containing regime, location, price/flow response, and material evidence quality; bullish and bearish paths; next transition; PRIOR_TRIGGER_REVIEW classified as HELD, FAILED, EXPIRED, or NOT_APPLICABLE only when no prior path exists; coarse next-five-to-ten-bar forecast; objective/invalidation; practical entry range; noise-aware geometry; and ASYMMETRY containing execution uncertainty, comparative rank, and rejection reason. "
             "Use each one-minute row's native_observations.last_completed_bar as the authoritative completed candle. Current OHLCV is live partial evidence and must remain labeled partial. Incomplete flow or late continuation reduces confidence and room but is not an automatic veto. "
             "Choose the best supported path when probability-weighted reward after costs, latency, fill-range uncertainty, and survival risk is positive. For the selected candidate compare NOW with WAIT and write SELECTION_EV with entry, stop, primary target, risk/reward points, friction, break-even target-before-stop probability, estimated target-before-stop range, now_ev, wait price, wait_ev, and one decisive reason. Enter only when now_ev is POSITIVE; choose NOTHING only when now_ev is NEGATIVE or irreducibly UNCERTAIN. WAIT is better only while its price remains before the primary target and a concrete improvement in entry location, invalidation cost, or target-before-stop probability outweighs lost room; it is never shorthand for perfect confirmation or a required retest. A confirmation at or beyond that target consumes the trade. NOTHING is valid when no candidate retains practical edge after that unified assessment; name the top rejected direction, objective, invalidation, practical entry zone, and one decisive missing condition. A fresh session extreme or newly accepted transition does not require the future target to have traded already: derive a probabilistic objective from supplied structure, auction behavior, volatility, liquidity, and cross-instrument context, then discount uncertainty rather than treating missing pre-acceptance as a veto. "
-            "Use one numeric total in friction_points. Compute breakeven_target_first exactly as (risk_points + friction_points) / (risk_points + reward_points); because forecast.probability is STOP_BEFORE_PRIMARY_TARGET, reconcile 1 - forecast.probability with estimated_target_first_range and keep now_ev consistent with that range relative to computed break-even. This self-audit is observational, not a fixed probability or reward/risk rule. "
+            "Use one numeric total in friction_points. The runtime canonicalizes risk_points, reward_points, and breakeven_target_first from your chosen direction, entry, stop, target, and friction as (risk_points + friction_points) / (risk_points + reward_points); then reconcile 1 - forecast.probability with estimated_target_first_range and keep now_ev and action consistent with that range relative to the exact break-even. This checks only the internal consistency of Hermes-authored judgment; it does not set probability, geometry, instrument, or action and is not a fixed probability or reward/risk rule. "
             "Hermes must derive objectives, genuine invalidations, and execution zones from the supplied evidence; never defer because they were not prewritten or labeled authoritative. A setup trigger or confirmation transition is not automatically its primary profit objective: after acceptance, derive the next evidence-supported structural destination. "
             "For ENTER_LONG or ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, entry_range_high, and forecast. The range must contain the current decision price, remain strictly between stop and primary target, and cover the current bounded zone where edge remains positive after plausible decision-to-delivery drift. Price latency once; do not require the zone to absorb ordinary movement across multiple future packets because deterministic latest-price revalidation skips stale entries. If no non-fragile useful zone can fit, choose NOTHING and never widen it merely to defeat revalidation. "
             "Forecast exactly event=STOP_BEFORE_PRIMARY_TARGET with probability from 0 to 1, an evidence method of at most 128 characters grounded in the next five-to-ten one-minute bars, and confidence from 0 to 1. This records calibration and never gates direction by itself. "
             "A valid tiny bracket is not proof of edge: in the selected NOISE_AND_GEOMETRY line state risk in points, ticks, one- and five-minute ATR or equivalent supplied horizon noise, one-contract dollars, and model/transport latency. Compute one-contract dollars from stop-distance points times the packet point_value_usd, never from account max_contracts, follower ratios, replication, or ordered-book count. A shallow pivot must survive the intended five-to-ten-bar path. "
-            "Keep every comparison field to one compact evidence-dense sentence, do not repeat the same fact or veto across fields, and keep the complete INSTRUMENT_COMPARISON_V1 ledger under 8000 characters. Use the supplied recent factual ledger; learner guidance is deliberately excluded from flat entry cognition. Do not retrieve or write memory in the hot path. "
+            "Keep every comparison field to one compact evidence-dense clause, do not repeat the same fact or veto across fields, and keep the complete INSTRUMENT_COMPARISON_V1 ledger under 6500 characters. Use the supplied recent factual ledger; learner guidance is deliberately excluded from flat entry cognition. Do not retrieve or write memory in the hot path. "
         )
         if prior_cognition:
             instructions += (
@@ -5029,6 +5244,7 @@ def build_prompt(
     if not positioned_only:
         instructions += (
             "For flat entry selection, rank the evidence-supported auction path, not the easiest bracket. A primary objective inside ordinary one- or five-minute noise needs a distinct auction premise, genuine invalidation, and positive expectancy after costs; a low break-even probability alone is not edge, and a supported short-horizon rotation remains eligible. Prefer early coherent price progress with unconsumed structural room over unsupported local rotation. A range that straddles break-even cannot become now_ev POSITIVE by selecting its favorable end; a range that clears only nominally needs current path evidence showing the advantage survives costs and uncertainty. Neither judgment requires a fixed numerical margin or completed confirmation. "
+            "An entry cannot remain positive while its own selected geometry calls the stop shallow, noise-sensitive, fragile, or unable to survive ordinary horizon noise; improve the entry, use the nearest deeper genuine invalidation, or choose NOTHING without relabeling the weakness. "
             "Use each candidate's deterministic_geometry_context as the arithmetic authority for tick value, one- and five-minute ATR, spread, and their one-contract dollar equivalents; it is decision support, not a setup signal or execution gate. Compare candidates in one-contract dollars as well as points and ticks. Greater dollar noise or spread is not a veto, but its evidence-supported probability and reward must compensate for the larger excursion and estimation error; when otherwise comparable, prefer the candidate with less dollar downside. For WAIT geometry, lower is a price improvement for a long and higher is a price improvement for a short. A worse-price confirmation may still improve probability, but call it better only when that probability gain outweighs the lost reward and increased invalidation cost. "
         )
         if prior_cognition and prior_cognition.get("deterministic_selection_math"):
@@ -5050,7 +5266,7 @@ def build_prompt(
         + instructions
         + "Return only the model-owned fields shown in required_output_template. The runtime deterministically supplies schema, intent ID, time, route, account, snapshot hash, model version, and prompt version. Preserve instrument and every strict decision_audit key; final_choice must equal action. "
         + wake_instruction
-        + "Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
+        + "Keep the entire response under 9000 characters. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
         + "\nOUTPUT_CLOSURE: End each decision exactly with "
         + "...,\"change_condition\":\"...\",\"final_choice\":\"SAME_AS_ACTION\"},\"wake_triggers\":[]}. "
@@ -5479,6 +5695,7 @@ def run_once(
         raise ValueError("packet_id_missing")
     if not packet_is_current(packet):
         return 0
+    reassessment_request = direct_request if is_entry_reassessment_request(direct_request) else None
     pending = pending_outbox(exchange)
     if pending is not None:
         pending_id, pending_path = pending
@@ -5583,7 +5800,7 @@ def run_once(
             "cycle_id": packet_id,
         })
         return 0
-    if repeated_packet_is_suppressed(exchange, packet):
+    if reassessment_request is None and repeated_packet_is_suppressed(exchange, packet):
         append_event(events_path, {
             "schema_version": "glitch.hermes.cycle_event.v1",
             "event": "llm_skipped",
@@ -5593,11 +5810,6 @@ def run_once(
         })
         return 0
     directive = read_operator_directive(exchange)
-    reassessment_request = (
-        direct_request if isinstance(direct_request, dict)
-        and direct_request.get("kind") in {"entry_range_supersession", "favorable_entry_supersession"}
-        else None
-    )
     reason = (
         "entry_range_supersession"
         if reassessment_request is not None
@@ -5913,6 +6125,8 @@ def main() -> int:
         # the latest native packet; there is still exactly one worker and no
         # concurrent model call or duplicate intent replay.
         request = consume_direct_cycle_request(exchange)
+        if defer_reassessment_until_unused_packet(exchange, request):
+            return 0
         result = 0
         while True:
             result = run_once(args, glitch_data, exchange, direct_request=request)
@@ -5920,6 +6134,8 @@ def main() -> int:
                 return result
             request = consume_direct_cycle_request(exchange)
             if request is None:
+                return result
+            if defer_reassessment_until_unused_packet(exchange, request):
                 return result
             append_event(exchange / "hermes" / "events" / "cycles.jsonl", {
                 "schema_version": "glitch.hermes.cycle_event.v1",
