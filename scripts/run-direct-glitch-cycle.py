@@ -3456,7 +3456,11 @@ def validate_entry_range(intent: dict[str, Any], reference_price: Any, index: in
         raise ValueError(f"entry_range_geometry_invalid:{index}")
 
 
-def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = None) -> dict[str, Any]:
+def normalize_batch(
+    batch: dict[str, Any],
+    scenario: dict[str, Any] | None = None,
+    normalize_trigger_fields: bool = True,
+) -> dict[str, Any]:
     """Map the model's documented no-action synonym onto the wire enum."""
     if scenario is not None:
         batch.setdefault("schema_version", "glitch.intent.batch.v1")
@@ -3468,6 +3472,16 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
         batch["decisions"] = decisions
     if not isinstance(decisions, list):
         return batch
+    if (
+        len(decisions) == 1
+        and isinstance(decisions[0], dict)
+        and "wake_triggers" in batch
+        and "wake_triggers" not in decisions[0]
+    ):
+        # Luna occasionally closes the sole decision one delimiter late and
+        # leaves this known decision field at batch level. Relocate only that
+        # field; ambiguous multi-decision output remains invalid.
+        decisions[0]["wake_triggers"] = batch.pop("wake_triggers")
     candidate_roots = {
         instrument_root(row.get("instrument"))
         for row in (scenario or {}).get("market", {}).get("candidates", [])
@@ -3489,6 +3503,20 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
                 audit["change_condition"] = intent.pop("change_condition")
             if isinstance(audit, dict):
                 evidence = audit.get("decisive_evidence")
+                if isinstance(evidence, str) and any(marker in evidence for marker in (
+                    CANDIDATE_COMPARISON_MARKER,
+                    TRIGGER_REVIEW_MARKER,
+                    POSITION_MANAGEMENT_MARKER,
+                )):
+                    # A double-escaped model response can serialize ledger
+                    # separators as literal ``\n`` text. Restore separators
+                    # only before recognized ledger keys; no evidence changes.
+                    evidence = re.sub(
+                        r"(?:\\r)?\\n(?=[A-Z][A-Z0-9_ ]*(?:=|:))",
+                        "\n",
+                        evidence,
+                    )
+                    audit["decisive_evidence"] = evidence
                 misplaced_reason = audit.get("SELECTION_REASON")
                 has_selection_ledger = (
                     isinstance(evidence, str)
@@ -3534,7 +3562,8 @@ def normalize_batch(batch: dict[str, Any], scenario: dict[str, Any] | None = Non
             if "wake_triggers" not in intent and "wake_trigger" in intent:
                 legacy = intent.pop("wake_trigger")
                 intent["wake_triggers"] = [] if legacy is None else [legacy]
-            normalize_wake_triggers(intent, candidate_roots)
+            if normalize_trigger_fields:
+                normalize_wake_triggers(intent, candidate_roots)
             try:
                 uuid.UUID(str(intent.get("intent_id", "")))
             except (ValueError, TypeError, AttributeError):
@@ -4037,11 +4066,12 @@ def validate_protection_updates(
                     or not math.isfinite(float(stop))):
                 raise ValueError(f"protection_update_stop_invalid:{index}:{update_index}")
 def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
-    """Repair one missing object closer at the terminal decisions boundary.
+    """Repair one missing object closer at the decisions-array boundary.
 
     This accepts no missing value or semantic field. It only handles the
     observed model serialization defect where a complete decision object is
-    followed by the decisions-array closer before the decision itself closes.
+    followed by the decisions-array closer before the decision itself closes,
+    including when a misplaced batch-level wake_triggers field follows it.
     """
     stack: list[str] = []
     in_string = False
@@ -4068,7 +4098,6 @@ def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
                 character == "]"
                 and stack
                 and stack[-1] == "{"
-                and len(text) - index <= 16
             ):
                 return None
             repaired = text[:index] + "}" + text[index:]
@@ -4079,7 +4108,21 @@ def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
             trailing = repaired[end:].strip()
             if trailing and any(item not in "]}" for item in trailing):
                 return None
-            return value if isinstance(value, dict) else None
+            if not isinstance(value, dict) or value.get("schema_version") != "glitch.intent.batch.v1":
+                return None
+            decisions = value.get("decisions")
+            if not isinstance(decisions, list) or not decisions or not all(
+                isinstance(decision, dict) for decision in decisions
+            ):
+                return None
+            allowed_batch_fields = {
+                "schema_version", "cycle_id", "next_review_seconds", "decisions", "wake_triggers",
+            }
+            if not set(value).issubset(allowed_batch_fields):
+                return None
+            if "wake_triggers" in value and not isinstance(value["wake_triggers"], list):
+                return None
+            return value
     return None
 
 
@@ -4245,7 +4288,13 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "hermes_output_",
     "intent_contract_",
     "intent_unknown_fields:",
+    "position_management_missing:",
+    "position_management_instrument_mismatch:",
+    "position_management_field_missing:",
+    "position_management_field_placeholder:",
+    "position_management_action_mismatch:",
     "position_management_hold_ev_",
+    "protection_update",
     "selection_ev_",
     "trigger_review_",
     "wake_triggers_",
@@ -4316,7 +4365,9 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         "friction_points, breakeven_target_first, estimated_target_first_range, now_ev, wait_price, "
         "wait_ev, and decisive_reason. ENTER_LONG and ENTER_SHORT also require quantity, "
         "order_type=MARKET, stop_loss, take_profit_1, entry_range_low, and entry_range_high; "
-        "non-entry actions must omit those entry-only fields.\nCONTRACT_ERROR="
+        "non-entry actions must omit those entry-only fields. MOVE_STOP requires protection_updates "
+        "with native leg_id and stop_loss; MOVE_TP requires protection_updates with native leg_id, "
+        "take_profit, and any intended stop_loss; HOLD and EXIT omit protection_updates.\nCONTRACT_ERROR="
         + error_text
         + "\nPREVIOUS_RESPONSE="
         + prior
@@ -5443,6 +5494,7 @@ def build_prompt(
         "Use account_context.ai_daily_capture_* only to rank independently valid positive-asymmetry candidates. Below the target, progress may prioritize the strongest such candidate and quantity only from valid_entry_quantities, but it must not raise estimated probability or confidence, improve geometry, distinguish a repeated setup, or turn nonpositive expected value positive; state total planned risk and primary-target dollars for the chosen quantity. After the target is reached, protect progress and do not seek new exposure. "
         "Ordinary partial-bar, stale-depth, latency, and noise uncertainty are bounded costs to price once, not decisive missing conditions by themselves. Reserve UNCERTAIN for a genuinely unusable or unbounded fact; otherwise make a POSITIVE or NEGATIVE judgment. "
         "Acceptance, confirmation, and a retest are probability evidence, not sequential prerequisites. Separate directional path quality from entry timing: the same completed or partial displacement and flow response that supports direction can consume location and room, so do not count it both as probability evidence and as untouched reward. Anticipatory entry remains valid without a closed candle or retest when current location is favorable, invalidation is genuine and noise-surviving, and practical objective room remains. After an impulse, enter NOW only if the current delivery zone still retains positive asymmetry; otherwise identify a concrete pre-target WAIT zone that materially improves price, invalidation cost, or target-before-stop probability, or choose NOTHING. "
+        "Only native_observations.last_completed_bar is a completed one-minute candle: never call a transition completed or accepted unless that bar itself satisfies the named level. A crossing only in current OHLCV is partial anticipatory evidence, and price-only delivery revalidation cannot upgrade the original evidence. "
         "Do not force activity, recover losses, use a fixed setup, fixed ATR rule, fixed reward/risk rule, or treat guidance as stronger than current evidence. "
     )
     entry_continuity = (
@@ -5500,8 +5552,8 @@ def build_prompt(
             )
     if not positioned_only:
         instructions += (
-            "For flat entry selection, rank the evidence-supported auction path, not the easiest bracket. A primary objective inside ordinary one- or five-minute noise needs a distinct auction premise, genuine invalidation, and positive expectancy after costs; a low break-even probability alone is not edge, and a supported short-horizon rotation remains eligible. Prefer early coherent price progress with unconsumed structural room over unsupported local rotation. A range that straddles break-even cannot become now_ev POSITIVE by selecting its favorable end; a range that clears only nominally needs current path evidence showing the advantage survives costs and uncertainty. Neither judgment requires a fixed numerical margin or completed confirmation. "
-            "An entry cannot remain positive while its own selected geometry calls the stop shallow, noise-sensitive, fragile, or unable to survive ordinary horizon noise; improve the entry, use the nearest deeper genuine invalidation, or choose NOTHING without relabeling the weakness. "
+            "For flat entry selection, rank the evidence-supported auction path, not the easiest bracket. A primary objective inside ordinary one- or five-minute noise needs a distinct auction premise, genuine invalidation, and positive expectancy after costs; a low break-even probability alone is not edge, and a supported short-horizon rotation remains eligible. Prefer early coherent price progress with unconsumed structural room over unsupported local rotation. Estimate target-first probability from current location, debiting displacement already traveled, the nearest opposing structure, exhaustion, missing flow, and source age; nominal reward/risk or a crossed level is not probability evidence by itself. A range that straddles break-even cannot become now_ev POSITIVE by selecting its favorable end; a range that clears only nominally needs current path evidence showing the advantage survives costs and uncertainty. Neither judgment requires a fixed numerical margin or completed confirmation. "
+            "For the five-to-ten one-minute-bar forecast, price stop survival against both supplied one- and five-minute noise: 'survives one-minute noise but not five-minute excursion' is adverse probability evidence, not a positive noise-survival claim or a fixed ATR gate. Debit it in target-first probability and choose better location, a deeper genuine invalidation, or NOTHING when it removes the edge. An entry cannot remain positive while its own selected geometry calls the stop shallow, noise-sensitive, fragile, or unable to survive ordinary horizon noise; improve the entry, use the nearest deeper genuine invalidation, or choose NOTHING without relabeling the weakness. "
             "Use each candidate's deterministic_geometry_context as the arithmetic authority for tick value, one- and five-minute ATR, spread, and their one-contract dollar equivalents; it is decision support, not a setup signal or execution gate. Compare candidates in one-contract dollars as well as points and ticks. Greater dollar noise or spread is not a veto, but its evidence-supported probability and reward must compensate for the larger excursion and estimation error; when otherwise comparable, prefer the candidate with less dollar downside. For WAIT geometry, lower is a price improvement for a long and higher is a price improvement for a short. A worse-price confirmation may still improve probability, but call it better only when that probability gain outweighs the lost reward and increased invalidation cost. "
         )
         if prior_cognition and prior_cognition.get("deterministic_selection_math"):
@@ -5513,9 +5565,10 @@ def build_prompt(
         instructions += (
             "All ordered master books are flat and share this one market decision: return exactly one decision object for the supplied route, and the runtime deterministically binds the identical decision to every ordered master book. Choose a quantity that every ordered master book supports. "
         )
+    suppress_wake_rearm = trigger_review_only or invocation_reason == "condition_followup"
     wake_instruction = (
-        "Keep the decision-level wake_triggers field empty and never place wake_triggers inside decision_audit. This condition-change wake is consumed once; the next scheduled five-minute scan may arm new instrument-labeled above/below levels. "
-        if trigger_review_only else
+        "Keep the decision-level wake_triggers field empty and never place wake_triggers inside decision_audit. This condition-change wake is consumed once; its one fresh follow-up does not rearm it; the next scheduled five-minute scan may arm new instrument-labeled above/below levels. "
+        if suppress_wake_rearm else
         "Keep the decision-level wake_triggers field empty and never place wake_triggers inside decision_audit; the runtime mirrors explicit instrument-labeled above/below prices from change_condition into wake triggers, and the first crossing wakes one immediate reassessment before the next scheduled review, so write change_condition as concrete instrument-labeled above/below price levels. "
     )
     prompt = (
@@ -5784,6 +5837,7 @@ def invocation_reason(
     exchange: Path,
     directive: dict[str, Any] | None,
     fired_triggers: list[dict[str, Any]] | None = None,
+    scheduled_due: bool = False,
 ) -> str | None:
     window = packet_window_utc(packet)
     positioned = scoped_master_is_positioned(packet, scenario)
@@ -5793,7 +5847,7 @@ def invocation_reason(
         return "positioned"
     if condition_followup_due(exchange, packet):
         return "condition_followup"
-    if window.minute % 5 == 0:
+    if scheduled_due or window.minute % 5 == 0:
         return "scheduled"
     if fired_triggers is None:
         fired_triggers = fired_wake_triggers(exchange, packet, scenario)
@@ -5907,9 +5961,31 @@ def condition_followup_due(exchange: Path, packet: dict[str, Any]) -> bool:
     )
 
 
-def read_packet_after_imminent_rollover(packet_path: Path, wait_seconds: float) -> dict[str, Any]:
+def decision_arms_wake_triggers(decision_mode: str, reason: str) -> bool:
+    """Preserve full-scan trigger behavior except for the one-shot follow-up."""
+    return decision_mode == "flat_scan" and reason != "condition_followup"
+
+
+def packet_rollover_wait_allowed(
+    packet: dict[str, Any],
+    scenario: dict[str, Any],
+    exchange: Path,
+) -> bool:
+    """Wait only for scheduled scans or active-position management."""
+    if scoped_master_is_positioned(packet, scenario):
+        return True
+    return packet_window_utc(packet).minute % 5 == 0 and not condition_followup_due(
+        exchange, packet
+    )
+
+
+def read_packet_after_imminent_rollover(
+    packet_path: Path,
+    wait_seconds: float,
+    initial_packet: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Avoid selecting the prior minute in the narrow publisher/cron race."""
-    packet = read_json(packet_path)
+    packet = initial_packet if initial_packet is not None else read_json(packet_path)
     if wait_seconds <= 0 or not packet_is_current(packet):
         return packet
     try:
@@ -5917,7 +5993,7 @@ def read_packet_after_imminent_rollover(packet_path: Path, wait_seconds: float) 
         age_seconds = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
     except (TypeError, ValueError):
         return packet
-    if age_seconds < 50:
+    if age_seconds < max(0.0, 60.0 - wait_seconds) or age_seconds > 60.0 + wait_seconds:
         return packet
     packet_id = str(packet.get("packet_id", ""))
     deadline = time.monotonic() + wait_seconds
@@ -5927,6 +6003,17 @@ def read_packet_after_imminent_rollover(packet_path: Path, wait_seconds: float) 
         if str(candidate.get("packet_id", "")) != packet_id:
             return candidate
     return packet
+
+
+def scheduled_boundary_crossed(
+    initial_packet: dict[str, Any],
+    selected_packet: dict[str, Any],
+) -> bool:
+    """Preserve a due five-minute scan when waiting selects the next packet."""
+    return (
+        str(initial_packet.get("packet_id", "")) != str(selected_packet.get("packet_id", ""))
+        and packet_window_utc(initial_packet).minute % 5 == 0
+    )
 
 
 def run_once(
@@ -5943,20 +6030,46 @@ def run_once(
     if not packet_path.is_file():
         return 0
 
+    pending = pending_outbox(exchange)
+    initial_packet = read_json(packet_path)
+    if not str(initial_packet.get("packet_id", "")):
+        raise ValueError("packet_id_missing")
+    if not packet_is_current(initial_packet):
+        return 0
+    configured_rollover_wait = float(
+        getattr(args, "packet_rollover_wait_seconds", 0) or 0
+    )
+    initial_scenario = (
+        build_scenario(initial_packet)
+        if configured_rollover_wait > 0
+        and pending is None
+        and direct_request is None
+        else None
+    )
+    rollover_wait = (
+        configured_rollover_wait
+        if initial_scenario is not None
+        and packet_rollover_wait_allowed(initial_packet, initial_scenario, exchange)
+        else 0.0
+    )
     packet = read_packet_after_imminent_rollover(
         packet_path,
-        float(getattr(args, "packet_rollover_wait_seconds", 0) or 0),
+        rollover_wait,
+        initial_packet,
     )
+    scheduled_due = scheduled_boundary_crossed(initial_packet, packet)
     packet_id = str(packet.get("packet_id", ""))
     if not packet_id:
         raise ValueError("packet_id_missing")
     if not packet_is_current(packet):
         return 0
     reassessment_request = direct_request if is_entry_reassessment_request(direct_request) else None
-    pending = pending_outbox(exchange)
     if pending is not None:
         pending_id, pending_path = pending
-        pending_batch = normalize_batch(read_json(pending_path))
+        pending_batch = normalize_batch(
+            read_json(pending_path),
+            normalize_trigger_fields=False,
+        )
         current_scenario = build_scenario(packet)
         if not pending_outbox_scope_is_current(pending_batch, current_scenario):
             if args.dry_run:
@@ -6015,7 +6128,12 @@ def run_once(
             mark_attempt_from_receipt(exchange, packet_id, receipt)
             return 0
 
-    scenario = build_scenario(packet)
+    scenario = (
+        initial_scenario
+        if initial_scenario is not None
+        and str(initial_packet.get("packet_id", "")) == str(packet.get("packet_id", ""))
+        else build_scenario(packet)
+    )
     trade_state = active_trade_state(packet, scenario, glitch_data, exchange)
     if outbox_path.is_file():
         batch = normalize_batch(read_json(outbox_path), scenario)
@@ -6086,7 +6204,13 @@ def run_once(
     reason = (
         "entry_range_supersession"
         if reassessment_request is not None
-        else invocation_reason(packet, scenario, exchange, directive)
+        else invocation_reason(
+            packet,
+            scenario,
+            exchange,
+            directive,
+            scheduled_due=scheduled_due,
+        )
     )
     if reason is None:
         return 0
@@ -6210,7 +6334,7 @@ def run_once(
             ),
         )
         if not args.dry_run:
-            if decision_mode == "flat_scan":
+            if decision_arms_wake_triggers(decision_mode, reason):
                 persist_wake_triggers(exchange, batch, packet_id)
             persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)
         write_json_atomic(attempt_path, {
@@ -6393,7 +6517,7 @@ def main() -> int:
     parser.add_argument("--glitch-data", type=Path, default=DEFAULT_GLITCH_DATA)
     parser.add_argument("--profile", default="glitch")
     parser.add_argument("--timeout-seconds", type=int, default=240)
-    parser.add_argument("--packet-rollover-wait-seconds", type=float, default=5)
+    parser.add_argument("--packet-rollover-wait-seconds", type=float, default=20)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 

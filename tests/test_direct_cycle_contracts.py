@@ -129,6 +129,30 @@ def test_normalize_wake_triggers_repairs_string_trigger() -> None:
     }]
 
 
+def test_pending_normalization_defers_wake_repair_until_original_scenario() -> None:
+    batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
+    scenario["market"]["candidates"] = [
+        {"instrument": "MES"},
+        {"instrument": "MNQ"},
+        {"instrument": "M2K"},
+    ]
+    intent = batch["decisions"][0]
+    intent["instrument"] = "MES"
+    intent["decision_audit"]["change_condition"] = (
+        "Reassess MES below 7680.25 or MNQ above 29154.5."
+    )
+    intent["wake_triggers"] = []
+
+    DIRECT.normalize_batch(batch, normalize_trigger_fields=False)
+    assert intent["wake_triggers"] == []
+
+    DIRECT.normalize_batch(batch, scenario)
+    assert intent["wake_triggers"] == [
+        {"type": "PRICE_CROSS", "instrument": "MES", "direction": "BELOW", "price": 7680.25},
+        {"type": "PRICE_CROSS", "instrument": "MNQ", "direction": "ABOVE", "price": 29154.5},
+    ]
+
+
 def test_normalize_batch_relocates_misplaced_audit_wake_triggers() -> None:
     batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
     intent = batch["decisions"][0]
@@ -228,6 +252,56 @@ def test_extract_json_repairs_prefixed_terminal_missing_decision_closer() -> Non
     value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
 
     assert value["decisions"][0]["decision_audit"]["final_choice"] == "NOTHING"
+
+
+def test_extract_json_repairs_decision_closer_before_misplaced_batch_wake_triggers() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","cycle_id":"cycle-1",'
+        '"next_review_seconds":300,"decisions":[{"instrument":"M2K",'
+        '"decision_audit":{"final_choice":"HOLD"}],"wake_triggers":[]}'
+    )
+
+    value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+    DIRECT.normalize_batch(value)
+
+    assert "wake_triggers" not in value
+    assert value["decisions"][0]["decision_audit"]["final_choice"] == "HOLD"
+    assert value["decisions"][0]["wake_triggers"] == []
+
+
+def test_normalize_batch_repairs_escaped_ledger_line_separators() -> None:
+    batch, _ = valid_batch("2026-08-03T07:02:41.0414987Z")
+    evidence = "POSITION_MANAGEMENT_V1\\nINSTRUMENT=M2K\\nHOLD_EV=POSITIVE"
+    batch["decisions"][0]["decision_audit"]["decisive_evidence"] = evidence
+
+    DIRECT.normalize_batch(batch)
+
+    repaired = batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+    assert repaired.splitlines() == [
+        "POSITION_MANAGEMENT_V1",
+        "INSTRUMENT=M2K",
+        "HOLD_EV=POSITIVE",
+    ]
+    assert "\\n" not in repaired
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "protection_updates_required:0",
+        "position_management_instrument_mismatch:0",
+    ],
+)
+def test_position_management_shape_errors_receive_one_contract_repair(message: str) -> None:
+    assert DIRECT.retryable_model_contract_error(ValueError(message)) is True
+    repair = DIRECT.contract_repair_prompt("prompt", {}, ValueError(message))
+    assert "MOVE_STOP requires protection_updates" in repair
+
+
+def test_invalid_position_management_action_does_not_receive_format_repair() -> None:
+    assert DIRECT.retryable_model_contract_error(
+        ValueError("position_management_action_invalid:0")
+    ) is False
 
 
 def test_extract_json_does_not_repair_missing_semantic_value() -> None:
@@ -1502,6 +1576,82 @@ def test_flat_invocation_uses_exact_completed_five_minute_boundaries(tmp_path: P
     assert DIRECT.invocation_reason(packet_at(6), scenario, tmp_path, {"status": "pending"}) == "operator_directive"
 
 
+def test_imminent_rollover_reads_the_next_packet_from_the_normal_cron_phase(
+    monkeypatch,
+) -> None:
+    now = datetime.now(timezone.utc)
+    old_time = now.timestamp() - 45
+    old_utc = datetime.fromtimestamp(old_time, timezone.utc).isoformat().replace("+00:00", "Z")
+    old = {
+        "packet_id": "20260813T1205Z",
+        "window_close_utc": old_utc,
+        "created_utc": old_utc,
+        "policy": {"snapshot_max_age_seconds": 180},
+    }
+    new = {
+        **old,
+        "packet_id": "20260813T1206Z",
+        "window_close_utc": now.isoformat().replace("+00:00", "Z"),
+        "created_utc": now.isoformat().replace("+00:00", "Z"),
+    }
+    packets = iter((old, new))
+    monkeypatch.setattr(DIRECT, "read_json", lambda _path: next(packets))
+    monkeypatch.setattr(DIRECT.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(DIRECT.time, "sleep", lambda _seconds: None)
+
+    assert DIRECT.read_packet_after_imminent_rollover(Path("packet.json"), 20) is new
+
+
+def test_scheduled_boundary_is_preserved_when_fresh_packet_rolls_one_minute(
+    tmp_path: Path,
+) -> None:
+    scenario = {"books": [{"master_account": "Sim101"}]}
+    old = {
+        "packet_id": "20260813T1205Z",
+        "window_close_utc": "2026-08-13T12:05:00Z",
+    }
+    new = {
+        "packet_id": "20260813T1206Z",
+        "window_close_utc": "2026-08-13T12:06:00Z",
+        "frames": [{"portfolio_snapshot": {"accounts": [{
+            "account": "Sim101", "positions": [],
+        }]}}],
+    }
+
+    assert DIRECT.scheduled_boundary_crossed(old, new) is True
+    assert DIRECT.invocation_reason(
+        new,
+        scenario,
+        tmp_path,
+        None,
+        scheduled_due=True,
+    ) == "scheduled"
+
+
+def test_rollover_wait_is_not_allowed_for_unscheduled_flat_wake_checks(
+    tmp_path: Path,
+) -> None:
+    scenario = {"books": [{"master_account": "Sim101"}]}
+
+    def packet_at(minute: int, quantity: int = 0) -> dict:
+        return {
+            "packet_id": f"20260813T12{minute:02d}Z",
+            "window_close_utc": f"2026-08-13T12:{minute:02d}:00Z",
+            "frames": [{"portfolio_snapshot": {"accounts": [{
+                "account": "Sim101",
+                "positions": [] if quantity == 0 else [{
+                    "instrument_root": "MNQ",
+                    "market_position": "Long",
+                    "quantity": quantity,
+                }],
+            }]}}],
+        }
+
+    assert DIRECT.packet_rollover_wait_allowed(packet_at(5), scenario, tmp_path) is True
+    assert DIRECT.packet_rollover_wait_allowed(packet_at(6), scenario, tmp_path) is False
+    assert DIRECT.packet_rollover_wait_allowed(packet_at(6, 1), scenario, tmp_path) is True
+
+
 def test_held_trigger_nothing_gets_one_next_minute_full_followup(tmp_path: Path) -> None:
     exchange = tmp_path
     attempts = exchange / "hermes" / "model-attempts"
@@ -1539,6 +1689,33 @@ def test_held_trigger_nothing_gets_one_next_minute_full_followup(tmp_path: Path)
     }), encoding="utf-8")
     later = {**packet, "packet_id": "20260813T1208Z", "window_close_utc": "2026-08-13T12:08:00Z"}
     assert DIRECT.condition_followup_due(exchange, later) is False
+
+    scheduled_prior = "20260813T1209Z"
+    (attempts / f"{scheduled_prior}.json").write_text(json.dumps({
+        "cycle_id": scheduled_prior,
+        "status": "completed",
+        "decision_mode": "trigger_review",
+        "invocation_reason": "condition_change",
+    }), encoding="utf-8")
+    (outbox / f"{scheduled_prior}.json").write_text(json.dumps({
+        "next_review_seconds": 60,
+        "decisions": [{"action": "NOTHING"}],
+    }), encoding="utf-8")
+    scheduled_followup = {
+        **packet,
+        "packet_id": "20260813T1210Z",
+        "window_close_utc": "2026-08-13T12:10:00Z",
+    }
+    assert DIRECT.condition_followup_due(exchange, scheduled_followup) is True
+    assert DIRECT.packet_rollover_wait_allowed(
+        scheduled_followup, scenario, exchange
+    ) is False
+
+
+def test_condition_followup_does_not_rearm_decision_wake_triggers() -> None:
+    assert DIRECT.decision_arms_wake_triggers("flat_scan", "scheduled") is True
+    assert DIRECT.decision_arms_wake_triggers("flat_scan", "condition_followup") is False
+    assert DIRECT.decision_arms_wake_triggers("trigger_review", "condition_change") is False
 
 
 def test_human_override_flat_is_audited_as_superseded_no_op(tmp_path: Path) -> None:
@@ -2244,6 +2421,11 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "a range that clears only nominally needs current path evidence" in prompt
     assert "Neither judgment requires a fixed numerical margin or completed confirmation" in prompt
     assert "An entry cannot remain positive while its own selected geometry calls the stop shallow" in prompt
+    assert "never call a transition completed or accepted unless that bar itself satisfies the named level" in prompt
+    assert "price-only delivery revalidation cannot upgrade the original evidence" in prompt
+    assert "debiting displacement already traveled, the nearest opposing structure, exhaustion, missing flow, and source age" in prompt
+    assert "survives one-minute noise but not five-minute excursion" in prompt
+    assert "adverse probability evidence, not a positive noise-survival claim or a fixed ATR gate" in prompt
     assert "must not raise estimated probability or confidence" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
     assert "seconds_until_must_flat as the actual schedule horizon" in prompt

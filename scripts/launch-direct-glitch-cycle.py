@@ -101,7 +101,7 @@ def main() -> int:
     parser.add_argument("--glitch-data", type=Path, default=DEFAULT_GLITCH_DATA)
     parser.add_argument("--profile", default="glitch")
     parser.add_argument("--timeout-seconds", type=int, default=240)
-    parser.add_argument("--packet-rollover-wait-seconds", type=float, default=5)
+    parser.add_argument("--packet-rollover-wait-seconds", type=float, default=20)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     print(json.dumps(launch(args), separators=(",", ":")))

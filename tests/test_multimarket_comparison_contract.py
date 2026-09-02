@@ -66,5 +66,5 @@ def test_dry_run_does_not_persist_executable_outbox():
     source = (ROOT / "scripts" / "run-direct-glitch-cycle.py").read_text(encoding="utf-8")
     assert "if decision_mode == \"trigger_review\":\n            consume_fired_wake_triggers" in source
     assert "elif decision_mode == \"position_management\":\n            clear_wake_triggers" in source
-    assert "if decision_mode == \"flat_scan\":\n                persist_wake_triggers" in source
+    assert "if decision_arms_wake_triggers(decision_mode, reason):\n                persist_wake_triggers" in source
     assert "persist_outbox(exchange, outbox_path, packet_id, batch, directive, packet)" in source
