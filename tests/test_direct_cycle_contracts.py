@@ -1652,6 +1652,57 @@ def test_rollover_wait_is_not_allowed_for_unscheduled_flat_wake_checks(
     assert DIRECT.packet_rollover_wait_allowed(packet_at(6, 1), scenario, tmp_path) is True
 
 
+@pytest.mark.parametrize(
+    ("cycle_request", "expected_wait"),
+    [
+        ({"kind": "scheduled"}, 20.0),
+        ({"kind": "entry_range_supersession"}, 0.0),
+    ],
+)
+def test_only_entry_reassessment_requests_bypass_scheduled_rollover_wait(
+    tmp_path: Path,
+    monkeypatch,
+    cycle_request: dict,
+    expected_wait: float,
+) -> None:
+    glitch_data = tmp_path / "GlitchData"
+    exchange = tmp_path / "exchange"
+    packet_path = exchange / "glitch" / "latest-decision-packet.json"
+    packet_path.parent.mkdir(parents=True)
+    packet = {
+        "packet_id": "20260813T1205Z",
+        "window_close_utc": "2026-08-13T12:05:00Z",
+    }
+    packet_path.write_text(json.dumps(packet), encoding="utf-8")
+    monkeypatch.setattr(DIRECT, "trading_runtime_enabled", lambda _path: True)
+    monkeypatch.setattr(DIRECT, "packet_is_current", lambda _packet: True)
+    monkeypatch.setattr(DIRECT, "pending_outbox", lambda _exchange: None)
+    monkeypatch.setattr(DIRECT, "build_scenario", lambda _packet: {"books": []})
+    monkeypatch.setattr(
+        DIRECT,
+        "packet_rollover_wait_allowed",
+        lambda _packet, _scenario, _exchange: True,
+    )
+
+    class RolloverObserved(Exception):
+        pass
+
+    def observe_rollover(_path, wait_seconds, initial_packet):
+        assert wait_seconds == expected_wait
+        assert initial_packet == packet
+        raise RolloverObserved
+
+    monkeypatch.setattr(DIRECT, "read_packet_after_imminent_rollover", observe_rollover)
+
+    with pytest.raises(RolloverObserved):
+        DIRECT.run_once(
+            SimpleNamespace(dry_run=False, packet_rollover_wait_seconds=20),
+            glitch_data,
+            exchange,
+            direct_request=cycle_request,
+        )
+
+
 def test_held_trigger_nothing_gets_one_next_minute_full_followup(tmp_path: Path) -> None:
     exchange = tmp_path
     attempts = exchange / "hermes" / "model-attempts"

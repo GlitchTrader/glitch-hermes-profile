@@ -6036,6 +6036,7 @@ def run_once(
         raise ValueError("packet_id_missing")
     if not packet_is_current(initial_packet):
         return 0
+    reassessment_request = direct_request if is_entry_reassessment_request(direct_request) else None
     configured_rollover_wait = float(
         getattr(args, "packet_rollover_wait_seconds", 0) or 0
     )
@@ -6043,7 +6044,7 @@ def run_once(
         build_scenario(initial_packet)
         if configured_rollover_wait > 0
         and pending is None
-        and direct_request is None
+        and reassessment_request is None
         else None
     )
     rollover_wait = (
@@ -6063,7 +6064,6 @@ def run_once(
         raise ValueError("packet_id_missing")
     if not packet_is_current(packet):
         return 0
-    reassessment_request = direct_request if is_entry_reassessment_request(direct_request) else None
     if pending is not None:
         pending_id, pending_path = pending
         pending_batch = normalize_batch(
