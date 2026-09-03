@@ -79,6 +79,63 @@ def test_change_condition_accepts_both_word_orders_without_cross_instrument_leak
         raise AssertionError("direction-first instrument condition was accepted without a wake trigger")
 
 
+def test_change_condition_expands_compact_above_below_pairs_for_each_instrument() -> None:
+    intent = {
+        "instrument": "MES",
+        "decision_audit": {
+            "change_condition": (
+                "Reassess after completed 1m closes above or below "
+                "MES 7759.75/7755.75, MNQ 29543.75/29515.25, "
+                "M2K 2973.1/2970.9, or an authoritative native result."
+            )
+        },
+        "wake_triggers": [],
+    }
+
+    DIRECT.normalize_wake_triggers(intent, {"MNQ", "MES", "M2K"})
+
+    assert {
+        (row["instrument"], row["direction"], row["price"])
+        for row in intent["wake_triggers"]
+    } == {
+        ("MES", "ABOVE", 7759.75),
+        ("MES", "BELOW", 7755.75),
+        ("MNQ", "ABOVE", 29543.75),
+        ("MNQ", "BELOW", 29515.25),
+        ("M2K", "ABOVE", 2973.1),
+        ("M2K", "BELOW", 2970.9),
+    }
+
+
+def test_change_condition_expands_compact_below_above_pairs_in_direction_order() -> None:
+    intent = {
+        "instrument": "MES",
+        "decision_audit": {
+            "change_condition": (
+                "Reassess after a completed 1m close below or above "
+                "MES 7689.0/7703.75, MNQ 29201.5/29224.25 or 29260.0, "
+                "M2K 2973.6/2983.5, or an authoritative native result."
+            )
+        },
+        "wake_triggers": [],
+    }
+
+    DIRECT.normalize_wake_triggers(intent, {"MNQ", "MES", "M2K"})
+
+    assert {
+        (row["instrument"], row["direction"], row["price"])
+        for row in intent["wake_triggers"]
+    } == {
+        ("MES", "BELOW", 7689.0),
+        ("MES", "ABOVE", 7703.75),
+        ("MNQ", "BELOW", 29201.5),
+        ("MNQ", "ABOVE", 29224.25),
+        ("MNQ", "ABOVE", 29260.0),
+        ("M2K", "BELOW", 2973.6),
+        ("M2K", "ABOVE", 2983.5),
+    }
+
+
 def test_persisted_triggers_are_frozen_instrument_aware_and_deduplicated(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"
     (exchange / "hermes" / "supervisor").mkdir(parents=True)

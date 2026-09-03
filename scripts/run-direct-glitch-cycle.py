@@ -1742,11 +1742,56 @@ def explicit_price_crosses(
     inline_roots = roots | ({fallback} if fallback else set())
     if inline_roots:
         root_pattern = "|".join(re.escape(root) for root in sorted(inline_roots, key=len, reverse=True))
+        paired_direction_first = re.compile(
+            rf"\b(above|over|below|under)\s+or\s+(above|over|below|under)\s+"
+            rf"(?=(?:{root_pattern})\b)",
+            re.IGNORECASE,
+        )
+        paired_item = re.compile(
+            rf"({root_pattern})\s+([0-9]+(?:\.[0-9]+)?)\s*/\s*"
+            rf"([0-9]+(?:\.[0-9]+)?)",
+            re.IGNORECASE,
+        )
+        paired_prefix_spans: list[tuple[int, int]] = []
+        for pair in paired_direction_first.finditer(condition):
+            paired_prefix_spans.append(pair.span())
+            directions = tuple(
+                "ABOVE" if token.lower() in {"above", "over"} else "BELOW"
+                for token in pair.groups()
+            )
+            cursor = pair.end()
+            first_item = True
+            while True:
+                if first_item:
+                    separator = re.match(r"\s*", condition[cursor:])
+                else:
+                    separator = re.match(r"\s*,\s*", condition[cursor:])
+                    if not separator:
+                        break
+                cursor += separator.end()
+                item = paired_item.match(condition, cursor)
+                if not item:
+                    break
+                instrument = instrument_root(item.group(1))
+                crosses.add((instrument, directions[0], float(item.group(2))))
+                crosses.add((instrument, directions[1], float(item.group(3))))
+                cursor = item.end()
+                while True:
+                    alternative = re.match(
+                        r"\s+or\s+([0-9]+(?:\.[0-9]+)?)", condition[cursor:], re.IGNORECASE
+                    )
+                    if not alternative:
+                        break
+                    crosses.add((instrument, directions[1], float(alternative.group(1))))
+                    cursor += alternative.end()
+                first_item = False
         direction_first = re.compile(
             rf"\b(above|over|below|under)\s+({root_pattern})\s+([0-9]+(?:\.[0-9]+)?)",
             re.IGNORECASE,
         )
         for match in direction_first.finditer(condition):
+            if any(start <= match.start() < end for start, end in paired_prefix_spans):
+                continue
             direction = "ABOVE" if match.group(1).lower() in {"above", "over"} else "BELOW"
             crosses.add((instrument_root(match.group(2)), direction, float(match.group(3))))
     for match in pattern.finditer(condition):
