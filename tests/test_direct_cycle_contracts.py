@@ -2519,7 +2519,11 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "is noise, not the trade thesis" in prompt
     assert "about $10 of risk for only about $10-$20 gross reward is a noise probe" in prompt
     assert "$30 risk for $90 or $50 for $150 better describes a materially asymmetric opportunity" in prompt
-    assert "not automatically the primary target" in prompt
+    assert "Map an objective ladder before choosing geometry" in prompt
+    assert "nearby response levels manage the trade" in prompt
+    assert "not the primary target merely because it is first" in prompt
+    assert "infer a discounted continuation objective" in prompt
+    assert "evidence, not checklist prerequisites" in prompt
     assert "does not require the primary target to lie inside that window" in prompt
     assert "using the larger path for geometry does not require waiting for the larger move to confirm" in prompt
     assert "Do not claim that target room compensates for such a stop" in prompt
@@ -2534,6 +2538,13 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "survives one-minute noise but not five-minute excursion" in prompt
     assert "adverse probability evidence, not a positive noise-survival claim or a fixed ATR gate" in prompt
     assert "must not raise estimated probability or confidence" in prompt
+    assert "not a general penalty on an instrument or direction" in prompt
+    assert "realized P&L, a win/loss label, and the fact of exit are not market evidence" in prompt
+    assert "Same instrument and direction or a broad objective alone do not make a new setup correlated" in prompt
+    assert "A completed new leg, break-and-hold, or pullback/retest can make the setup distinct" in prompt
+    assert "internal arithmetic contradiction to write now_ev=NEGATIVE" in prompt
+    assert "If qualitative evidence disagrees with that implication, revise the estimated range" in prompt
+    assert "This consistency rule does not choose probability, geometry, instrument, or action" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
     assert "seconds_until_must_flat as the actual schedule horizon" in prompt
     assert "RECURSIVE_ABSTENTION_VETO" not in prompt
@@ -2581,6 +2592,8 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "Never use a fixed MFE percentage" in positioned_prompt
     assert "reconcile 1 - forecast.probability with estimated_target_first_range" not in positioned_prompt
     assert "rank the evidence-supported auction path, not the easiest bracket" not in positioned_prompt
+    assert "Map an objective ladder before choosing geometry" not in positioned_prompt
+    assert "internal arithmetic contradiction to write now_ev=NEGATIVE" not in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" not in flat_prompt
     assert "when deterministic_management_math.status is complete" not in flat_prompt
     assert "When its price_basis.status is complete" not in flat_prompt
@@ -2704,6 +2717,8 @@ def test_shared_flat_trigger_review_requests_one_shared_decision() -> None:
     assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
+    assert "Map an objective ladder before choosing geometry" in prompt
+    assert "internal arithmetic contradiction to write now_ev=NEGATIVE" in prompt
 
 
 def test_latest_prior_cognition_uses_one_canonical_decision_from_latest_prior_cycle(
