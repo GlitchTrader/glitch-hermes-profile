@@ -2514,7 +2514,12 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "never shorthand for perfect confirmation or a required retest" in prompt
     assert "rank the evidence-supported auction path, not the easiest bracket" in prompt
     assert "a low break-even probability alone is not edge" in prompt
-    assert "a supported short-horizon rotation remains eligible" in prompt
+    assert "Use microstructure to time the entry, not to shrink the trade thesis" in prompt
+    assert "Cheap risk comes from favorable entry near that genuine invalidation" in prompt
+    assert "is noise, not the trade thesis" in prompt
+    assert "using the larger path for geometry does not require waiting for the larger move to confirm" in prompt
+    assert "Do not claim that target room compensates for such a stop" in prompt
+    assert "a supported short-horizon rotation remains eligible" not in prompt
     assert "cannot become now_ev POSITIVE by selecting its favorable end" in prompt
     assert "a range that clears only nominally needs current path evidence" in prompt
     assert "Neither judgment requires a fixed numerical margin or completed confirmation" in prompt
