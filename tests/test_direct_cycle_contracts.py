@@ -2517,6 +2517,10 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "Use microstructure to time the entry, not to shrink the trade thesis" in prompt
     assert "Cheap risk comes from favorable entry near that genuine invalidation" in prompt
     assert "is noise, not the trade thesis" in prompt
+    assert "about $10 of risk for only about $10-$20 gross reward is a noise probe" in prompt
+    assert "$30 risk for $90 or $50 for $150 better describes a materially asymmetric opportunity" in prompt
+    assert "not automatically the primary target" in prompt
+    assert "does not require the primary target to lie inside that window" in prompt
     assert "using the larger path for geometry does not require waiting for the larger move to confirm" in prompt
     assert "Do not claim that target room compensates for such a stop" in prompt
     assert "a supported short-horizon rotation remains eligible" not in prompt
