@@ -136,6 +136,37 @@ def test_change_condition_expands_compact_below_above_pairs_in_direction_order()
     }
 
 
+def test_change_condition_expands_live_three_level_slash_pairs_without_truncating_followers() -> None:
+    intent = {
+        "instrument": "MNQ",
+        "decision_audit": {
+            "change_condition": (
+                "Reassess after a completed 1m close above or below "
+                "MNQ 29533.0/29521.5/29515.25, "
+                "MES 7756.25/7753.25/7748.0, M2K 2969.4/2967.175, "
+                "or any authoritative native result."
+            )
+        },
+        "wake_triggers": [],
+    }
+
+    DIRECT.normalize_wake_triggers(intent, {"MNQ", "MES", "M2K"})
+
+    assert {
+        (row["instrument"], row["direction"], row["price"])
+        for row in intent["wake_triggers"]
+    } == {
+        ("MNQ", "ABOVE", 29533.0),
+        ("MNQ", "BELOW", 29521.5),
+        ("MNQ", "BELOW", 29515.25),
+        ("MES", "ABOVE", 7756.25),
+        ("MES", "BELOW", 7753.25),
+        ("MES", "BELOW", 7748.0),
+        ("M2K", "ABOVE", 2969.4),
+        ("M2K", "BELOW", 2967.175),
+    }
+
+
 def test_persisted_triggers_are_frozen_instrument_aware_and_deduplicated(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"
     (exchange / "hermes" / "supervisor").mkdir(parents=True)

@@ -1778,7 +1778,9 @@ def explicit_price_crosses(
                 cursor = item.end()
                 while True:
                     alternative = re.match(
-                        r"\s+or\s+([0-9]+(?:\.[0-9]+)?)", condition[cursor:], re.IGNORECASE
+                        r"(?:\s*/\s*|\s+or\s+)([0-9]+(?:\.[0-9]+)?)",
+                        condition[cursor:],
+                        re.IGNORECASE,
                     )
                     if not alternative:
                         break
