@@ -4355,6 +4355,7 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "candidate_comparison_",
     "decision_audit_",
     "decision_count_mismatch",
+    "entry_geometry_evidence_incomplete",
     "forecast_contract_",
     "hermes_output_",
     "intent_contract_",
@@ -4462,6 +4463,10 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         + ". decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
         "SELECTION_REASON and SELECTION_EV are text lines inside decision_audit.decisive_evidence, "
         "never JSON keys. "
+        "For entry_geometry_evidence_incomplete, add only the named missing points, ticks, "
+        "one/five-minute horizon-noise, one-contract dollars, or latency dimension to the "
+        "selected geometry clause from the existing levels and evidence; do not change the "
+        "setup, action, instrument, or prices. "
         "disconfirming_evidence and change_condition are JSON siblings after decisive_evidence, "
         "never labeled text inside decisive_evidence. "
         "Every SELECTION_EV must contain direction, entry, stop, target, risk_points, reward_points, "

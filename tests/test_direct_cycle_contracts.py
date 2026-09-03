@@ -351,6 +351,18 @@ def test_invalid_position_management_action_does_not_receive_format_repair() -> 
     ) is False
 
 
+def test_incomplete_entry_geometry_receives_one_format_only_repair() -> None:
+    error = ValueError(
+        "entry_geometry_evidence_incomplete:0:candidate_comparison:points"
+    )
+
+    assert DIRECT.retryable_model_contract_error(error) is True
+    repair = DIRECT.contract_repair_prompt("prompt", {}, error)
+    assert repair.startswith("FORMAT_CORRECTION_ONLY:")
+    assert "add only the named missing points" in repair
+    assert "do not change the setup, action, instrument, or prices" in repair
+
+
 def test_extract_json_does_not_repair_missing_semantic_value() -> None:
     malformed = (
         '{"schema_version":"glitch.intent.batch.v1","decisions":['
