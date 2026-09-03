@@ -2092,6 +2092,92 @@ def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
     assert "Preserve the same market judgment" in calls[1]
 
 
+def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, scenario = valid_batch("2026-09-03T16:15:00Z")
+    corrected = json.loads(json.dumps(first))
+    corrected["decisions"][0]["reason"] = "Probability estimate corrected from the same evidence."
+    calls: list[str] = []
+    validations = 0
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return first if len(calls) == 1 else corrected
+
+    def validate(*_args, **_kwargs):
+        nonlocal validations
+        validations += 1
+        return (
+            ["selection_ev_verdict_range_mismatch:0:candidate_comparison"]
+            if validations == 1 else []
+        )
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    monkeypatch.setattr(DIRECT, "validate_batch", validate)
+
+    batch, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
+        "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+    )
+
+    assert batch["decisions"][0]["reason"].startswith("Probability estimate corrected")
+    assert output_repair_count == 1
+    assert transport_retry_count == 0
+    assert len(calls) == 2
+    assert calls[1].startswith("SELECTION_EV_SELF_CONSISTENCY_CORRECTION_ONLY:")
+    assert "ORIGINAL_PROMPT" not in calls[1]
+    assert "code has not chosen an action" in calls[1]
+    assert "Payoff ratio or break-even alone does not prove edge" in calls[1]
+
+
+def test_selection_ev_consistency_retry_does_not_accept_a_second_contradiction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid, scenario = valid_batch("2026-09-03T16:15:00Z")
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", lambda *_args, **_kwargs: invalid)
+    monkeypatch.setattr(
+        DIRECT,
+        "validate_batch",
+        lambda *_args, **_kwargs: [
+            "selection_ev_nothing_positive:0:candidate_comparison"
+        ],
+    )
+
+    with pytest.raises(ValueError, match="selection_ev_nothing_positive"):
+        DIRECT.invoke_validated_batch(
+            "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+        )
+
+
+def test_other_selection_math_observations_remain_non_gating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch, scenario = valid_batch("2026-09-03T16:15:00Z")
+    calls: list[str] = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return batch
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    monkeypatch.setattr(
+        DIRECT,
+        "validate_batch",
+        lambda *_args, **_kwargs: [
+            "selection_ev_arithmetic_mismatch:0:candidate_comparison"
+        ],
+    )
+
+    _, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
+        "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+    )
+
+    assert calls == ["ORIGINAL_PROMPT"]
+    assert output_repair_count == 0
+    assert transport_retry_count == 0
+
+
 def test_position_management_event_inversion_gets_one_bounded_consistency_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

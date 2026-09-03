@@ -4380,6 +4380,13 @@ NON_REPAIRABLE_MODEL_CONTRACT_ERRORS = (
     "trigger_review_selection_instrument_mismatch",
 )
 
+SELECTION_EV_SELF_CONSISTENCY_ERRORS = (
+    "selection_ev_entry_not_positive",
+    "selection_ev_nothing_positive",
+    "selection_ev_forecast_range_mismatch",
+    "selection_ev_verdict_range_mismatch",
+)
+
 
 def retryable_model_contract_error(error: Exception) -> bool:
     if isinstance(error, InvalidModelResponseError):
@@ -4399,6 +4406,29 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
     error_text = str(error)
     audit_fields = ",".join(DECISION_AUDIT_FIELD_ORDER)
+    if error_text.startswith(SELECTION_EV_SELF_CONSISTENCY_ERRORS):
+        return (
+            "SELECTION_EV_SELF_CONSISTENCY_CORRECTION_ONLY: Use only PREVIOUS_RESPONSE and do "
+            "not invent a new setup, market fact, or source of evidence. The contract error is "
+            "not a trade signal and code has not chosen an action. Preserve the selected "
+            "instrument, entry, stop, primary target, candidate paths, objectives, invalidations, "
+            "and ranking. Reconcile Hermes's own forecast probability, estimated target-first "
+            "range, EV verdict, and action. Payoff ratio or break-even alone does not prove edge: "
+            "if the qualitative judgment was intended, correct the probability estimate; if the "
+            "probability estimate was intended, correct the verdict and action. Change only the "
+            "probability/EV/action fields and directly dependent confidence or reason text. If "
+            "the action changes, add or remove only its required entry fields and update the "
+            "selected candidate's entry-range and geometry clauses using the already-authored "
+            "setup. Return exactly one complete strict glitch.intent.batch.v1 JSON object under "
+            "9000 characters with no Markdown or prose. action, final_choice, and "
+            "SELECTION_ACTION must agree; ENTER requires now_ev=POSITIVE, while NOTHING requires "
+            "now_ev=NEGATIVE or irreducibly UNCERTAIN. When forecast is present, and always for "
+            "ENTER, STOP_BEFORE_PRIMARY_TARGET and estimated_target_first_range must describe "
+            "complementary probabilities within the allowed tolerance.\nCONTRACT_ERROR="
+            + error_text
+            + "\nPREVIOUS_RESPONSE="
+            + prior
+        )
     if error_text.startswith("position_management_hold_ev_"):
         return (
             "POSITION_MANAGEMENT_SELF_CONSISTENCY_CORRECTION_ONLY: Do not make a new market "
@@ -4553,13 +4583,19 @@ def invoke_validated_batch(
             allow_not_applicable=prior_cognition is None,
         )
         canonicalize_batch_selection_math(batch)
-        validate_batch(
+        observations = validate_batch(
             batch,
             scenario,
             directive,
             expected_decision_mode=decision_mode,
             active_trade_state=active_trade_state,
         )
+        contradiction = next((
+            issue for issue in observations
+            if issue.startswith(SELECTION_EV_SELF_CONSISTENCY_ERRORS)
+        ), None)
+        if contradiction:
+            raise ValueError(contradiction)
         if decision_mode == "trigger_review" and trigger_review_has_held_nothing(batch):
             batch["next_review_seconds"] = 60
         return batch
