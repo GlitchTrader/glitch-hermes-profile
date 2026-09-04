@@ -225,6 +225,31 @@ def test_unfilled_imbalance_is_a_measurement_not_a_trade() -> None:
     assert ms.fvg_zones(bars, 101, tick=0.25, atr=3, point_value=5) == []
 
 
+def test_auction_reference_ladder_spans_near_and_far_causal_levels() -> None:
+    ladder = ms._auction_reference_ladder(
+        {
+            "high": 110, "low": 90,
+            "previous_high": 120, "previous_low": 80,
+        },
+        {"bars": 60, "high": 115, "low": 85, "mid": 100, "width_points": 30},
+        {
+            "current_bands": {
+                "minus_2": 90, "minus_1": 95, "median": 100,
+                "plus_1": 105, "plus_2": 110,
+            },
+        },
+        current=100,
+        tolerance=0.5,
+    )
+
+    assert [row[0] for row in ladder["above"]] == [105, 115, 120]
+    assert [row[0] for row in ladder["below"]] == [95, 85, 80]
+    assert all(row[1] > 0 for row in ladder["above"])
+    assert all(row[1] < 0 for row in ladder["below"])
+    assert "prior_session_high" in ladder["above"][-1][2]
+    assert "prior_session_low" in ladder["below"][-1][2]
+
+
 def test_market_map_is_bounded_neutral_and_missing_flow_stays_unknown(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"
     seed_exchange(exchange, 90)
@@ -238,6 +263,23 @@ def test_market_map_is_bounded_neutral_and_missing_flow_stays_unknown(tmp_path: 
     assert by_root["M2K"]["order_flow_response"]["status"] == "unavailable"
     assert "vwap" in by_root["M2K"]["evidence_quality"]["missing"]
     assert by_root["MES"]["evidence_quality"]["status"] == "ready"
+    assert value["auction_reference_ladder_contract"]["row_format"] == [
+        "price", "signed_distance_points", "sources",
+    ]
+    for perception in by_root.values():
+        ladder = perception["auction_reference_ladder"]
+        assert 1 <= len(ladder["above"]) <= ms.MAX_AUCTION_REFERENCES_PER_SIDE
+        assert 1 <= len(ladder["below"]) <= ms.MAX_AUCTION_REFERENCES_PER_SIDE
+        assert all(row[1] > 0 for row in ladder["above"])
+        assert all(row[1] < 0 for row in ladder["below"])
+        for level in perception["nearest_measured_levels"]:
+            assert "absolute_distance_ticks" in level
+            assert "absolute_distance_atr" in level
+            assert "absolute_distance_one_contract_usd" in level
+            assert "touch_episodes" in level
+            assert "responses_above" in level
+            assert "responses_below" in level
+            assert "last_touch_age_bars" in level
 
     forbidden_keys = {
         "recommended_action", "trade_action", "probability", "permission",

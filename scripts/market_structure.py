@@ -29,6 +29,7 @@ MAX_BARS = 420
 MAX_SAMPLES = 420
 MAX_BACKFILL_FRAMES = 180
 MAX_LEVELS = 8
+MAX_AUCTION_REFERENCES_PER_SIDE = 3
 MAX_IMAGE_FILES = 48
 MAX_SERIALIZED_CHARS = 11_250
 ROOT_ORDER = ("MES", "MNQ", "M2K")
@@ -487,6 +488,65 @@ def _range_reference(bars: list[dict[str, Any]], count: int = 60) -> dict[str, A
             "mid": round((high + low) / 2, 8), "width_points": round(high - low, 8)}
 
 
+def _auction_reference_ladder(
+    session: dict[str, Any], range_reference: dict[str, Any] | None,
+    vwap_path: dict[str, Any], current: float, tolerance: float,
+) -> dict[str, list[list[Any]]]:
+    """Keep a compact causal level path on both sides of current price."""
+    candidates: list[tuple[float, str]] = []
+    for key, label in (
+        ("high", "session_high"), ("low", "session_low"),
+        ("previous_high", "prior_session_high"),
+        ("previous_low", "prior_session_low"),
+    ):
+        if (price := _finite(session.get(key))) is not None:
+            candidates.append((price, label))
+    if range_reference:
+        for key in ("high", "low", "mid"):
+            if (price := _finite(range_reference.get(key))) is not None:
+                candidates.append((price, f"range{range_reference['bars']}_{key}"))
+    bands = vwap_path.get("current_bands")
+    if isinstance(bands, dict):
+        labels = {
+            "minus_2": "vwap_-2", "minus_1": "vwap_-1", "median": "vwap",
+            "plus_1": "vwap_+1", "plus_2": "vwap_+2",
+        }
+        for key, label in labels.items():
+            if (price := _finite(bands.get(key))) is not None:
+                candidates.append((price, label))
+
+    clusters: list[dict[str, Any]] = []
+    for price, source in sorted(candidates):
+        if clusters and abs(price - float(clusters[-1]["price"])) <= tolerance:
+            cluster = clusters[-1]
+            count = int(cluster["source_count"])
+            cluster["price"] = (float(cluster["price"]) * count + price) / (count + 1)
+            cluster["source_count"] = count + 1
+            cluster["sources"].append(source)
+        else:
+            clusters.append({"price": price, "source_count": 1, "sources": [source]})
+
+    ladder: dict[str, list[list[Any]]] = {"above": [], "below": []}
+    for cluster in clusters:
+        price = float(cluster["price"])
+        signed = price - current
+        relation = "above" if signed > tolerance else "below" if signed < -tolerance else None
+        if relation is None:
+            continue
+        ladder[relation].append([
+            round(price, 8), round(signed, 8), sorted(set(cluster["sources"])),
+        ])
+    for relation in ladder:
+        ladder[relation].sort(key=lambda row: abs(float(row[1])))
+        rows = ladder[relation]
+        if len(rows) > MAX_AUCTION_REFERENCES_PER_SIDE:
+            last = len(rows) - 1
+            step = last / (MAX_AUCTION_REFERENCES_PER_SIDE - 1)
+            rows = [rows[math.floor(index * step + 0.5)] for index in range(MAX_AUCTION_REFERENCES_PER_SIDE)]
+        ladder[relation] = rows
+    return ladder
+
+
 def _levels(
     bars: list[dict[str, Any]], swings: list[dict[str, Any]], session: dict[str, Any],
     current: float, tolerance: float, tick: float | None,
@@ -715,6 +775,7 @@ def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
         "relation_to_prior_same_kind": pivot["relation_to_prior_same_kind"],
         "age_bars": len(bars) - 1 - int(pivot["index"]),
     } for pivot in swings[-8:]]
+    range_reference = _range_reference(bars)
     vwap_path = _vwap_path(samples, tick)
     flow_response = _order_flow_response(samples, atr)
     return {
@@ -750,10 +811,16 @@ def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
                 if tolerance_points is not None else []
             ),
         },
-        "range_reference": _range_reference(bars),
+        "range_reference": range_reference,
         # Sorted by absolute distance; relative_to_current keeps both sides
         # explicit without duplicating the same level in another structure.
         "nearest_measured_levels": levels,
+        "auction_reference_ladder": (
+            _auction_reference_ladder(
+                session, range_reference, vwap_path, current, tolerance_points,
+            )
+            if current is not None and tolerance_points is not None else {"above": [], "below": []}
+        ),
         "vwap_path": vwap_path,
         "order_flow_response": flow_response,
         "unfilled_three_bar_imbalances": (
@@ -1123,6 +1190,34 @@ def _trim_to_budget(value: dict[str, Any]) -> None:
                 zone.pop("formed_bar_id", None)
     if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) <= MAX_SERIALIZED_CHARS:
         return
+    # Preserve the wider auction ladder and detailed near-level economics before
+    # duplicated range/noise representations. The ladder carries the 60-bar
+    # high, midpoint, and low, while the 60 window retains its width; overlap
+    # already supplies a bounded chop measurement when reversal count is elided.
+    for instrument in value.get("instruments", []):
+        if not isinstance(instrument, dict):
+            continue
+        instrument.pop("range_60", None)
+        tolerance = instrument.get("measurement_tolerance")
+        if isinstance(tolerance, dict):
+            tolerance.pop("ticks", None)
+            tolerance.pop("recent_median_true_range_points", None)
+        sequence = instrument.get("price_sequence")
+        if isinstance(sequence, dict):
+            for leg in sequence.get("legs", []):
+                if isinstance(leg, dict):
+                    leg.pop("ticks", None)
+            for window in sequence.get("windows", {}).values():
+                if isinstance(window, dict):
+                    window.pop("close_direction_reversal_fraction", None)
+    if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) <= MAX_SERIALIZED_CHARS:
+        return
+    for instrument in value.get("instruments", []):
+        sequence = instrument.get("price_sequence") if isinstance(instrument, dict) else None
+        if isinstance(sequence, dict):
+            sequence.pop("current_same_direction_close_run", None)
+    if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) <= MAX_SERIALIZED_CHARS:
+        return
     # All semantics below are also stated in the prompt and concrete fields.
     # If unusually long native identifiers still exceed the hard text budget,
     # fail open to the authoritative packet instead of sending an oversized map.
@@ -1155,6 +1250,9 @@ def build_market_perception(
             "level_tolerance": "max(2_native_ticks,20pct_recent_median_true_range)_rounded_to_tick",
             "vwap_bands": "sigma_inferred_from_native_price_vwap_and_native_deviation_when_available",
             "missing": "unknown_and_neutral",
+        },
+        "auction_reference_ladder_contract": {
+            "row_format": ["price", "signed_distance_points", "sources"],
         },
         "view": "position_management" if positioned_roots else "portfolio_scan",
         "instrument_order": roots,
