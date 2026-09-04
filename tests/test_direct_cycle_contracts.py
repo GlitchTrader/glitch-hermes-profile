@@ -2953,8 +2953,10 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "Estimate target-first probability from evidence before using payoff math" in prompt
     assert "never work backward from an attractive bracket" in prompt
     assert "without using payoff ratio or break-even as probability evidence" in prompt
-    assert "never raise or lower the probability range merely to preserve ENTER" in prompt
-    assert "only touches or narrowly clears break-even" in prompt
+    assert "Never raise or lower the probability range merely to preserve ENTER" in prompt
+    assert "range wide enough to include all named probability uncertainty" in prompt
+    assert "never keep the whole range above break-even" in prompt
+    assert "UNCERTAIN is valid only when the range genuinely straddles break-even" in prompt
     assert "not a fixed probability or reward/risk rule" in prompt
     assert "reconcile recent_glitch_ledger.recent_exit_decisions and completed native results before selection" in prompt
     assert "treat them as one correlated thesis" in prompt
