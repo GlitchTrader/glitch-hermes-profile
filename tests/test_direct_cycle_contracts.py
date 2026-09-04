@@ -351,16 +351,85 @@ def test_invalid_position_management_action_does_not_receive_format_repair() -> 
     ) is False
 
 
-def test_incomplete_entry_geometry_receives_one_format_only_repair() -> None:
+def test_incomplete_entry_geometry_receives_one_bounded_entry_repair() -> None:
     error = ValueError(
         "entry_geometry_evidence_incomplete:0:candidate_comparison:points"
     )
+    context = {
+        "candidates": [{"instrument": "MNQ", "current_decision_price": 20000.0}],
+    }
 
     assert DIRECT.retryable_model_contract_error(error) is True
-    repair = DIRECT.contract_repair_prompt("prompt", {}, error)
-    assert repair.startswith("FORMAT_CORRECTION_ONLY:")
-    assert "add only the named missing points" in repair
-    assert "do not change the setup, action, instrument, or prices" in repair
+    repair = DIRECT.contract_repair_prompt("prompt", {}, error, context)
+    assert repair.startswith("ENTRY_CONTRACT_CORRECTION_ONLY:")
+    assert "add only the dimensions named by the error" in repair
+    assert "one-contract stop dollars" in repair
+    assert "state model/transport latency once without inventing a duration" in repair
+    assert '"current_decision_price":20000.0' in repair
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "protected_market_entry_required:0",
+        "entry_quantity_invalid:0",
+        "entry_range_invalid:0",
+        "entry_range_excludes_decision_price:0",
+        "entry_range_geometry_invalid:0",
+    ],
+)
+def test_repairable_entry_contract_errors_receive_bounded_context(message: str) -> None:
+    context = {"valid_entry_quantities_for_all_books": [1, 2]}
+
+    assert DIRECT.retryable_model_contract_error(ValueError(message)) is True
+    repair = DIRECT.contract_repair_prompt("prompt", {}, ValueError(message), context)
+
+    assert repair.startswith("ENTRY_CONTRACT_CORRECTION_ONLY:")
+    assert "must not trigger market reassessment" in repair
+    assert "never widen the stop or target" in repair
+    assert '"valid_entry_quantities_for_all_books":[1,2]' in repair
+
+
+def test_contract_repair_context_is_compact_authoritative_arithmetic_only() -> None:
+    scenario = {
+        "market": {"candidates": [{
+            "instrument": "MNQ 09-26",
+            "current_price": 20000.25,
+            "instrument_economics": {
+                "point_value_usd": 2.0,
+                "tick_size": 0.25,
+                "source": "ninjatrader_master_instrument",
+            },
+            "timeframe_bars": [
+                {"minutes": 1, "indicators": {"atr": 8.0}},
+                {"minutes": 5, "indicators": {"atr": 18.0}},
+            ],
+        }]},
+        "books": [
+            {"valid_entry_quantities": [1, 2, 3]},
+            {"valid_entry_quantities": [1, 2]},
+        ],
+    }
+
+    context = DIRECT.contract_repair_context(
+        scenario,
+        {"decisions": [{"instrument": "MNQ"}]},
+    )
+
+    assert context["effect"] == "contract_correction_facts_only_no_market_reassessment"
+    assert context["required_entry_order_type"] == "MARKET"
+    assert context["valid_entry_quantities_for_all_books"] == [1, 2]
+    selected = context["candidates"]
+    assert len(selected) == 1
+    assert selected[0]["instrument"] == "MNQ"
+    assert selected[0]["current_decision_price"] == 20000.25
+    assert selected[0]["geometry"]["point_value_usd_per_point"] == 2.0
+    assert selected[0]["geometry"]["tick_size_points"] == 0.25
+    assert selected[0]["geometry"]["atr"] == {
+        "1m": {"points": 8.0, "ticks": 32.0, "one_contract_usd": 16.0},
+        "5m": {"points": 18.0, "ticks": 72.0, "one_contract_usd": 36.0},
+    }
+    assert "timeframe_bars" not in json.dumps(context)
 
 
 def test_extract_json_does_not_repair_missing_semantic_value() -> None:
@@ -2108,6 +2177,12 @@ def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first, scenario = valid_batch("2026-09-03T16:15:00Z")
+    scenario["market"]["candidates"] = [{
+        "instrument": "MNQ",
+        "current_price": 20000.25,
+        "instrument_economics": {"point_value_usd": 2.0, "tick_size": 0.25},
+    }]
+    scenario["books"][0]["valid_entry_quantities"] = [1, 2]
     corrected = json.loads(json.dumps(first))
     corrected["decisions"][0]["reason"] = "Probability estimate corrected from the same evidence."
     calls: list[str] = []
@@ -2148,6 +2223,8 @@ def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
     assert "does not estimate probability or select a new setup" in calls[1]
     assert "Do not raise or lower the range" in calls[1]
     assert "this repair has no current market evidence" in calls[1]
+    assert '"current_decision_price":20000.25' in calls[1]
+    assert '"valid_entry_quantities_for_all_books":[1,2]' in calls[1]
 
 
 def test_selection_ev_consistency_retry_does_not_accept_a_second_contradiction(

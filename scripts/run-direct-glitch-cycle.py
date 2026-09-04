@@ -4352,12 +4352,20 @@ def invoke_hermes(
         raise InvalidModelResponseError(completed.stdout, error) from error
 
 
+ENTRY_CONTRACT_REPAIR_ERRORS = (
+    "entry_geometry_evidence_incomplete",
+    "entry_quantity_invalid",
+    "entry_range_",
+    "protected_market_entry_required",
+)
+
+
 RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "batch_",
     "candidate_comparison_",
     "decision_audit_",
     "decision_count_mismatch",
-    "entry_geometry_evidence_incomplete",
+    *ENTRY_CONTRACT_REPAIR_ERRORS,
     "forecast_contract_",
     "hermes_output_",
     "intent_contract_",
@@ -4402,13 +4410,83 @@ def retryable_model_contract_error(error: Exception) -> bool:
     return error_text.startswith(RETRYABLE_MODEL_CONTRACT_ERRORS)
 
 
-def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
+def contract_repair_context(
+    scenario: dict[str, Any],
+    output: Any,
+) -> dict[str, Any]:
+    """Expose only authoritative arithmetic needed to repair an entry payload."""
+    decisions = output.get("decisions") if isinstance(output, dict) else None
+    selected = instrument_root(
+        decisions[0].get("instrument")
+        if isinstance(decisions, list) and decisions and isinstance(decisions[0], dict)
+        else None
+    )
+    candidates = []
+    for candidate in scenario.get("market", {}).get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        root = instrument_root(candidate.get("instrument") or candidate.get("instrument_root"))
+        if not root or root != selected:
+            continue
+        try:
+            current_price = float(candidate.get("current_price"))
+        except (TypeError, ValueError):
+            current_price = math.nan
+        geometry = deterministic_geometry_context(candidate)
+        candidates.append({
+            "instrument": root,
+            "current_decision_price": current_price if math.isfinite(current_price) else None,
+            "geometry": {
+                key: geometry[key] for key in (
+                    "status", "point_value_usd_per_point", "tick_size_points", "atr",
+                    "spread", "calculation_issues",
+                )
+            },
+        })
+
+    books = scenario.get("books") if isinstance(scenario.get("books"), list) else []
+    quantity_sets: list[set[int]] = []
+    for book in books:
+        if not isinstance(book, dict):
+            continue
+        raw = book.get("valid_entry_quantities")
+        if not isinstance(raw, list):
+            account_context = book.get("position_building_context")
+            raw = account_context.get("valid_entry_quantities") if isinstance(account_context, dict) else None
+        values = {
+            value for value in (raw or [])
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        }
+        if values:
+            quantity_sets.append(values)
+    common_quantities = (
+        sorted(set.intersection(*quantity_sets))
+        if books and len(quantity_sets) == len(books) else []
+    )
+    return {
+        "schema_version": "glitch.hermes.contract_repair_context.v1",
+        "effect": "contract_correction_facts_only_no_market_reassessment",
+        "required_entry_order_type": "MARKET",
+        "valid_entry_quantities_for_all_books": common_quantities,
+        "candidates": candidates,
+    }
+
+
+def contract_repair_prompt(
+    prompt: str,
+    output: Any,
+    error: Exception,
+    repair_context: dict[str, Any] | None = None,
+) -> str:
     if isinstance(output, str):
         prior = output.strip()
     else:
         prior = json.dumps(output, separators=(",", ":"), ensure_ascii=False)
     error_text = str(error)
     audit_fields = ",".join(DECISION_AUDIT_FIELD_ORDER)
+    repair_context_text = json.dumps(
+        repair_context or {}, separators=(",", ":"), ensure_ascii=False
+    )
     if error_text.startswith(SELECTION_EV_SELF_CONSISTENCY_ERRORS):
         return (
             "SELECTION_EV_SELF_CONSISTENCY_CORRECTION_ONLY: Use only PREVIOUS_RESPONSE and do "
@@ -4428,17 +4506,28 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
             "unchanged. This maps Hermes's own preserved estimate to its consequence and does not "
             "estimate probability or select a new setup. Do not raise or lower the range "
             "to preserve an entry, geometry, or action: this repair has no current market evidence "
-            "with which to re-estimate it. Change only the probability/EV/action fields and directly "
+            "with which to re-estimate it. REPAIR_CONTEXT contains correction-only current-price, "
+            "contract arithmetic, latency semantics, and quantity facts; it is not market evidence. "
+            "Change only the probability/EV/action fields and directly "
             "dependent confidence or reason text. If "
             "the action changes, add or remove only its required entry fields and update the "
             "selected candidate's entry-range and geometry clauses using the already-authored "
-            "setup. Return exactly one complete strict glitch.intent.batch.v1 JSON object under "
+            "setup and REPAIR_CONTEXT. For an ENTER, copy the already-authored stop and primary "
+            "target, use order_type=MARKET, preserve an authored valid quantity or otherwise use "
+            "the smallest valid_entry_quantities_for_all_books value, and make entry_range_low "
+            "and entry_range_high contain current_decision_price while remaining strictly between "
+            "the unchanged stop and target. Never change stop or target merely to make a range fit. "
+            "If no such executable range exists, use NOTHING with now_ev=UNCERTAIN, update all "
+            "action fields together, and remove entry-only JSON fields; do not alter the probability "
+            "range. Return exactly one complete strict glitch.intent.batch.v1 JSON object under "
             "9000 characters with no Markdown or prose. action, final_choice, and "
             "SELECTION_ACTION must agree; ENTER requires now_ev=POSITIVE, while NOTHING requires "
             "now_ev=NEGATIVE or irreducibly UNCERTAIN. When forecast is present, and always for "
             "ENTER, STOP_BEFORE_PRIMARY_TARGET and estimated_target_first_range must describe "
             "complementary probabilities within the allowed tolerance.\nCONTRACT_ERROR="
             + error_text
+            + "\nREPAIR_CONTEXT="
+            + repair_context_text
             + "\nPREVIOUS_RESPONSE="
             + prior
         )
@@ -4463,6 +4552,35 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
             + "\nPREVIOUS_RESPONSE="
             + prior
         )
+    if error_text.startswith(ENTRY_CONTRACT_REPAIR_ERRORS):
+        return (
+            "ENTRY_CONTRACT_CORRECTION_ONLY: Preserve the selected market path, instrument, "
+            "direction, probability estimate, EV verdict, action, stop, primary target, confidence, "
+            "reasons, and audit evidence from PREVIOUS_RESPONSE. REPAIR_CONTEXT contains only "
+            "authoritative current-price, contract arithmetic, latency semantics, and quantities; "
+            "it is not a trade signal and must not trigger market reassessment. Correct only the "
+            "entry contract named by CONTRACT_ERROR. For protected_market_entry_required, copy "
+            "the already-authored stop and target into stop_loss and take_profit_1, use "
+            "order_type=MARKET, and preserve an authored valid quantity or otherwise use the "
+            "smallest valid_entry_quantities_for_all_books value. For entry_range errors, change "
+            "only entry_range_low and entry_range_high so low is below high, the selected "
+            "current_decision_price is inside the range, and the range remains strictly between "
+            "the unchanged stop and target; never widen the stop or target to force validity. "
+            "For entry_geometry_evidence_incomplete, add only the dimensions named by the error "
+            "to the selected NOISE_AND_GEOMETRY or ENTRY_RANGE_NOISE_GEOMETRY clause. Calculate "
+            "one-contract stop dollars from entry-to-stop points times point_value_usd_per_point; "
+            "use the supplied 1m/5m ATR arithmetic and state model/transport latency once without "
+            "inventing a duration. If the unchanged setup cannot support a valid current entry "
+            "range, use NOTHING with now_ev=UNCERTAIN, update action, final_choice, and "
+            "SELECTION_ACTION together, remove entry-only JSON fields, and preserve the authored "
+            "probability range. Return exactly one complete strict glitch.intent.batch.v1 JSON "
+            "object under 9000 characters with no Markdown or prose.\nCONTRACT_ERROR="
+            + error_text
+            + "\nREPAIR_CONTEXT="
+            + repair_context_text
+            + "\nPREVIOUS_RESPONSE="
+            + prior
+        )
     return (
         "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
         "quantity, protection, confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
@@ -4475,10 +4593,6 @@ def contract_repair_prompt(prompt: str, output: Any, error: Exception) -> str:
         + ". decision_audit ends after final_choice; wake_triggers is its decision-level sibling. "
         "SELECTION_REASON and SELECTION_EV are text lines inside decision_audit.decisive_evidence, "
         "never JSON keys. "
-        "For entry_geometry_evidence_incomplete, add only the named missing points, ticks, "
-        "one/five-minute horizon-noise, one-contract dollars, or latency dimension to the "
-        "selected geometry clause from the existing levels and evidence; do not change the "
-        "setup, action, instrument, or prices. "
         "disconfirming_evidence and change_condition are JSON siblings after decisive_evidence, "
         "never labeled text inside decisive_evidence. "
         "Every SELECTION_EV must contain direction, entry, stop, target, risk_points, reward_points, "
@@ -4635,7 +4749,15 @@ def invoke_validated_batch(
             canonicalize_batch_selection_math(failed_output)
         # The correction is contract-only or same-evidence self-consistency;
         # the original visual evidence must not invite a second market judgment.
-        repaired_raw = invoke(contract_repair_prompt(prompt, failed_output, error), None)
+        repaired_raw = invoke(
+            contract_repair_prompt(
+                prompt,
+                failed_output,
+                error,
+                contract_repair_context(scenario, failed_output),
+            ),
+            None,
+        )
         return prepare(repaired_raw), 1, transport_retry_count
 
 
