@@ -4495,31 +4495,23 @@ def contract_repair_prompt(
             "instrument, entry, stop, primary target, candidate paths, objectives, invalidations, "
             "ranking, and evidence-derived estimated target-first range. Reconcile Hermes's own "
             "forecast probability, EV verdict, and action to that range and the exact break-even. "
-            "Payoff ratio or break-even alone does not prove edge. Correct forecast probability "
-            "to the complement of the authored target-first range when needed; correct the EV "
-            "verdict and action when they contradict that range. For "
-            "selection_ev_verdict_range_mismatch, apply the arithmetic implication explicitly: "
-            "when the whole preserved range is above exact break-even, set now_ev=POSITIVE and "
-            "use the direction-matching ENTER_LONG or ENTER_SHORT action; when the whole range "
-            "is below exact break-even, set now_ev=NEGATIVE and use NOTHING. Update action, "
-            "final_choice, and SELECTION_ACTION together; never return the contradictory pair "
-            "unchanged. This maps Hermes's own preserved estimate to its consequence and does not "
-            "estimate probability or select a new setup. Do not raise or lower the range "
+            "Payoff ratio or break-even alone does not prove edge. A correction-only retry may "
+            "repair the forecast complement or demote a contradictory entry, but it must not "
+            "originate or strengthen an entry. For selection_ev_forecast_range_mismatch, correct "
+            "only the forecast probability to the complement of the authored target-first range "
+            "and preserve the prior action when its EV fields were otherwise consistent. For "
+            "selection_ev_entry_not_positive, selection_ev_nothing_positive, or "
+            "selection_ev_verdict_range_mismatch, use NOTHING: set now_ev=NEGATIVE only when the "
+            "whole preserved range is below exact break-even, otherwise set now_ev=UNCERTAIN "
+            "because this evidence-free correction cannot resolve the disagreement. Update action, "
+            "final_choice, and SELECTION_ACTION together and remove entry-only fields. A later "
+            "fresh full-evidence cycle may choose an entry. This repair does not estimate "
+            "probability or select a new setup. Do not raise or lower the range "
             "to preserve an entry, geometry, or action: this repair has no current market evidence "
             "with which to re-estimate it. REPAIR_CONTEXT contains correction-only current-price, "
             "contract arithmetic, latency semantics, and quantity facts; it is not market evidence. "
-            "Change only the probability/EV/action fields and directly "
-            "dependent confidence or reason text. If "
-            "the action changes, add or remove only its required entry fields and update the "
-            "selected candidate's entry-range and geometry clauses using the already-authored "
-            "setup and REPAIR_CONTEXT. For an ENTER, copy the already-authored stop and primary "
-            "target, use order_type=MARKET, preserve an authored valid quantity or otherwise use "
-            "the smallest valid_entry_quantities_for_all_books value, and make entry_range_low "
-            "and entry_range_high contain current_decision_price while remaining strictly between "
-            "the unchanged stop and target. Never change stop or target merely to make a range fit. "
-            "If no such executable range exists, use NOTHING with now_ev=UNCERTAIN, update all "
-            "action fields together, and remove entry-only JSON fields; do not alter the probability "
-            "range. Return exactly one complete strict glitch.intent.batch.v1 JSON object under "
+            "Change only the probability/EV/action fields and directly dependent confidence or "
+            "reason text. Return exactly one complete strict glitch.intent.batch.v1 JSON object under "
             "9000 characters with no Markdown or prose. action, final_choice, and "
             "SELECTION_ACTION must agree; ENTER requires now_ev=POSITIVE, while NOTHING requires "
             "now_ev=NEGATIVE or irreducibly UNCERTAIN. When forecast is present, and always for "
@@ -4606,6 +4598,39 @@ def contract_repair_prompt(
         + "\nPREVIOUS_RESPONSE="
         + prior
     )
+
+
+def enforce_selection_repair_boundary(
+    previous: Any,
+    repaired: dict[str, Any],
+    error: Exception,
+) -> None:
+    """Keep an evidence-free consistency repair from admitting a new trade."""
+    error_text = str(error)
+    if not error_text.startswith(SELECTION_EV_SELF_CONSISTENCY_ERRORS):
+        return
+    if not isinstance(previous, dict):
+        return
+    previous_decisions = previous.get("decisions")
+    repaired_decisions = repaired.get("decisions")
+    if not isinstance(previous_decisions, list) or not isinstance(repaired_decisions, list):
+        return
+    must_demote = error_text.startswith((
+        "selection_ev_entry_not_positive",
+        "selection_ev_nothing_positive",
+        "selection_ev_verdict_range_mismatch",
+    ))
+    for index, decision in enumerate(repaired_decisions):
+        if not isinstance(decision, dict):
+            continue
+        repaired_action = str(decision.get("action") or "").upper()
+        if repaired_action not in {"ENTER_LONG", "ENTER_SHORT"}:
+            continue
+        previous_action = ""
+        if index < len(previous_decisions) and isinstance(previous_decisions[index], dict):
+            previous_action = str(previous_decisions[index].get("action") or "").upper()
+        if must_demote or repaired_action != previous_action:
+            raise ValueError(f"selection_ev_repair_entry_admission_forbidden:{index}")
 
 
 def trigger_review_has_held_nothing(batch: dict[str, Any]) -> bool:
@@ -4758,7 +4783,9 @@ def invoke_validated_batch(
             ),
             None,
         )
-        return prepare(repaired_raw), 1, transport_retry_count
+        repaired = prepare(repaired_raw)
+        enforce_selection_repair_boundary(failed_output, repaired, error)
+        return repaired, 1, transport_retry_count
 
 
 def post_intent(intent: dict[str, Any], token: str) -> dict[str, Any]:
@@ -5806,7 +5833,7 @@ def build_prompt(
         instructions += entry_reasoning_order
         instructions += (
             "For flat entry selection, rank the evidence-supported auction path, not the easiest bracket. Cheap risk comes from favorable entry near that genuine invalidation, never from pulling a stop inside ordinary noise. Map an objective ladder before choosing geometry: microstructure times entry, nearby response levels manage the trade, and the primary target expresses the next supported larger auction destination. Accepted legs, confirmed swings, the 60-bar range, VWAP bands, fair-value gaps, and session levels are evidence, not checklist prerequisites. A nearby level is not the primary target merely because it is first; if available room is only ordinary one- or five-minute excursion, it is noise, not the trade thesis. A short-horizon rotation is eligible only when it opens toward a larger evidence-supported destination. On a one-contract book, about $10 of risk for only about $10-$20 gross reward describes a noise probe, while $30 risk for $90 or $50 for $150 illustrates materially asymmetric scale; these are examples, never fixed floors or a required 1:3 ratio. At a fresh extreme, infer a discounted continuation objective from accepted path, range, and volatility only when supported; otherwise choose NOTHING. The five-to-ten-bar forecast assesses immediate path and stop survival, not whether the primary target must be reached inside that window. Prefer early coherent progress with unconsumed structural room over unsupported local rotation. "
-            "For the five-to-ten one-minute-bar forecast, price stop survival against both supplied one- and five-minute noise: 'survives one-minute noise but not five-minute excursion' is adverse probability evidence, not a positive noise-survival claim or a fixed ATR gate. Debit it in target-first probability and choose better location, a deeper genuine invalidation, or NOTHING when it removes the edge. An entry cannot remain positive while its own selected geometry calls the stop shallow, noise-sensitive, fragile, only modestly noise-surviving, or unable to survive ordinary horizon noise. Do not claim that target room compensates for such a stop. Improve the entry, use the nearest deeper genuine invalidation and recompute the same-path objective and expected value, or choose NOTHING without relabeling the weakness. "
+            "For the five-to-ten one-minute-bar forecast, price stop survival against both supplied one- and five-minute noise: 'survives one-minute noise but not five-minute excursion' is adverse probability evidence, not a positive noise-survival claim or a fixed ATR gate. Debit it in target-first probability and choose better location, a deeper genuine invalidation, or NOTHING when it removes the edge. Immediately before returning ENTER, audit the meaning of your own NOISE_AND_GEOMETRY conclusion: if it says the stop is exposed to ordinary intended-horizon excursion, or both planned loss and primary capture are merely the one-contract noise-probe scale described above, ENTER is internally contradictory regardless of a named level, directional bias, attractive payoff ratio, or low break-even probability. Improve the location, genuine invalidation, and larger-path destination and recompute probability and expected value, or choose NOTHING without relabeling the weakness. This is a semantic self-consistency requirement, not a fixed dollar, ATR, reward/risk, setup, or confirmation gate. "
             "Use each candidate's deterministic_geometry_context as the arithmetic authority for tick value, one- and five-minute ATR, spread, and one-contract dollars; it is decision support, not a setup signal or execution gate. Compare candidates in dollars as well as points and ticks. Greater dollar noise or spread is not a veto, but evidence-supported probability and reward must compensate for the larger excursion and estimation error; when otherwise comparable, prefer less dollar downside. For WAIT geometry, lower is a price improvement for a long and higher is a price improvement for a short. Worse-price confirmation is better only when its probability gain outweighs lost reward and increased invalidation cost. A range wholly above break-even requires positive now_ev; one wholly below requires negative now_ev; a straddling range remains an evidence judgment. Resolve contradiction by changing verdict or action, never by back-solving probability from payoff. This consistency rule does not choose probability, geometry, instrument, or action. "
         )
         if prior_cognition and prior_cognition.get("deterministic_selection_math"):

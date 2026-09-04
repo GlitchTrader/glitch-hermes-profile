@@ -2216,15 +2216,97 @@ def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
     assert "code has not chosen an action" in calls[1]
     assert "Payoff ratio or break-even alone does not prove edge" in calls[1]
     assert "evidence-derived estimated target-first range" in calls[1]
-    assert "when the whole preserved range is above exact break-even" in calls[1]
-    assert "use the direction-matching ENTER_LONG or ENTER_SHORT action" in calls[1]
-    assert "when the whole range is below exact break-even" in calls[1]
-    assert "never return the contradictory pair unchanged" in calls[1]
+    assert "must not originate or strengthen an entry" in calls[1]
+    assert "For selection_ev_forecast_range_mismatch" in calls[1]
+    assert "selection_ev_nothing_positive" in calls[1]
+    assert "use NOTHING" in calls[1]
+    assert "when the whole preserved range is below exact break-even" in calls[1]
+    assert "A later fresh full-evidence cycle may choose an entry" in calls[1]
     assert "does not estimate probability or select a new setup" in calls[1]
     assert "Do not raise or lower the range" in calls[1]
     assert "this repair has no current market evidence" in calls[1]
     assert '"current_decision_price":20000.25' in calls[1]
     assert '"valid_entry_quantities_for_all_books":[1,2]' in calls[1]
+
+
+def test_selection_consistency_repair_cannot_originate_or_strengthen_entry() -> None:
+    previous, _ = valid_batch("2026-09-03T16:15:00Z")
+    repaired = json.loads(json.dumps(previous))
+    repaired["decisions"][0]["action"] = "ENTER_LONG"
+
+    with pytest.raises(ValueError, match="selection_ev_repair_entry_admission_forbidden:0"):
+        DIRECT.enforce_selection_repair_boundary(
+            previous,
+            repaired,
+            ValueError("selection_ev_nothing_positive:0:candidate_comparison"),
+        )
+
+    previous["decisions"][0]["action"] = "ENTER_LONG"
+    with pytest.raises(ValueError, match="selection_ev_repair_entry_admission_forbidden:0"):
+        DIRECT.enforce_selection_repair_boundary(
+            previous,
+            repaired,
+            ValueError("selection_ev_entry_not_positive:0:candidate_comparison"),
+        )
+
+
+def test_forecast_only_repair_may_preserve_but_not_originate_entry() -> None:
+    previous, _ = valid_batch("2026-09-03T16:15:00Z")
+    repaired = json.loads(json.dumps(previous))
+    repaired["decisions"][0]["action"] = "ENTER_LONG"
+
+    with pytest.raises(ValueError, match="selection_ev_repair_entry_admission_forbidden:0"):
+        DIRECT.enforce_selection_repair_boundary(
+            previous,
+            repaired,
+            ValueError("selection_ev_forecast_range_mismatch:0:candidate_comparison"),
+        )
+
+    previous["decisions"][0]["action"] = "ENTER_LONG"
+    DIRECT.enforce_selection_repair_boundary(
+        previous,
+        repaired,
+        ValueError("selection_ev_forecast_range_mismatch:0:candidate_comparison"),
+    )
+
+    repaired["decisions"][0]["action"] = "ENTER_SHORT"
+    with pytest.raises(ValueError, match="selection_ev_repair_entry_admission_forbidden:0"):
+        DIRECT.enforce_selection_repair_boundary(
+            previous,
+            repaired,
+            ValueError("selection_ev_forecast_range_mismatch:0:candidate_comparison"),
+        )
+
+
+def test_selection_consistency_retry_enforces_non_entry_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous, scenario = valid_batch("2026-09-03T16:15:00Z")
+    promoted = json.loads(json.dumps(previous))
+    promoted["decisions"][0]["action"] = "ENTER_LONG"
+    calls = 0
+    validations = 0
+
+    def invoke(_profile, _prompt, _timeout, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return previous if calls == 1 else promoted
+
+    def validate(*_args, **_kwargs):
+        nonlocal validations
+        validations += 1
+        return (
+            ["selection_ev_forecast_range_mismatch:0:candidate_comparison"]
+            if validations == 1 else []
+        )
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    monkeypatch.setattr(DIRECT, "validate_batch", validate)
+
+    with pytest.raises(ValueError, match="selection_ev_repair_entry_admission_forbidden:0"):
+        DIRECT.invoke_validated_batch(
+            "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+        )
 
 
 def test_selection_ev_consistency_retry_does_not_accept_a_second_contradiction(
@@ -2714,12 +2796,14 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "not whether the primary target must be reached inside that window" in prompt
     assert "Anticipatory entry remains allowed near genuine invalidation" in prompt
     assert "higher timeframes are context, not mandatory alignment" in prompt
-    assert "Do not claim that target room compensates for such a stop" in prompt
+    assert "Immediately before returning ENTER, audit the meaning of your own NOISE_AND_GEOMETRY conclusion" in prompt
+    assert "both planned loss and primary capture are merely the one-contract noise-probe scale" in prompt
+    assert "ENTER is internally contradictory regardless of a named level" in prompt
+    assert "semantic self-consistency requirement" in prompt
     assert "a supported short-horizon rotation remains eligible" not in prompt
     assert "A range wholly above break-even requires positive now_ev" in prompt
     assert "never by back-solving probability from payoff" in prompt
     assert "not a fixed probability, margin, dollar, ATR, reward/risk, confirmation, or cooldown gate" in prompt
-    assert "An entry cannot remain positive while its own selected geometry calls the stop shallow" in prompt
     assert "A completed close through a named level proves that crossing, not acceptance by itself" in prompt
     assert "no retest or extra completed-bar sequence is mandatory" in prompt
     assert "price-only delivery revalidation cannot upgrade the original evidence" in prompt
