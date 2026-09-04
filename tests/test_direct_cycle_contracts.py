@@ -762,6 +762,10 @@ def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometr
         "quantity": 1,
         "stop_loss": 29569.75,
         "take_profit_1": 29459.75,
+        "decision_audit": {
+            "disconfirming_evidence": "Accepted reclaim above 29569.75",
+            "change_condition": "Review on accepted reclaim above 29560.00",
+        },
     }
     (glitch_data / "intents" / "decisions.jsonl").write_text(
         json.dumps({"intent": intent}) + "\n", encoding="utf-8"
@@ -826,6 +830,8 @@ def test_active_trade_state_uses_native_entry_time_and_preserves_bracket_geometr
 
     assert trade["entry_decision_utc"] == native_entry_utc
     assert trade["trade_age_seconds"] is not None and trade["trade_age_seconds"] < 10
+    assert trade["entry_plans"][0]["disconfirming_evidence"] == "Accepted reclaim above 29569.75"
+    assert trade["entry_plans"][0]["change_condition"] == "Review on accepted reclaim above 29560.00"
     assert trade["working_orders"][0]["stop_price"] == 29569.75
     assert trade["working_orders"][1]["limit_price"] == 29459.75
     support = trade["deterministic_management_math"]
@@ -1097,6 +1103,8 @@ def test_active_trade_state_starts_fresh_after_native_flat_boundary(tmp_path: Pa
         "planned_stop": 29485.25,
         "planned_targets": [29593],
         "reason": None,
+        "disconfirming_evidence": None,
+        "change_condition": None,
     }]
     assert trade["entry_decision_utc"] == new_entry["created_utc"]
     assert trade["trade_age_seconds"] == 66
@@ -3033,6 +3041,9 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "gross_hold_terminal_ev=REPLACE_WITH_POSITIVE_NEGATIVE_OR_STRADDLES" in positioned_prompt
     assert "Chart history before entry is setup context only" in positioned_prompt
     assert "do not claim price visited or rebounded from the favorable target area" in positioned_prompt
+    assert "entry-authored causal review baseline, not an automatic exit gate" in positioned_prompt
+    assert "an intact native stop, a larger target, or a low arithmetic HOLD break-even cannot preserve HOLD by itself" in positioned_prompt
+    assert "entry-authored causal review baseline, not an automatic exit gate" not in flat_prompt
     assert "rollback relative to peak MFE and initial risk" in positioned_prompt
     assert "HOLD must explain why rebased continuation value clearly exceeds EXIT" in positioned_prompt
     assert "EXIT after material MFE does not require original invalidation or accepted reversal" in positioned_prompt
