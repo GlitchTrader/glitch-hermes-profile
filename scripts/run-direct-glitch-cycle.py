@@ -2874,8 +2874,8 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> Non
     lowered = value.lower()
     normalized = re.sub(r"[\u2010-\u2015]", "-", lowered)
     numeric_atr_pair = (
-        re.search(r"\b1\s*(?:-\s*)?(?:m|min(?:ute)?s?)\b", normalized)
-        and re.search(r"\b5\s*(?:-\s*)?(?:m|min(?:ute)?s?)\b", normalized)
+        re.search(r"(?<!\d)1\s*(?:-\s*)?(?:m|min(?:ute)?s?)\b", normalized)
+        and re.search(r"(?<!\d)5\s*(?:-\s*)?(?:m|min(?:ute)?s?)\b", normalized)
     )
     written_atr_pair = (
         re.search(r"\bone(?:\s*-\s*|\s+)minute\b", normalized)
@@ -3093,6 +3093,56 @@ def canonicalize_batch_selection_math(batch: dict[str, Any]) -> int:
             if canonical != original:
                 corrected += 1
             return match.group(1) + canonical
+
+        audit["decisive_evidence"] = re.sub(
+            r"(?mi)^(SELECTION_EV\s*=\s*)(.+?)\s*$",
+            replace,
+            evidence,
+        )
+    return corrected
+
+
+def reconcile_nothing_selection_ev_verdict(batch: dict[str, Any]) -> int:
+    """Resolve only arithmetic verdict contradictions while preserving no action."""
+    corrected = 0
+    for intent in batch.get("decisions") or []:
+        if not isinstance(intent, dict) or str(intent.get("action") or "").upper() != "NOTHING":
+            continue
+        audit = intent.get("decision_audit")
+        evidence = audit.get("decisive_evidence") if isinstance(audit, dict) else None
+        if not isinstance(evidence, str):
+            continue
+        forecast = intent.get("forecast") if isinstance(intent.get("forecast"), dict) else None
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal corrected
+            value = match.group(2)
+            support = deterministic_selection_math(value, forecast)
+            if "verdict_range_mismatch" not in support.get("calculation_issues", []):
+                return match.group(0)
+            estimated_range = support.get("declared_estimated_target_first_range")
+            break_even = support.get("computed_breakeven_target_first")
+            if not (
+                isinstance(estimated_range, list)
+                and len(estimated_range) == 2
+                and isinstance(break_even, (int, float))
+            ):
+                return match.group(0)
+            verdict = (
+                "NEGATIVE"
+                if float(estimated_range[1]) < float(break_even) - 0.005
+                else "UNCERTAIN"
+            )
+            repaired = re.sub(
+                r"(?i)(^|;\s*)now_ev\s*=\s*[^;]*",
+                lambda verdict_match: verdict_match.group(1) + "now_ev=" + verdict,
+                value,
+                count=1,
+            )
+            if repaired == value:
+                return match.group(0)
+            corrected += 1
+            return match.group(1) + repaired
 
         audit["decisive_evidence"] = re.sub(
             r"(?mi)^(SELECTION_EV\s*=\s*)(.+?)\s*$",
@@ -3543,11 +3593,12 @@ def normalize_batch(
                 # repair or reinterpret any cognitive audit value.
                 misplaced = audit.pop("wake_triggers")
                 intent.setdefault("wake_triggers", misplaced)
-            if (isinstance(audit, dict) and "change_condition" in intent
-                    and "change_condition" not in audit):
-                # Relocate this one documented audit field without changing its
-                # text. A duplicate remains invalid instead of being hidden.
-                audit["change_condition"] = intent.pop("change_condition")
+            if isinstance(audit, dict):
+                for field in ("disconfirming_evidence", "change_condition", "final_choice"):
+                    if field in intent and field not in audit:
+                        # Relocate only documented audit siblings without
+                        # changing their values. Duplicates remain invalid.
+                        audit[field] = intent.pop(field)
             if isinstance(audit, dict):
                 evidence = audit.get("decisive_evidence")
                 if isinstance(evidence, str) and any(marker in evidence for marker in (
@@ -3574,22 +3625,44 @@ def normalize_batch(
                         r"DISCONFIRMING_EVIDENCE[ \t]*=[ \t]*"
                         r"(?P<disconfirming>[^\r\n]+?)"
                         r"(?:\r?\n|[ \t]+)change_condition[ \t]*=[ \t]*"
-                        r"(?P<condition>[^\r\n]+?)[ \t]*$",
+                        r"(?P<condition>[^\r\n]+?)"
+                        r"(?:\r?\n|[ \t]+)FINAL_CHOICE[ \t]*=[ \t]*"
+                        r"(?P<final_choice>[^\r\n]+?)[ \t]*$",
                         evidence,
                     )
-                    if misplaced_audit_tail:
+                    if misplaced_audit_tail and "final_choice" not in audit:
                         decisive_evidence = evidence[:misplaced_audit_tail.start()].rstrip()
                         disconfirming = misplaced_audit_tail.group("disconfirming").strip()
                         condition = misplaced_audit_tail.group("condition").strip()
-                        if decisive_evidence and disconfirming and condition:
-                            # A contract-only correction can preserve these two
+                        final_choice = misplaced_audit_tail.group("final_choice").strip()
+                        if decisive_evidence and disconfirming and condition and final_choice:
+                            # A contract-only correction can preserve these
                             # sibling values but serialize them as labeled tail
-                            # text. Relocate only the exact paired authored
-                            # values; partial or non-terminal shapes stay invalid.
+                            # text. Relocate only the exact authored values;
+                            # partial or non-terminal shapes stay invalid.
                             audit["decisive_evidence"] = decisive_evidence
                             audit["disconfirming_evidence"] = disconfirming
                             audit["change_condition"] = condition
+                            audit["final_choice"] = final_choice
                             evidence = decisive_evidence
+                    elif not misplaced_audit_tail:
+                        misplaced_audit_tail = re.search(
+                            r"(?i)(?:\r?\n|[ \t]+)"
+                            r"DISCONFIRMING_EVIDENCE[ \t]*=[ \t]*"
+                            r"(?P<disconfirming>[^\r\n]+?)"
+                            r"(?:\r?\n|[ \t]+)change_condition[ \t]*=[ \t]*"
+                            r"(?P<condition>[^\r\n]+?)[ \t]*$",
+                            evidence,
+                        )
+                        if misplaced_audit_tail:
+                            decisive_evidence = evidence[:misplaced_audit_tail.start()].rstrip()
+                            disconfirming = misplaced_audit_tail.group("disconfirming").strip()
+                            condition = misplaced_audit_tail.group("condition").strip()
+                            if decisive_evidence and disconfirming and condition:
+                                audit["decisive_evidence"] = decisive_evidence
+                                audit["disconfirming_evidence"] = disconfirming
+                                audit["change_condition"] = condition
+                                evidence = decisive_evidence
                 misplaced_reason = audit.get("SELECTION_REASON")
                 has_selection_ledger = (
                     isinstance(evidence, str)
@@ -4139,13 +4212,51 @@ def validate_protection_updates(
                     or not math.isfinite(float(stop))):
                 raise ValueError(f"protection_update_stop_invalid:{index}:{update_index}")
 def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
-    """Repair one missing object closer at the decisions-array boundary.
+    """Repair only observed, unambiguous terminal JSON serialization defects."""
 
-    This accepts no missing value or semantic field. It only handles the
-    observed model serialization defect where a complete decision object is
-    followed by the decisions-array closer before the decision itself closes,
-    including when a misplaced batch-level wake_triggers field follows it.
-    """
+    def parse_candidate(
+        candidate: str,
+        *,
+        require_single_decision: bool = False,
+        require_labeled_audit_tail: bool = False,
+    ) -> dict[str, Any] | None:
+        try:
+            value, end = json.JSONDecoder().raw_decode(candidate)
+        except json.JSONDecodeError:
+            return None
+        trailing = candidate[end:].strip()
+        if trailing and any(item not in "]}" for item in trailing):
+            return None
+        if not isinstance(value, dict) or value.get("schema_version") != "glitch.intent.batch.v1":
+            return None
+        decisions = value.get("decisions")
+        if not isinstance(decisions, list) or not decisions or not all(
+            isinstance(decision, dict) for decision in decisions
+        ):
+            return None
+        if require_single_decision and len(decisions) != 1:
+            return None
+        allowed_batch_fields = {
+            "schema_version", "cycle_id", "next_review_seconds", "decisions", "wake_triggers",
+        }
+        if not set(value).issubset(allowed_batch_fields):
+            return None
+        if "wake_triggers" in value and not isinstance(value["wake_triggers"], list):
+            return None
+        if require_labeled_audit_tail:
+            audit = decisions[0].get("decision_audit")
+            evidence = audit.get("decisive_evidence") if isinstance(audit, dict) else None
+            if not isinstance(evidence, str) or not all(
+                re.search(pattern, evidence)
+                for pattern in (
+                    r"(?mi)^DISCONFIRMING_EVIDENCE\s*=\s*.+$",
+                    r"(?mi)^CHANGE_CONDITION\s*=\s*.+$",
+                    r"(?mi)^FINAL_CHOICE\s*=\s*(?:NOTHING|ENTER_LONG|ENTER_SHORT|HOLD|MOVE_STOP|MOVE_TP|EXIT)\s*$",
+                )
+            ):
+                return None
+        return value
+
     stack: list[str] = []
     in_string = False
     escaped = False
@@ -4167,35 +4278,74 @@ def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
             if stack and stack[-1] == expected:
                 stack.pop()
                 continue
-            if not (
-                character == "]"
-                and stack
-                and stack[-1] == "{"
+            if character == "]" and stack and stack[-1] == "{":
+                repaired = parse_candidate(text[:index] + "}" + text[index:])
+                if repaired is not None:
+                    return repaired
+                break
+            if character == "}" and stack and stack[-1] == "[":
+                repaired = parse_candidate(text[:index] + text[index + 1:])
+                if repaired is not None:
+                    return repaired
+                break
+            return None
+
+    # The sole decision can be closed one delimiter early, leaving its empty
+    # wake_triggers field as an invalid second array item. Move only that exact
+    # terminal field back inside the decision; non-empty or multi-decision
+    # variants remain invalid because ownership would be ambiguous.
+    misplaced_wake_triggers = re.sub(
+        r'}(?P<field>\s*,\s*"wake_triggers"\s*:\s*\[\s*\]\s*)}\s*]\s*}\s*$',
+        lambda match: match.group("field") + "}]}",
+        text,
+        count=1,
+    )
+    if misplaced_wake_triggers != text:
+        repaired = parse_candidate(misplaced_wake_triggers, require_single_decision=True)
+        if repaired is not None:
+            return repaired
+
+    # A complete JSON audit tail can begin before decisive_evidence's string is
+    # closed. Restore the one missing string-close/comma pair only when the
+    # resulting sole decision contains every unchanged audit sibling.
+    embedded_audit_sibling = re.sub(
+        r'(?i)\\n(disconfirming_evidence|change_condition|final_choice)\s*"(?=\s*:)',
+        lambda match: '","' + match.group(1).lower() + '"',
+        text,
+        count=1,
+    )
+    if embedded_audit_sibling != text:
+        repaired = parse_candidate(embedded_audit_sibling, require_single_decision=True)
+        if repaired is not None:
+            audit = repaired["decisions"][0].get("decision_audit")
+            if isinstance(audit, dict) and all(
+                field in audit
+                for field in ("disconfirming_evidence", "change_condition", "final_choice")
             ):
-                return None
-            repaired = text[:index] + "}" + text[index:]
-            try:
-                value, end = json.JSONDecoder().raw_decode(repaired)
-            except json.JSONDecodeError:
-                return None
-            trailing = repaired[end:].strip()
-            if trailing and any(item not in "]}" for item in trailing):
-                return None
-            if not isinstance(value, dict) or value.get("schema_version") != "glitch.intent.batch.v1":
-                return None
-            decisions = value.get("decisions")
-            if not isinstance(decisions, list) or not decisions or not all(
-                isinstance(decision, dict) for decision in decisions
-            ):
-                return None
-            allowed_batch_fields = {
-                "schema_version", "cycle_id", "next_review_seconds", "decisions", "wake_triggers",
-            }
-            if not set(value).issubset(allowed_batch_fields):
-                return None
-            if "wake_triggers" in value and not isinstance(value["wake_triggers"], list):
-                return None
-            return value
+                return repaired
+
+    # A correction can accidentally serialize the three required audit
+    # siblings as a terminal labeled tail inside decisive_evidence and leave
+    # final_choice's colon outside the string. Make that one label syntactically
+    # literal; normalize_batch then relocates the unchanged authored values.
+    embedded_final_choice = re.sub(
+        r'(?i)(\\n)final_choice\s*"\s*:\s*"'
+        r'(NOTHING|ENTER_LONG|ENTER_SHORT|HOLD|MOVE_STOP|MOVE_TP|EXIT)"'
+        r'(?=\s*}\s*,\s*"wake_triggers")',
+        lambda match: (
+            match.group(1) + "FINAL_CHOICE=" + match.group(2).upper() + '"'
+        ),
+        text,
+        count=1,
+    )
+    if embedded_final_choice != text:
+        repaired = parse_candidate(
+            embedded_final_choice,
+            require_single_decision=True,
+            require_labeled_audit_tail=True,
+        )
+        if repaired is not None:
+            return repaired
     return None
 
 
@@ -4739,6 +4889,7 @@ def invoke_validated_batch(
             allow_not_applicable=prior_cognition is None,
         )
         canonicalize_batch_selection_math(batch)
+        reconcile_nothing_selection_ev_verdict(batch)
         observations = validate_batch(
             batch,
             scenario,

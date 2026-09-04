@@ -316,6 +316,81 @@ def test_extract_json_repairs_decision_closer_before_misplaced_batch_wake_trigge
     assert value["decisions"][0]["wake_triggers"] == []
 
 
+def test_extract_json_removes_one_extra_terminal_decision_closer() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"final_choice":"NOTHING"},"wake_triggers":[]}}]}'
+    )
+
+    value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+
+    assert value["decisions"][0]["decision_audit"]["final_choice"] == "NOTHING"
+    assert value["decisions"][0]["wake_triggers"] == []
+
+
+def test_extract_json_repairs_empty_wake_triggers_after_closed_sole_decision() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"decisive_evidence":"evidence"},'
+        '"final_choice":"NOTHING"},"wake_triggers":[]}]}'
+    )
+
+    value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+    DIRECT.normalize_batch(value)
+
+    assert value["decisions"][0]["decision_audit"]["final_choice"] == "NOTHING"
+    assert value["decisions"][0]["wake_triggers"] == []
+
+
+def test_extract_json_repairs_terminal_labeled_audit_tail_without_rewriting_values() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"decisive_evidence":"INSTRUMENT_COMPARISON_V1'
+        '\\nDISCONFIRMING_EVIDENCE=Authored counterevidence.'
+        '\\nCHANGE_CONDITION=Authored condition.'
+        '\\nfinal_choice":"NOTHING"},"wake_triggers":[]}]}'
+    )
+
+    value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+    DIRECT.normalize_batch(value)
+    audit = value["decisions"][0]["decision_audit"]
+
+    assert audit["decisive_evidence"] == "INSTRUMENT_COMPARISON_V1"
+    assert audit["disconfirming_evidence"] == "Authored counterevidence."
+    assert audit["change_condition"] == "Authored condition."
+    assert audit["final_choice"] == "NOTHING"
+
+
+def test_extract_json_closes_decisive_evidence_before_complete_json_audit_tail() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"decisive_evidence":"INSTRUMENT_COMPARISON_V1'
+        '\\nSELECTION_REASON=Authored reason.'
+        '\\ndisconfirming_evidence":"Authored counterevidence.",'
+        '"change_condition":"Authored condition.","final_choice":"NOTHING"},'
+        '"wake_triggers":[]}]}'
+    )
+
+    value = DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+    audit = value["decisions"][0]["decision_audit"]
+
+    assert audit["decisive_evidence"].endswith("SELECTION_REASON=Authored reason.")
+    assert audit["disconfirming_evidence"] == "Authored counterevidence."
+    assert audit["change_condition"] == "Authored condition."
+    assert audit["final_choice"] == "NOTHING"
+
+
+def test_extract_json_does_not_assign_misplaced_wake_triggers_across_decisions() -> None:
+    malformed = (
+        '{"schema_version":"glitch.intent.batch.v1","decisions":['
+        '{"decision_audit":{"final_choice":"NOTHING"}},'
+        '{"decision_audit":{"final_choice":"NOTHING"}},"wake_triggers":[]}]}'
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        DIRECT.extract_json(malformed, "glitch.intent.batch.v1")
+
+
 def test_normalize_batch_repairs_escaped_ledger_line_separators() -> None:
     batch, _ = valid_batch("2026-08-03T07:02:41.0414987Z")
     evidence = "POSITION_MANAGEMENT_V1\\nINSTRUMENT=M2K\\nHOLD_EV=POSITIVE"
@@ -366,6 +441,24 @@ def test_incomplete_entry_geometry_receives_one_bounded_entry_repair() -> None:
     assert "one-contract stop dollars" in repair
     assert "state model/transport latency once without inventing a duration" in repair
     assert '"current_decision_price":20000.0' in repair
+
+
+def test_entry_geometry_accepts_compact_atr_one_and_five_minute_notation() -> None:
+    DIRECT.validate_entry_geometry_evidence(
+        "ATR1m/5m 7.24/14.90 points; 81 ticks; $40.50 risk; latency priced once; "
+        "stop is deeper than ordinary 5m excursion.",
+        0,
+        "candidate_comparison",
+    )
+
+
+def test_entry_geometry_does_not_confuse_eleven_and_fifteen_minute_atr_for_one_and_five() -> None:
+    with pytest.raises(ValueError, match="horizon_noise"):
+        DIRECT.validate_entry_geometry_evidence(
+            "ATR11m/15m 7.24/14.90 points; 81 ticks; $40.50 risk; latency priced once.",
+            0,
+            "candidate_comparison",
+        )
 
 
 @pytest.mark.parametrize(
@@ -2006,6 +2099,48 @@ def comparison_ledger(sections: dict[str, list[str]]) -> str:
     return "\n".join(lines)
 
 
+def test_nothing_selection_ev_arithmetic_mismatch_becomes_uncertain_without_changing_choice() -> None:
+    batch, _ = valid_batch("2026-09-04T08:39:00Z")
+    intent = batch["decisions"][0]
+    original = (
+        "SELECTION_EV=direction=SHORT;entry=29648;stop=29651.625;target=29629;"
+        "risk_points=3.625;reward_points=19;friction_points=0.5;"
+        "breakeven_target_first=0.17857143;estimated_target_first_range=0.35-0.45;"
+        "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=NEGATIVE;decisive_reason=fixture"
+    )
+    intent["decision_audit"]["decisive_evidence"] = original
+
+    corrected = DIRECT.reconcile_nothing_selection_ev_verdict(batch)
+
+    evidence = intent["decision_audit"]["decisive_evidence"]
+    assert corrected == 1
+    assert intent["action"] == "NOTHING"
+    assert intent["decision_audit"]["final_choice"] == "NOTHING"
+    assert "estimated_target_first_range=0.35-0.45" in evidence
+    assert "now_ev=UNCERTAIN" in evidence
+    assert evidence == original.replace("now_ev=NEGATIVE", "now_ev=UNCERTAIN")
+
+
+def test_entry_selection_ev_arithmetic_mismatch_is_not_rewritten_or_admitted() -> None:
+    batch, _ = valid_batch("2026-09-04T08:39:00Z")
+    intent = batch["decisions"][0]
+    intent["action"] = "ENTER_SHORT"
+    intent["decision_audit"]["final_choice"] = "ENTER_SHORT"
+    original = (
+        "SELECTION_EV=direction=SHORT;entry=29648;stop=29651.625;target=29629;"
+        "risk_points=3.625;reward_points=19;friction_points=0.5;"
+        "breakeven_target_first=0.17857143;estimated_target_first_range=0.35-0.45;"
+        "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=NEGATIVE;decisive_reason=fixture"
+    )
+    intent["decision_audit"]["decisive_evidence"] = original
+
+    corrected = DIRECT.reconcile_nothing_selection_ev_verdict(batch)
+
+    assert corrected == 0
+    assert intent["action"] == "ENTER_SHORT"
+    assert intent["decision_audit"]["decisive_evidence"] == original
+
+
 def test_normalize_batch_uses_valid_ledger_selection_as_serialized_instrument() -> None:
     complete = [f"{field}=supported evidence" for field in DIRECT.CANDIDATE_COMPARISON_FIELDS]
     batch, scenario = valid_batch("2026-08-13T10:00:00Z")
@@ -2171,6 +2306,47 @@ def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
     assert calls[1].startswith("FORMAT_CORRECTION_ONLY:")
     assert "ORIGINAL_PROMPT" not in calls[1]
     assert "Preserve the same market judgment" in calls[1]
+
+
+def test_nothing_ev_verdict_mismatch_is_reconciled_without_model_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, scenario = valid_batch("2026-09-04T08:39:00Z")
+    intent = first["decisions"][0]
+    intent["decision_audit"]["decisive_evidence"] = (
+        "SELECTION_EV=direction=SHORT;entry=29648;stop=29651.625;target=29629;"
+        "risk_points=3.625;reward_points=19;friction_points=0.5;"
+        "breakeven_target_first=0.17857143;estimated_target_first_range=0.35-0.45;"
+        "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=NEGATIVE;decisive_reason=fixture"
+    )
+    calls: list[str] = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return first
+
+    def validate(batch, *_args, **_kwargs):
+        evidence = batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+        selection_ev = evidence.removeprefix("SELECTION_EV=")
+        return DIRECT.validate_selection_ev(
+            selection_ev,
+            batch["decisions"][0]["action"],
+            0,
+            "candidate_comparison",
+        )
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    monkeypatch.setattr(DIRECT, "validate_batch", validate)
+
+    batch, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
+        "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
+    )
+
+    assert calls == ["ORIGINAL_PROMPT"]
+    assert output_repair_count == 0
+    assert transport_retry_count == 0
+    assert batch["decisions"][0]["action"] == "NOTHING"
+    assert "now_ev=UNCERTAIN" in batch["decisions"][0]["decision_audit"]["decisive_evidence"]
 
 
 def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
