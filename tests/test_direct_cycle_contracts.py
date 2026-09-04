@@ -2140,6 +2140,9 @@ def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
     assert "ORIGINAL_PROMPT" not in calls[1]
     assert "code has not chosen an action" in calls[1]
     assert "Payoff ratio or break-even alone does not prove edge" in calls[1]
+    assert "evidence-derived estimated target-first range" in calls[1]
+    assert "Do not raise or lower the range" in calls[1]
+    assert "this repair has no current market evidence" in calls[1]
 
 
 def test_selection_ev_consistency_retry_does_not_accept_a_second_contradiction(
@@ -2599,49 +2602,55 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "does not require the future target to have traded already" in prompt
     assert "learner guidance is deliberately excluded from flat entry cognition" in prompt
     assert "(risk_points + friction_points) / (risk_points + reward_points)" in prompt
-    assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
+    assert "Estimate target-first probability from evidence before using payoff math" in prompt
+    assert "never work backward from an attractive bracket" in prompt
+    assert "without using payoff ratio or break-even as probability evidence" in prompt
+    assert "never raise or lower the probability range merely to preserve ENTER" in prompt
+    assert "only touches or narrowly clears break-even" in prompt
     assert "not a fixed probability or reward/risk rule" in prompt
-    assert "recent_exit_decisions and completed native results take precedence" in prompt
-    assert "correlated evidence, not independent trials" in prompt
-    assert "NOTHING, HOLD, trigger reviews, rejected candidates, and opposite-direction trades are observations" in prompt
-    assert "their labels or presence in history cannot by themselves lower its probability" in prompt
-    assert "Reward/risk and a low break-even probability are payoff math, not probability evidence" in prompt
+    assert "reconcile recent_glitch_ledger.recent_exit_decisions and completed native results before selection" in prompt
+    assert "treat them as one correlated thesis" in prompt
+    assert "NOTHING, HOLD, rejected candidates, and opposite-direction trades are observations" in prompt
+    assert "their labels alone cannot lower its probability" in prompt
+    assert "state in the decisive reason what post-exit market evidence materially changed" in prompt
     assert "Separate directional path quality from entry timing" in prompt
     assert "do not count it both as probability evidence and as untouched reward" in prompt
     assert "a concrete improvement in entry location, invalidation cost, or target-before-stop probability" in prompt
     assert "never shorthand for perfect confirmation or a required retest" in prompt
     assert "rank the evidence-supported auction path, not the easiest bracket" in prompt
-    assert "a low break-even probability alone is not edge" in prompt
-    assert "Use microstructure to time the entry, not to shrink the trade thesis" in prompt
+    assert "A low break-even probability alone is not edge" in prompt
+    assert "Use microstructure to time the entry, not to manufacture the larger path" in prompt
     assert "Cheap risk comes from favorable entry near that genuine invalidation" in prompt
     assert "is noise, not the trade thesis" in prompt
-    assert "about $10 of risk for only about $10-$20 gross reward is a noise probe" in prompt
-    assert "$30 risk for $90 or $50 for $150 better describes a materially asymmetric opportunity" in prompt
+    assert "about $10 of risk for only about $10-$20 gross reward describes a noise probe" in prompt
+    assert "$30 risk for $90 or $50 for $150 illustrates materially asymmetric scale" in prompt
     assert "Map an objective ladder before choosing geometry" in prompt
     assert "nearby response levels manage the trade" in prompt
     assert "not the primary target merely because it is first" in prompt
     assert "infer a discounted continuation objective" in prompt
     assert "evidence, not checklist prerequisites" in prompt
-    assert "does not require the primary target to lie inside that window" in prompt
-    assert "using the larger path for geometry does not require waiting for the larger move to confirm" in prompt
+    assert "not whether the primary target must be reached inside that window" in prompt
+    assert "Anticipatory entry remains allowed near genuine invalidation" in prompt
+    assert "higher timeframes are context, not mandatory alignment" in prompt
     assert "Do not claim that target room compensates for such a stop" in prompt
     assert "a supported short-horizon rotation remains eligible" not in prompt
-    assert "cannot become now_ev POSITIVE by selecting its favorable end" in prompt
-    assert "a range that clears only nominally needs current path evidence" in prompt
-    assert "Neither judgment requires a fixed numerical margin or completed confirmation" in prompt
+    assert "A range wholly above break-even requires positive now_ev" in prompt
+    assert "never by back-solving probability from payoff" in prompt
+    assert "not a fixed probability, margin, dollar, ATR, reward/risk, confirmation, or cooldown gate" in prompt
     assert "An entry cannot remain positive while its own selected geometry calls the stop shallow" in prompt
-    assert "never call a transition completed or accepted unless that bar itself satisfies the named level" in prompt
+    assert "A completed close through a named level proves that crossing, not acceptance by itself" in prompt
+    assert "no retest or extra completed-bar sequence is mandatory" in prompt
     assert "price-only delivery revalidation cannot upgrade the original evidence" in prompt
-    assert "debiting displacement already traveled, the nearest opposing structure, exhaustion, missing flow, and source age" in prompt
+    assert "do not acknowledge them and then ignore them because the payoff hurdle is low" in prompt
     assert "survives one-minute noise but not five-minute excursion" in prompt
     assert "adverse probability evidence, not a positive noise-survival claim or a fixed ATR gate" in prompt
     assert "must not raise estimated probability or confidence" in prompt
     assert "not a general penalty on an instrument or direction" in prompt
-    assert "realized P&L, a win/loss label, and the fact of exit are not market evidence" in prompt
-    assert "Same instrument and direction or a broad objective alone do not make a new setup correlated" in prompt
-    assert "A completed new leg, break-and-hold, or pullback/retest can make the setup distinct" in prompt
-    assert "internal arithmetic contradiction to write now_ev=NEGATIVE" in prompt
-    assert "If qualitative evidence disagrees with that implication, revise the estimated range" in prompt
+    assert "realized P&L and win/loss labels are not market evidence" in prompt
+    assert "Same instrument and direction alone do not prove correlation" in prompt
+    assert "A completed new leg, break-and-hold, or pullback/retest can establish a distinct setup" in prompt
+    assert "If qualitative evidence disagrees with that implication, revise the estimated range" not in prompt
+    assert "This check never supplies or revises probability, geometry, instrument, or action" in prompt
     assert "This consistency rule does not choose probability, geometry, instrument, or action" in prompt
     assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
     assert "seconds_until_must_flat as the actual schedule horizon" in prompt
@@ -2688,10 +2697,10 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "derive and evaluate at least one candidate protection level" in positioned_prompt.lower()
     assert "cannot reject both MOVE_STOP and EXIT" in positioned_prompt
     assert "Never use a fixed MFE percentage" in positioned_prompt
-    assert "reconcile 1 - forecast.probability with estimated_target_first_range" not in positioned_prompt
+    assert "Estimate target-first probability from evidence before using payoff math" not in positioned_prompt
     assert "rank the evidence-supported auction path, not the easiest bracket" not in positioned_prompt
     assert "Map an objective ladder before choosing geometry" not in positioned_prompt
-    assert "internal arithmetic contradiction to write now_ev=NEGATIVE" not in positioned_prompt
+    assert "never by back-solving probability from payoff" not in positioned_prompt
     assert "rollback relative to peak MFE and initial risk" not in flat_prompt
     assert "when deterministic_management_math.status is complete" not in flat_prompt
     assert "When its price_basis.status is complete" not in flat_prompt
@@ -2722,7 +2731,7 @@ def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
-    assert "reconcile 1 - forecast.probability with estimated_target_first_range" in prompt
+    assert "Estimate target-first probability from evidence before using payoff math" in prompt
     assert "runtime deterministically supplies schema, intent ID, time, route, account" in prompt
     assert "decision_audit closes before wake_triggers" in prompt
 
@@ -2816,7 +2825,7 @@ def test_shared_flat_trigger_review_requests_one_shared_decision() -> None:
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
     assert "Map an objective ladder before choosing geometry" in prompt
-    assert "internal arithmetic contradiction to write now_ev=NEGATIVE" in prompt
+    assert "never by back-solving probability from payoff" in prompt
 
 
 def test_latest_prior_cognition_uses_one_canonical_decision_from_latest_prior_cycle(
@@ -3103,8 +3112,8 @@ def test_trigger_review_injects_exit_continuity_for_alternative_candidates() -> 
     assert '"decision_mode":"trigger_review"' in prompt
     assert '"prior_cognition":{"schema_version":"glitch.hermes.prior_cognition.v1"' in prompt
     assert '"recent_exit_decisions":[{"instrument":"MES","action":"EXIT"' in prompt
-    assert "recent_exit_decisions and completed native results take precedence" in prompt
-    assert "do not carry the exited setup forward as HELD" in prompt
+    assert "reconcile recent_glitch_ledger.recent_exit_decisions and completed native results before selection" in prompt
+    assert "Without such a change, do not present the attempt as fresh" in prompt
 
 
 def test_journal_tail_deduplicates_shared_decisions_and_preserves_instrument(
