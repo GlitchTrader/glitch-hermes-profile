@@ -35,7 +35,10 @@ def comparison(action: str, instrument: str = "MNQ") -> str:
 
 def management(action: str, instrument: str = "MNQ") -> str:
     lines = [DIRECT.POSITION_MANAGEMENT_MARKER, f"INSTRUMENT={instrument}"]
-    lines.extend(f"{field}=current position evidence" for field in DIRECT.POSITION_MANAGEMENT_FIELDS)
+    lines.extend(
+        f"{field}={'HELD: current position evidence' if field == 'CURRENT_SETUP' else 'current position evidence'}"
+        for field in DIRECT.POSITION_MANAGEMENT_FIELDS
+    )
     lines[-2] = f"SELECTION_ACTION={action}"
     return "\n".join(lines)
 

@@ -584,7 +584,7 @@ def test_runtime_binds_position_management_to_the_native_instrument() -> None:
     intent["decision_audit"]["decisive_evidence"] = "\n".join([
         DIRECT.POSITION_MANAGEMENT_MARKER,
         "INSTRUMENT=MES 09-26",
-        *(f"{field}={'HOLD' if field == 'SELECTION_ACTION' else 'model evidence'}"
+        *(f"{field}={'HOLD' if field == 'SELECTION_ACTION' else 'HELD: model evidence' if field == 'CURRENT_SETUP' else 'model evidence'}"
           for field in DIRECT.POSITION_MANAGEMENT_FIELDS),
     ])
 
@@ -603,7 +603,7 @@ def test_position_management_validator_accepts_full_native_contract_name() -> No
     evidence = "\n".join([
         DIRECT.POSITION_MANAGEMENT_MARKER,
         "INSTRUMENT=MNQ 09-26",
-        *(f"{field}={'HOLD' if field == 'SELECTION_ACTION' else 'model evidence'}"
+        *(f"{field}={'HOLD' if field == 'SELECTION_ACTION' else 'HELD: model evidence' if field == 'CURRENT_SETUP' else 'model evidence'}"
           for field in DIRECT.POSITION_MANAGEMENT_FIELDS),
     ])
 
@@ -614,6 +614,7 @@ def position_management_evidence(action: str, gross_hold_terminal_ev: str) -> st
     values = {
         field: "model evidence" for field in DIRECT.POSITION_MANAGEMENT_FIELDS
     }
+    values["CURRENT_SETUP"] = "HELD: model evidence"
     values["HOLD_EV"] = (
         "target_before_stop_probability_range=35%-50%;"
         "target_before_stop_break_even=15.79%;"
@@ -660,6 +661,59 @@ def test_position_management_consistency_check_never_chooses_the_action() -> Non
         0,
         management_math,
     )
+
+
+def test_position_management_rejects_nonpositive_exit_while_thesis_is_held() -> None:
+    management_math = {
+        "status": "complete",
+        "current_unrealized_pnl_usd": -12.5,
+        "hold_target_before_stop_break_even_probability": 0.15789474,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"^position_management_nonpositive_exit_without_failure:0:",
+    ):
+        DIRECT.validate_position_management(
+            position_management_evidence("EXIT", "POSITIVE"),
+            "M2K",
+            "EXIT",
+            0,
+            management_math,
+        )
+
+
+def test_position_management_allows_nonpositive_exit_after_model_owned_failure() -> None:
+    management_math = {
+        "status": "complete",
+        "current_unrealized_pnl_usd": -12.5,
+        "hold_target_before_stop_break_even_probability": 0.15789474,
+    }
+    evidence = position_management_evidence("EXIT", "POSITIVE").replace(
+        "CURRENT_SETUP=HELD: model evidence",
+        "CURRENT_SETUP=FAILED: accepted post-entry structure contradicted the entry path",
+    )
+
+    DIRECT.validate_position_management(
+        evidence,
+        "M2K",
+        "EXIT",
+        0,
+        management_math,
+    )
+
+
+def test_position_thesis_error_receives_correction_only_repair() -> None:
+    error = ValueError(
+        "position_management_nonpositive_exit_without_failure:0:"
+        "current_unrealized_pnl_usd=-12.50000000"
+    )
+
+    assert DIRECT.retryable_model_contract_error(error) is True
+    repair = DIRECT.contract_repair_prompt("prompt", {}, error)
+    assert repair.startswith("POSITION_THESIS_SELF_CONSISTENCY_CORRECTION_ONLY:")
+    assert "A negative mark, one adverse bar, absent immediate follow-through" in repair
+    assert "change action, final_choice, and SELECTION_ACTION together to HOLD" in repair
 
 
 def test_position_management_rejects_an_unselected_verdict_placeholder() -> None:
@@ -2957,6 +3011,9 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "range wide enough to include all named probability uncertainty" in prompt
     assert "never keep the whole range above break-even" in prompt
     assert "UNCERTAIN is valid only when the range genuinely straddles break-even" in prompt
+    assert "unconditional probability that the stated primary target prints before the stated stop" in prompt
+    assert "It is not directional potential" in prompt
+    assert "none remains as a separate setup-permission veto afterward" in prompt
     assert "not a fixed probability or reward/risk rule" in prompt
     assert "reconcile recent_glitch_ledger.recent_exit_decisions and completed native results before selection" in prompt
     assert "treat them as one correlated thesis" in prompt
@@ -2972,8 +3029,11 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "Use microstructure to time the entry, not to manufacture the larger path" in prompt
     assert "Cheap risk comes from favorable entry near that genuine invalidation" in prompt
     assert "is noise, not the trade thesis" in prompt
-    assert "about $10 of risk for only about $10-$20 gross reward describes a noise probe" in prompt
-    assert "$30 risk for $90 or $50 for $150 illustrates materially asymmetric scale" in prompt
+    assert "initial risk around $20 or less is presumptively ordinary noise" in prompt
+    assert "About $10 risk for only $10-$20 gross reward is plainly a noise probe" in prompt
+    assert "prefer structural room around 3:1 gross reward to risk or better as error margin" in prompt
+    assert "treat 1:1 to 2:1 as exceptional" in prompt
+    assert "not deterministic gates" in prompt
     assert "Map an objective ladder before choosing geometry" in prompt
     assert "nearby response levels manage the trade" in prompt
     assert "not the primary target merely because it is first" in prompt
@@ -2983,7 +3043,8 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     assert "Anticipatory entry remains allowed near genuine invalidation" in prompt
     assert "higher timeframes are context, not mandatory alignment" in prompt
     assert "Immediately before returning ENTER, audit the meaning of your own NOISE_AND_GEOMETRY conclusion" in prompt
-    assert "both planned loss and primary capture are merely the one-contract noise-probe scale" in prompt
+    assert "one-contract initial risk is around $20 or less without explicit supplied evidence" in prompt
+    assert "both planned loss and primary capture are merely noise-probe scale" in prompt
     assert "ENTER is internally contradictory regardless of a named level" in prompt
     assert "semantic self-consistency requirement" in prompt
     assert "a supported short-horizon rotation remains eligible" not in prompt
@@ -3043,12 +3104,15 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     assert "gross_hold_terminal_ev=REPLACE_WITH_POSITIVE_NEGATIVE_OR_STRADDLES" in positioned_prompt
     assert "Chart history before entry is setup context only" in positioned_prompt
     assert "do not claim price visited or rebounded from the favorable target area" in positioned_prompt
-    assert "entry-authored causal review baseline, not an automatic exit gate" in positioned_prompt
-    assert "an intact native stop, a larger target, or a low arithmetic HOLD break-even cannot preserve HOLD by itself" in positioned_prompt
-    assert "entry-authored causal review baseline, not an automatic exit gate" not in flat_prompt
+    assert "Begin CURRENT_SETUP exactly with HELD: or FAILED:" in positioned_prompt
+    assert "absent immediate follow-through, a trigger recross" in positioned_prompt
+    assert "as its causal review baseline, not an automatic exit gate" in positioned_prompt
+    assert "while CURRENT_SETUP is HELD, EXIT at or below breakeven is internally contradictory" in positioned_prompt
+    assert "This does not require waiting for the hard stop after actual failure" in positioned_prompt
+    assert "as its causal review baseline, not an automatic exit gate" not in flat_prompt
     assert "rollback relative to peak MFE and initial risk" in positioned_prompt
     assert "HOLD must explain why rebased continuation value clearly exceeds EXIT" in positioned_prompt
-    assert "EXIT after material MFE does not require original invalidation or accepted reversal" in positioned_prompt
+    assert "After material MFE, EXIT does not require original invalidation or accepted reversal" in positioned_prompt
     assert "derive and evaluate at least one candidate protection level" in positioned_prompt.lower()
     assert "cannot reject both MOVE_STOP and EXIT" in positioned_prompt
     assert "Never use a fixed MFE percentage" in positioned_prompt
