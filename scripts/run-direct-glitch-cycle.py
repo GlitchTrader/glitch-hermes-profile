@@ -6555,8 +6555,15 @@ def run_once(
         consume_outbox_directive(exchange, pending_id)
         pending_receipt = submit_batch(pending_batch, glitch_data, exchange)
         mark_attempt_from_receipt(exchange, pending_id, pending_receipt)
+        pending_classification = receipt_classification(pending_receipt)
+        if (
+            reassessment_request is not None
+            and pending_classification == "superseded_no_op"
+            and all_entry_actions_superseded(pending_batch)
+        ):
+            request_immediate_cycle(exchange, reassessment_request)
         print(json.dumps(pending_receipt, separators=(",", ":")))
-        return 1 if receipt_classification(pending_receipt) not in COMPLETED_RECEIPT_CLASSIFICATIONS else 0
+        return 1 if pending_classification not in COMPLETED_RECEIPT_CLASSIFICATIONS else 0
 
     receipt_path = exchange / "hermes" / "receipts" / f"{packet_id}.json"
     outbox_path = exchange / "hermes" / "outbox" / f"{packet_id}.json"

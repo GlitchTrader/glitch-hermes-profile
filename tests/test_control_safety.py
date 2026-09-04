@@ -171,6 +171,68 @@ def test_current_scope_retries_same_intent_id(
     assert submitted[0]["decisions"][0]["intent_id"] == "11111111-1111-4111-8111-111111111111"
 
 
+@pytest.mark.parametrize("delivered", [False, True])
+def test_pending_entry_reassessment_is_preserved_only_while_superseded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    delivered: bool,
+) -> None:
+    glitch_data, exchange, scenarios = pending_fixture(
+        tmp_path, ("glitch", "Sim101"), ("glitch", "Sim101")
+    )
+    patch_pending_runtime(monkeypatch, scenarios)
+    outbox_path = exchange / "hermes" / "outbox" / "old.json"
+    batch = json.loads(outbox_path.read_text(encoding="utf-8"))
+    batch["supersession_reassessment_requested"] = True
+    batch["decisions"][0].update({
+        "action": "ENTER_SHORT",
+        "entry_revalidation": {
+            "status": "accepted_current_price_in_range" if delivered else "superseded",
+            "reassessment_eligible": not delivered,
+        },
+    })
+    outbox_path.write_text(json.dumps(batch), encoding="utf-8")
+    monkeypatch.setattr(DIRECT, "apply_entry_revalidation", lambda *_args: not delivered)
+    monkeypatch.setattr(DIRECT, "apply_position_revalidation", lambda *_args: False)
+    monkeypatch.setattr(DIRECT, "consume_outbox_directive", lambda *_args: False)
+    monkeypatch.setattr(DIRECT, "mark_attempt_from_receipt", lambda *_args: None)
+    monkeypatch.setattr(DIRECT, "submit_batch", lambda *_args: {
+        "complete": True,
+        "results": [{
+            "intent_id": "11111111-1111-4111-8111-111111111111",
+            "result": ({
+                "http_status": 202,
+                "body": {"executor": "executed", "executor_code": "master_entry_submitted"},
+            } if delivered else {
+                "delivery_status": "not_posted",
+                "body": {
+                    "executor": "skipped",
+                    "executor_code": "entry_range_superseded",
+                },
+            }),
+        }],
+    })
+    request = {
+        "schema_version": "glitch.hermes.direct_cycle_request.v1",
+        "requested_utc": "2026-09-04T12:06:56Z",
+        "kind": "entry_range_supersession",
+        "reassessment_context": {"instrument": "MNQ"},
+    }
+
+    result = DIRECT.run_once(
+        SimpleNamespace(dry_run=False, packet_rollover_wait_seconds=0),
+        glitch_data,
+        exchange,
+        direct_request=request,
+    )
+
+    assert result == 0
+    marker = exchange / "hermes" / "direct-cycle-request.json"
+    assert marker.exists() is not delivered
+    if not delivered:
+        assert DIRECT.read_json(marker) == request
+
+
 def test_native_transition_newer_than_packet_defers_model_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
