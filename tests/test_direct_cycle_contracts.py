@@ -2141,6 +2141,11 @@ def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
     assert "code has not chosen an action" in calls[1]
     assert "Payoff ratio or break-even alone does not prove edge" in calls[1]
     assert "evidence-derived estimated target-first range" in calls[1]
+    assert "when the whole preserved range is above exact break-even" in calls[1]
+    assert "use the direction-matching ENTER_LONG or ENTER_SHORT action" in calls[1]
+    assert "when the whole range is below exact break-even" in calls[1]
+    assert "never return the contradictory pair unchanged" in calls[1]
+    assert "does not estimate probability or select a new setup" in calls[1]
     assert "Do not raise or lower the range" in calls[1]
     assert "this repair has no current market evidence" in calls[1]
 
