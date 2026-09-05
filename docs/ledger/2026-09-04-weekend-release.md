@@ -30,6 +30,17 @@ The duplicated SOUL text decreased from 21,341 to 8,564 characters; the common/m
 
 Verified pre-release checkpoint: `D:/ab/checkpoints/glitch/20260904-pre70-4bfa8190/checkpoint-manifest.json` — 112 files, 3,358,685,396 bytes. Includes deployed cognition/config, memories, learner/supervisor evidence, intents/journals/epoch, and online SQLite backups of Hermes history and NinjaTrader. Every copy was hash-verified; both database snapshots passed `quick_check`. AI and both jobs remained paused. No evidence was reset or deleted.
 
-Remote main still equals the recorded baseline `b2025032575e96975554d8b866f64c148e479722` before publication. Publication/install/parity and a new prospective freeze follow these checks. Live market execution, response-time improvement and profitability remain unproven during the closed session.
+Release code committed and pushed as `4b44b0e485ba73fae120c6177431c6409d8acdc3`. Remote main was verified before and after publication. Installed through `hermes profile update glitch --yes`, then the installed `setup.ps1`; only the Glitch Hermes gateway was restarted through its supported CLI and drained cleanly. NinjaTrader was not restarted. The existing Windows Startup-folder supervision remains in use; no UAC elevation or Scheduled Task change was required.
+
+Installed proof:
+
+- **29/29** profile manifest hashes match canonical source; config, authentication and environment overrides are unchanged. **79/79** checkpointed data/config/memory files were unchanged after installation.
+- **95/95** native AddOn files match source, with no missing, extra or different files. Unrelated NT worktree changes were not staged, committed or deployed.
+- Installed status: `Glitch trading: OFF; jobs: paused; policy: valid; replication: off; gateway: running.` All seven connected accounts are flat with zero working orders. Both installed operator and learner admission functions return `ai_auto_off_or_scope_invalid`; no market LLM calls or live order actions were used for validation. No provider-usage hold is currently present.
+- Prospective freeze: `C:/Users/alan/Documents/NinjaTrader 8/GlitchData/hermes-checkpoints/cognition-experiments/v70-asia-20260906/freeze.json`, cognitive version `direct-v27-immediate-result-continuity-df96d8ced709`. This starts a new attributable evaluation; it does not reset trading history or promote a lesson. The existing unverified cost-stress policy remains explicitly unverified.
+- Three old interpreter-launched `hermes.exe ... cron pause` command processes were found consuming CPU despite already-paused jobs. Their exact command identities were checked and only those processes stopped. They were not market decision workers. This deployment invoked the CLI executable directly, and profile job control now uses the scoped supported API.
+- The Codex profitability monitor remains PAUSED. No automatic Sunday trading activation was scheduled. Use the normal Glitch AI Auto control when ready; replication is a separate operator setting.
+
+Live market execution, actual response-time improvement and profitability remain unproven during the closed session. Sunday acceptance requires fresh packets, a naturally admitted decision under this exact cognitive hash, bounded delivery, and native receipts; passing offline tests is not a claim of guaranteed returns or zero possible defects.
 
 Reference check: NinjaTrader documents that fills may be partial and provider event sequencing is not guaranteed ([OnExecutionUpdate](https://ninjatrader.com/support/helpGuides/nt8/onexecutionupdate.htm)). Native execution-driven protection and state reconciliation remain intact; the profile changes do not replace them with delayed model reasoning.
