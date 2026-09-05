@@ -172,6 +172,7 @@ $requiredFiles = @(
     'scripts\run-direct-glitch-cycle.py',
     'scripts\launch-direct-glitch-cycle.py',
     'scripts\reconcile-hermes-outcomes.py',
+    'scripts\native_risk.py',
     'scripts\run-hermes-learning-cycle.py',
     'scripts\launch-hermes-learning-cycle.py',
     'scripts\ensure-named-sessions.py',
@@ -253,7 +254,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.69'
+    distribution_version = '0.0.2.70'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)

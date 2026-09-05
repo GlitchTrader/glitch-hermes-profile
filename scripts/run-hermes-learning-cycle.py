@@ -192,7 +192,10 @@ def process_text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) -> dict[str, Any]:
+def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int, *, model_call_admission=None) -> dict[str, Any]:
+    reason = DIRECT.provider_usage_hold_reason(profile)
+    if reason:
+        raise LearningNotAdmitted(reason)
     executable = shutil.which("hermes")
     if not executable:
         raise RuntimeError("hermes_executable_not_found")
@@ -221,6 +224,11 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
             timeout_seconds=min(timeout_seconds, 60),
             priority="background",
         ):
+            reason = DIRECT.provider_usage_hold_reason(profile)
+            if reason is None and callable(model_call_admission):
+                reason = model_call_admission()
+            if reason:
+                raise LearningNotAdmitted(str(reason))
             process = subprocess.Popen(
                 [resolved_python, "-c", wrapper],
                 stdin=subprocess.PIPE,
@@ -258,6 +266,8 @@ def invoke_hermes(profile: str, prompt: str, skills: str, timeout_seconds: int) 
             completed = subprocess.CompletedProcess(
                 process.args, process.returncode, stdout, stderr
             )
+            if completed.returncode != 0 and DIRECT.record_provider_usage_failure(profile, process_text(stderr) + "\n" + process_text(stdout)):
+                raise LearningNotAdmitted("provider_usage_limit_requires_explicit_resume")
     except TimeoutError as error:
         if str(error).startswith("hermes_profile_lock_timeout:"):
             raise LearningDeferred("hermes_profile_busy") from error
@@ -1692,7 +1702,10 @@ def invoke_loop(
         raise ValueError(f"learning_prompt_too_large:{loop_id}:{len(prompt)}")
     try:
         require_learning_model_call_admission(args)
-        value = invoke_hermes(args.profile, prompt, skills, args.timeout_seconds)
+        value = invoke_hermes(
+            args.profile, prompt, skills, args.timeout_seconds,
+            model_call_admission=lambda: learning_model_call_admission_reason(args.glitch_data),
+        )
         return validate_output(value, loop_id, ids)
     except (json.JSONDecodeError, ValueError) as error:
         repair_prompt = (
@@ -1705,7 +1718,10 @@ def invoke_loop(
         if len(repair_prompt) > MAX_PROMPT_CHARS:
             raise ValueError(f"learning_repair_prompt_too_large:{loop_id}:{len(repair_prompt)}")
         require_learning_model_call_admission(args)
-        value = invoke_hermes(args.profile, repair_prompt, skills, args.timeout_seconds)
+        value = invoke_hermes(
+            args.profile, repair_prompt, skills, args.timeout_seconds,
+            model_call_admission=lambda: learning_model_call_admission_reason(args.glitch_data),
+        )
         return validate_output(value, loop_id, ids)
 
 

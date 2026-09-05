@@ -663,24 +663,13 @@ def test_position_management_consistency_check_never_chooses_the_action() -> Non
     )
 
 
-def test_position_management_rejects_nonpositive_exit_while_thesis_is_held() -> None:
-    management_math = {
-        "status": "complete",
-        "current_unrealized_pnl_usd": -12.5,
-        "hold_target_before_stop_break_even_probability": 0.15789474,
-    }
-
-    with pytest.raises(
-        ValueError,
-        match=r"^position_management_nonpositive_exit_without_failure:0:",
-    ):
-        DIRECT.validate_position_management(
-            position_management_evidence("EXIT", "POSITIVE"),
-            "M2K",
-            "EXIT",
-            0,
-            management_math,
-        )
+def test_position_management_allows_evidence_led_exit_while_original_thesis_is_held() -> None:
+    # Current PnL and original thesis status must never select a management action.
+    DIRECT.validate_position_management(
+        position_management_evidence("EXIT", "POSITIVE"), "M2K", "EXIT", 0,
+        {"status": "complete", "current_unrealized_pnl_usd": -12.5,
+         "hold_target_before_stop_break_even_probability": 0.15789474},
+    )
 
 
 def test_position_management_allows_nonpositive_exit_after_model_owned_failure() -> None:
@@ -703,17 +692,14 @@ def test_position_management_allows_nonpositive_exit_after_model_owned_failure()
     )
 
 
-def test_position_thesis_error_receives_correction_only_repair() -> None:
-    error = ValueError(
-        "position_management_nonpositive_exit_without_failure:0:"
-        "current_unrealized_pnl_usd=-12.50000000"
-    )
-
+def test_position_thesis_format_repair_preserves_the_chosen_action() -> None:
+    error = ValueError("position_management_thesis_status_invalid:0")
     assert DIRECT.retryable_model_contract_error(error) is True
     repair = DIRECT.contract_repair_prompt("prompt", {}, error)
     assert repair.startswith("POSITION_THESIS_SELF_CONSISTENCY_CORRECTION_ONLY:")
     assert "A negative mark, one adverse bar, absent immediate follow-through" in repair
-    assert "change action, final_choice, and SELECTION_ACTION together to HOLD" in repair
+    assert "Preserve the selected action regardless of PnL sign" in repair
+    assert "together to HOLD" not in repair
 
 
 def test_position_management_rejects_an_unselected_verdict_placeholder() -> None:
@@ -1403,15 +1389,13 @@ def test_repeated_packet_fingerprint_ignores_rolling_identity() -> None:
     assert DIRECT.packet_fingerprint(first) == DIRECT.packet_fingerprint(second)
 
 
-def test_selection_ev_positive_nothing_remains_observational() -> None:
+def test_positive_terminal_value_does_not_force_now_over_wait() -> None:
     value = (
         "direction=LONG;entry=100;stop=95;target=110;risk_points=5;reward_points=10;"
         "friction_points=0;breakeven_target_first=0.333;estimated_target_first_range=40-50%;"
         "now_ev=POSITIVE;wait_price=105;wait_ev=NEGATIVE;decisive_reason=fixture"
     )
-    assert DIRECT.validate_selection_ev(value, "NOTHING", 0, "test") == [
-        "selection_ev_nothing_positive:0:test"
-    ]
+    assert DIRECT.validate_selection_ev(value, "NOTHING", 0, "test") == []
 
 
 def test_selection_ev_observes_numeric_gaps_then_canonicalizes_exact_math() -> None:
@@ -2161,46 +2145,29 @@ def comparison_ledger(sections: dict[str, list[str]]) -> str:
     return "\n".join(lines)
 
 
-def test_nothing_selection_ev_arithmetic_mismatch_becomes_uncertain_without_changing_choice() -> None:
-    batch, _ = valid_batch("2026-09-04T08:39:00Z")
-    intent = batch["decisions"][0]
-    original = (
-        "SELECTION_EV=direction=SHORT;entry=29648;stop=29651.625;target=29629;"
-        "risk_points=3.625;reward_points=19;friction_points=0.5;"
-        "breakeven_target_first=0.17857143;estimated_target_first_range=0.35-0.45;"
-        "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=NEGATIVE;decisive_reason=fixture"
+def test_nothing_selection_ev_arithmetic_mismatch_is_reported_not_hidden() -> None:
+    value = ("direction=SHORT;entry=29648;stop=29651.625;target=29629;"
+             "risk_points=3.625;reward_points=19;friction_points=0.5;"
+             "breakeven_target_first=0.18232044;estimated_target_first_range=0.35-0.45;"
+             "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=POSITIVE;decisive_reason=fixture")
+    corrected_math = DIRECT.canonicalize_selection_ev_math(value)
+    assert "now_ev=NEGATIVE" in corrected_math
+    assert "selection_ev_verdict_range_mismatch:0:test" in DIRECT.validate_selection_ev(
+        corrected_math, "NOTHING", 0, "test",
     )
-    intent["decision_audit"]["decisive_evidence"] = original
-
-    corrected = DIRECT.reconcile_nothing_selection_ev_verdict(batch)
-
-    evidence = intent["decision_audit"]["decisive_evidence"]
-    assert corrected == 1
-    assert intent["action"] == "NOTHING"
-    assert intent["decision_audit"]["final_choice"] == "NOTHING"
-    assert "estimated_target_first_range=0.35-0.45" in evidence
-    assert "now_ev=UNCERTAIN" in evidence
-    assert evidence == original.replace("now_ev=NEGATIVE", "now_ev=UNCERTAIN")
+    assert DIRECT.deterministic_selection_math(value)["computed_terminal_ev_verdict"] == "POSITIVE"
 
 
 def test_entry_selection_ev_arithmetic_mismatch_is_not_rewritten_or_admitted() -> None:
-    batch, _ = valid_batch("2026-09-04T08:39:00Z")
-    intent = batch["decisions"][0]
-    intent["action"] = "ENTER_SHORT"
-    intent["decision_audit"]["final_choice"] = "ENTER_SHORT"
-    original = (
-        "SELECTION_EV=direction=SHORT;entry=29648;stop=29651.625;target=29629;"
-        "risk_points=3.625;reward_points=19;friction_points=0.5;"
-        "breakeven_target_first=0.17857143;estimated_target_first_range=0.35-0.45;"
-        "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=NEGATIVE;decisive_reason=fixture"
-    )
-    intent["decision_audit"]["decisive_evidence"] = original
-
-    corrected = DIRECT.reconcile_nothing_selection_ev_verdict(batch)
-
-    assert corrected == 0
-    assert intent["action"] == "ENTER_SHORT"
-    assert intent["decision_audit"]["decisive_evidence"] == original
+    value = ("direction=SHORT;entry=29648;stop=29651.625;target=29629;"
+             "risk_points=3.625;reward_points=19;friction_points=0.5;"
+             "breakeven_target_first=0.18232044;estimated_target_first_range=0.35-0.45;"
+             "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=NEGATIVE;decisive_reason=fixture")
+    corrected = DIRECT.canonicalize_selection_ev_math(value)
+    assert "now_ev=NEGATIVE" in corrected
+    observations = DIRECT.validate_selection_ev(corrected, "ENTER_SHORT", 0, "test")
+    assert "selection_ev_entry_not_positive:0:test" in observations
+    assert "selection_ev_verdict_range_mismatch:0:test" in observations
 
 
 def test_normalize_batch_uses_valid_ledger_selection_as_serialized_instrument() -> None:
@@ -2370,45 +2337,34 @@ def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
     assert "Preserve the same market judgment" in calls[1]
 
 
-def test_nothing_ev_verdict_mismatch_is_reconciled_without_model_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_nothing_ev_verdict_mismatch_gets_one_truthful_bounded_correction(monkeypatch) -> None:
     first, scenario = valid_batch("2026-09-04T08:39:00Z")
-    intent = first["decisions"][0]
-    intent["decision_audit"]["decisive_evidence"] = (
+    first["decisions"][0]["decision_audit"]["decisive_evidence"] = (
         "SELECTION_EV=direction=SHORT;entry=29648;stop=29651.625;target=29629;"
         "risk_points=3.625;reward_points=19;friction_points=0.5;"
-        "breakeven_target_first=0.17857143;estimated_target_first_range=0.35-0.45;"
-        "now_ev=NEGATIVE;wait_price=29651.625;wait_ev=NEGATIVE;decisive_reason=fixture"
-    )
-    calls: list[str] = []
-
+        "breakeven_target_first=0.18232044;estimated_target_first_range=0.35-0.45;"
+        "now_ev=NEGATIVE;wait_price=29651;wait_ev=POSITIVE;decisive_reason=better pre-target entry")
+    second = json.loads(json.dumps(first))
+    second["decisions"][0]["decision_audit"]["decisive_evidence"] = (
+        first["decisions"][0]["decision_audit"]["decisive_evidence"].replace("now_ev=NEGATIVE", "now_ev=POSITIVE"))
+    calls = []
     def invoke(_profile, prompt, _timeout, **_kwargs):
         calls.append(prompt)
-        return first
-
+        return first if len(calls) == 1 else second
     def validate(batch, *_args, **_kwargs):
-        evidence = batch["decisions"][0]["decision_audit"]["decisive_evidence"]
-        selection_ev = evidence.removeprefix("SELECTION_EV=")
+        intent = batch["decisions"][0]
         return DIRECT.validate_selection_ev(
-            selection_ev,
-            batch["decisions"][0]["action"],
-            0,
-            "candidate_comparison",
-        )
-
+            intent["decision_audit"]["decisive_evidence"].removeprefix("SELECTION_EV="),
+            intent["action"], 0, "candidate_comparison")
     monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
     monkeypatch.setattr(DIRECT, "validate_batch", validate)
-
-    batch, output_repair_count, transport_retry_count = DIRECT.invoke_validated_batch(
-        "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
-    )
-
-    assert calls == ["ORIGINAL_PROMPT"]
-    assert output_repair_count == 0
-    assert transport_retry_count == 0
+    batch, repair_count, retry_count = DIRECT.invoke_validated_batch(
+        "glitch", "ORIGINAL_PROMPT", scenario, None, 30)
+    assert len(calls) == 2
+    assert repair_count == 1 and retry_count == 0
     assert batch["decisions"][0]["action"] == "NOTHING"
-    assert "now_ev=UNCERTAIN" in batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+    assert "now_ev=POSITIVE" in batch["decisions"][0]["decision_audit"]["decisive_evidence"]
+    assert "estimated_target_first_range=0.35-0.45" in batch["decisions"][0]["decision_audit"]["decisive_evidence"]
 
 
 def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
@@ -2456,9 +2412,9 @@ def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
     assert "evidence-derived estimated target-first range" in calls[1]
     assert "must not originate or strengthen an entry" in calls[1]
     assert "For selection_ev_forecast_range_mismatch" in calls[1]
-    assert "selection_ev_nothing_positive" in calls[1]
-    assert "use NOTHING" in calls[1]
-    assert "when the whole preserved range is below exact break-even" in calls[1]
+    assert "Preserve NOTHING: positive terminal bracket value does not force NOW over WAIT" in calls[1]
+    assert "label now_ev=POSITIVE" in calls[1]
+    assert "demote it to NOTHING" in calls[1]
     assert "A later fresh full-evidence cycle may choose an entry" in calls[1]
     assert "does not estimate probability or select a new setup" in calls[1]
     assert "Do not raise or lower the range" in calls[1]
@@ -2471,21 +2427,14 @@ def test_selection_consistency_repair_cannot_originate_or_strengthen_entry() -> 
     previous, _ = valid_batch("2026-09-03T16:15:00Z")
     repaired = json.loads(json.dumps(previous))
     repaired["decisions"][0]["action"] = "ENTER_LONG"
-
+    error = ValueError("selection_ev_verdict_range_mismatch:0:candidate_comparison")
     with pytest.raises(ValueError, match="selection_ev_repair_entry_admission_forbidden:0"):
-        DIRECT.enforce_selection_repair_boundary(
-            previous,
-            repaired,
-            ValueError("selection_ev_nothing_positive:0:candidate_comparison"),
-        )
-
+        DIRECT.enforce_selection_repair_boundary(previous, repaired, error)
     previous["decisions"][0]["action"] = "ENTER_LONG"
-    with pytest.raises(ValueError, match="selection_ev_repair_entry_admission_forbidden:0"):
-        DIRECT.enforce_selection_repair_boundary(
-            previous,
-            repaired,
-            ValueError("selection_ev_entry_not_positive:0:candidate_comparison"),
-        )
+    DIRECT.enforce_selection_repair_boundary(previous, repaired, error)
+    repaired["decisions"][0]["quantity"] = 2
+    with pytest.raises(ValueError, match="selection_ev_repair_evidence_changed:0:quantity"):
+        DIRECT.enforce_selection_repair_boundary(previous, repaired, error)
 
 
 def test_forecast_only_repair_may_preserve_but_not_originate_entry() -> None:
@@ -2557,11 +2506,11 @@ def test_selection_ev_consistency_retry_does_not_accept_a_second_contradiction(
         DIRECT,
         "validate_batch",
         lambda *_args, **_kwargs: [
-            "selection_ev_nothing_positive:0:candidate_comparison"
+            "selection_ev_verdict_range_mismatch:0:candidate_comparison"
         ],
     )
 
-    with pytest.raises(ValueError, match="selection_ev_nothing_positive"):
+    with pytest.raises(ValueError, match="selection_ev_verdict_range_mismatch"):
         DIRECT.invoke_validated_batch(
             "glitch", "ORIGINAL_PROMPT", scenario, None, 30, decision_mode="flat_scan"
         )
@@ -3001,73 +2950,35 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
         {"outcomes": [], "current_guidance": {"verdict": "RECURSIVE_ABSTENTION_VETO"}},
     )
 
-    assert "does not require the future target to have traded already" in prompt
-    assert "learner guidance is deliberately excluded from flat entry cognition" in prompt
-    assert "(risk_points + friction_points) / (risk_points + reward_points)" in prompt
-    assert "Estimate target-first probability from evidence before using payoff math" in prompt
-    assert "never work backward from an attractive bracket" in prompt
-    assert "without using payoff ratio or break-even as probability evidence" in prompt
-    assert "Never raise or lower the probability range merely to preserve ENTER" in prompt
-    assert "range wide enough to include all named probability uncertainty" in prompt
-    assert "never keep the whole range above break-even" in prompt
-    assert "UNCERTAIN is valid only when the range genuinely straddles break-even" in prompt
-    assert "unconditional probability that the stated primary target prints before the stated stop" in prompt
-    assert "It is not directional potential" in prompt
-    assert "none remains as a separate setup-permission veto afterward" in prompt
-    assert "not a fixed probability or reward/risk rule" in prompt
-    assert "reconcile recent_glitch_ledger.recent_exit_decisions and completed native results before selection" in prompt
-    assert "treat them as one correlated thesis" in prompt
-    assert "NOTHING, HOLD, rejected candidates, and opposite-direction trades are observations" in prompt
-    assert "their labels alone cannot lower its probability" in prompt
-    assert "state in the decisive reason what post-exit market evidence materially changed" in prompt
-    assert "Separate directional path quality from entry timing" in prompt
-    assert "do not count it both as probability evidence and as untouched reward" in prompt
-    assert "a concrete improvement in entry location, invalidation cost, or target-before-stop probability" in prompt
-    assert "never shorthand for perfect confirmation or a required retest" in prompt
-    assert "rank the evidence-supported auction path, not the easiest bracket" in prompt
-    assert "A low break-even probability alone is not edge" in prompt
-    assert "Use microstructure to time the entry, not to manufacture the larger path" in prompt
-    assert "Cheap risk comes from favorable entry near that genuine invalidation" in prompt
-    assert "is noise, not the trade thesis" in prompt
-    assert "initial risk around $20 or less is presumptively ordinary noise" in prompt
-    assert "About $10 risk for only $10-$20 gross reward is plainly a noise probe" in prompt
-    assert "prefer structural room around 3:1 gross reward to risk or better as error margin" in prompt
-    assert "treat 1:1 to 2:1 as exceptional" in prompt
-    assert "not deterministic gates" in prompt
-    assert "Map an objective ladder before choosing geometry" in prompt
-    assert "nearby response levels manage the trade" in prompt
-    assert "not the primary target merely because it is first" in prompt
-    assert "infer a discounted continuation objective" in prompt
-    assert "evidence, not checklist prerequisites" in prompt
-    assert "not whether the primary target must be reached inside that window" in prompt
-    assert "Anticipatory entry remains allowed near genuine invalidation" in prompt
-    assert "higher timeframes are context, not mandatory alignment" in prompt
-    assert "Immediately before returning ENTER, audit the meaning of your own NOISE_AND_GEOMETRY conclusion" in prompt
-    assert "one-contract initial risk is around $20 or less without explicit supplied evidence" in prompt
-    assert "both planned loss and primary capture are merely noise-probe scale" in prompt
-    assert "ENTER is internally contradictory regardless of a named level" in prompt
-    assert "semantic self-consistency requirement" in prompt
-    assert "a supported short-horizon rotation remains eligible" not in prompt
-    assert "A range wholly above break-even requires positive now_ev" in prompt
-    assert "never by back-solving probability from payoff" in prompt
-    assert "not a fixed probability, margin, dollar, ATR, reward/risk, confirmation, or cooldown gate" in prompt
-    assert "A completed close through a named level proves that crossing, not acceptance by itself" in prompt
-    assert "no retest or extra completed-bar sequence is mandatory" in prompt
-    assert "price-only delivery revalidation cannot upgrade the original evidence" in prompt
-    assert "do not acknowledge them and then ignore them because the payoff hurdle is low" in prompt
-    assert "survives one-minute noise but not five-minute excursion" in prompt
-    assert "adverse probability evidence, not a positive noise-survival claim or a fixed ATR gate" in prompt
-    assert "must not raise estimated probability or confidence" in prompt
-    assert "not a general penalty on an instrument or direction" in prompt
-    assert "realized P&L and win/loss labels are not market evidence" in prompt
-    assert "Same instrument and direction alone do not prove correlation" in prompt
-    assert "A completed new leg, break-and-hold, or pullback/retest can establish a distinct setup" in prompt
-    assert "If qualitative evidence disagrees with that implication, revise the estimated range" not in prompt
-    assert "This check never supplies or revises probability, geometry, instrument, or action" in prompt
-    assert "This consistency rule does not choose probability, geometry, instrument, or action" in prompt
-    assert "This is cognitive continuity, not a cooldown or deterministic execution gate" in prompt
-    assert "seconds_until_must_flat as the actual schedule horizon" in prompt
-    assert "RECURSIVE_ABSTENTION_VETO" not in prompt
+    for phrase in (
+        "Learner prose is excluded from flat selection", "that objective need not already have traded",
+        "(risk_points + friction_points) / (risk_points + reward_points)",
+        "estimate a coarse target-first range from evidence before looking at the payoff hurdle",
+        "never back-solve it from desired action", "Include all named uncertainty in the range once",
+        "not a forecast conditional on a later retest", "FIVE_TO_TEN_BAR_FORECAST describes the immediate path",
+        "managed exit before either barrier leaves that terminal event unobserved",
+        "A NOTHING, HOLD or rejected candidate is not a stopped trade",
+        "Same instrument and direction alone are not a failed thesis", "PnL labels are not market evidence",
+        "post-exit evidence materially changed",
+    ):
+        assert phrase in prompt
+    for phrase in (
+        "larger auction path, regime and location", "genuine nearby invalidation",
+        "A shallow pivot does not become valid merely because it makes a cheap bracket",
+        "Higher timeframes are context, not required alignment",
+        "Distinguish entry trigger, intermediate response/management levels and primary destination",
+        "one- and five-minute noise", "Dollars alone cannot distinguish noise from opportunity",
+        "Do not impose a stop floor or a preferred ratio",
+        "A small rotation needs genuine boundary-to-boundary path evidence and net room",
+        "Anticipatory entry is allowed without a closed candle, retest or perfect flow",
+        "A completed cross proves crossing, not acceptance",
+        "positive unchanged-bracket value", "missed-move cost", "must_flat_utc",
+    ):
+        assert phrase in prompt
+    for removed in ("initial risk around $20", "prefer structural room around 3:1",
+                    "treat 1:1 to 2:1 as exceptional", "RECURSIVE_ABSTENTION_VETO"):
+        assert removed not in prompt
+    assert len(prompt.split("CURRENT_CYCLE=")[0]) < 12500
 
 
 def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition() -> None:
@@ -3094,38 +3005,28 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     flat_prompt = DIRECT.build_prompt(packet, flat, {"outcomes": []})
 
     assert '"decision_mode":"position_management"' in positioned_prompt
-    assert "when deterministic_management_math.status is complete" in positioned_prompt
-    assert "When its price_basis.status is complete" in positioned_prompt
-    assert "This resolves factual basis only and does not prefer a management action" in positioned_prompt
-    assert "the supplied math is decision support, never an execution gate" in positioned_prompt
-    assert "The break-even event is TARGET_BEFORE_STOP" in positioned_prompt
-    assert "not below an 84.21% requirement" in positioned_prompt
-    assert "gross_hold_terminal_ev=POSITIVE|NEGATIVE|STRADDLES" in positioned_prompt
-    assert "gross_hold_terminal_ev=REPLACE_WITH_POSITIVE_NEGATIVE_OR_STRADDLES" in positioned_prompt
-    assert "Chart history before entry is setup context only" in positioned_prompt
-    assert "do not claim price visited or rebounded from the favorable target area" in positioned_prompt
-    assert "Begin CURRENT_SETUP exactly with HELD: or FAILED:" in positioned_prompt
-    assert "absent immediate follow-through, a trigger recross" in positioned_prompt
-    assert "as its causal review baseline, not an automatic exit gate" in positioned_prompt
-    assert "while CURRENT_SETUP is HELD, EXIT at or below breakeven is internally contradictory" in positioned_prompt
-    assert "This does not require waiting for the hard stop after actual failure" in positioned_prompt
-    assert "as its causal review baseline, not an automatic exit gate" not in flat_prompt
-    assert "rollback relative to peak MFE and initial risk" in positioned_prompt
-    assert "HOLD must explain why rebased continuation value clearly exceeds EXIT" in positioned_prompt
-    assert "After material MFE, EXIT does not require original invalidation or accepted reversal" in positioned_prompt
-    assert "derive and evaluate at least one candidate protection level" in positioned_prompt.lower()
-    assert "cannot reject both MOVE_STOP and EXIT" in positioned_prompt
-    assert "Never use a fixed MFE percentage" in positioned_prompt
-    assert "Estimate target-first probability from evidence before using payoff math" not in positioned_prompt
-    assert "rank the evidence-supported auction path, not the easiest bracket" not in positioned_prompt
-    assert "Map an objective ladder before choosing geometry" not in positioned_prompt
-    assert "never by back-solving probability from payoff" not in positioned_prompt
-    assert "rollback relative to peak MFE and initial risk" not in flat_prompt
-    assert "when deterministic_management_math.status is complete" not in flat_prompt
-    assert "When its price_basis.status is complete" not in flat_prompt
-    assert "cannot reject both MOVE_STOP and EXIT" not in flat_prompt
-    assert "recent_exit_decisions and completed native results take precedence" not in positioned_prompt
-    assert "seconds_until_must_flat as the actual schedule horizon" not in positioned_prompt
+    for phrase in (
+        "Use deterministic_management_math as arithmetic authority when complete",
+        "original intent-bound native fill/protection risk, not aggregate_giveback_to_stop_usd",
+        "Unknown original risk stays unknown", "not tick-exact extrema",
+        "no observed MFE does not prove no between-snapshot excursion",
+        "Chart history before entry is setup context, never post-entry price history",
+        "price_basis.selected_current_price", "Begin CURRENT_SETUP with HELD: or FAILED:",
+        "original path has not failed, not that holding must beat exiting",
+        "not discomfort with the accepted loss budget",
+        "EXIT need not await original invalidation", "HOLD must justify continuation",
+        "inability to tighten safely does not rule out EXIT",
+        "Never widen a stop or move mechanically to breakeven",
+        "before the old target fills", "not the expected value of every future managed path",
+        "gross_hold_terminal_ev=POSITIVE|NEGATIVE|STRADDLES",
+        "gross_hold_terminal_ev=REPLACE_WITH_POSITIVE_NEGATIVE_OR_STRADDLES",
+    ):
+        assert phrase in positioned_prompt
+    assert "EXIT at or below breakeven is internally contradictory" not in positioned_prompt
+    assert "estimate a coarse target-first range from evidence before looking at the payoff hurdle" not in positioned_prompt
+    assert "Use deterministic_management_math as arithmetic authority when complete" not in flat_prompt
+    assert "before the old target fills" not in flat_prompt
+    assert len(positioned_prompt.split("CURRENT_CYCLE=")[0]) < 7000
 
 
 def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
@@ -3150,7 +3051,7 @@ def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
-    assert "Estimate target-first probability from evidence before using payoff math" in prompt
+    assert "estimate a coarse target-first range from evidence before looking at the payoff hurdle" in prompt
     assert "runtime deterministically supplies schema, intent ID, time, route, account" in prompt
     assert "decision_audit closes before wake_triggers" in prompt
 
@@ -3243,8 +3144,8 @@ def test_shared_flat_trigger_review_requests_one_shared_decision() -> None:
     assert '"operator_profile"' not in prompt
     assert "return exactly one decision object" in prompt
     assert "binds the identical decision to every ordered master book" in prompt
-    assert "Map an objective ladder before choosing geometry" in prompt
-    assert "never by back-solving probability from payoff" in prompt
+    assert "Distinguish entry trigger, intermediate response/management levels and primary destination" in prompt
+    assert "never back-solve it from desired action" in prompt
 
 
 def test_latest_prior_cognition_uses_one_canonical_decision_from_latest_prior_cycle(
@@ -3465,11 +3366,11 @@ def test_flat_prompt_injects_prior_cognition_and_requires_reconciliation() -> No
 
     assert '"prior_cognition":{"schema_version":"glitch.hermes.prior_cognition.v1"' in prompt
     assert "PRIOR_PATH_STATE" in prompt
-    assert "Reconcile every supplied prior path as HELD, FAILED, or EXPIRED" in prompt
-    assert "NOT_APPLICABLE only when no prior path exists" in prompt
-    assert "deterministic_geometry_context as the arithmetic authority" in prompt
-    assert "lower is a price improvement for a long" in prompt
-    assert "exact arithmetic correction to the prior SELECTION_EV levels" in prompt
+    assert "Reconcile prior paths as HELD, FAILED or EXPIRED" in prompt
+    assert "NOT_APPLICABLE only when none exists" in prompt
+    assert "deterministic_geometry_context for tick values, ATR/spread and dollar arithmetic" in prompt
+    assert "lower improves long entry" in prompt
+    assert "corrects prior arithmetic, not today's setup" in prompt
 
 
 def test_trigger_review_injects_exit_continuity_for_alternative_candidates() -> None:
@@ -3531,8 +3432,8 @@ def test_trigger_review_injects_exit_continuity_for_alternative_candidates() -> 
     assert '"decision_mode":"trigger_review"' in prompt
     assert '"prior_cognition":{"schema_version":"glitch.hermes.prior_cognition.v1"' in prompt
     assert '"recent_exit_decisions":[{"instrument":"MES","action":"EXIT"' in prompt
-    assert "reconcile recent_glitch_ledger.recent_exit_decisions and completed native results before selection" in prompt
-    assert "Without such a change, do not present the attempt as fresh" in prompt
+    assert "Preserve recent native exit/result continuity even before enriched learner outcomes arrive" in prompt
+    assert "explain what post-exit evidence materially changed before re-entry" in prompt
 
 
 def test_journal_tail_deduplicates_shared_decisions_and_preserves_instrument(

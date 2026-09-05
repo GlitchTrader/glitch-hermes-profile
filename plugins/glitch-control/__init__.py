@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 
 JOB_NAMES = ("glitch-direct-operator", "glitch-learning-supervisor")
+PROFILE_ROOT = Path(__file__).resolve().parents[2]
 CONTROL_URL = "http://127.0.0.1:8789"
 PORTFOLIO_URL = "http://127.0.0.1:8787/snapshot/portfolio"
 GLITCH_DATA = Path(os.environ.get(
@@ -100,22 +101,32 @@ def _portfolio() -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _cron_operation(operation: str, *args, **kwargs):
+    from cron import jobs
+    # A GUI/plugin caller can carry another profile's ambient context.
+    # Never read or mutate its store or change process-global cron paths.
+    with jobs.use_cron_store(PROFILE_ROOT):
+        return getattr(jobs, operation)(*args, **kwargs)
+
+
 def _job(name: str, include_disabled: bool = True) -> Optional[dict[str, Any]]:
-    from cron.jobs import list_jobs
-    return next((job for job in list_jobs(include_disabled=include_disabled) if job.get("name") == name), None)
+    matches = [job for job in _cron_operation("list_jobs", include_disabled=include_disabled)
+               if job.get("name") == name]
+    if len(matches) > 1:
+        raise RuntimeError(f"Multiple {name} jobs exist in {PROFILE_ROOT}; refusing ambiguous control.")
+    return matches[0] if matches else None
 
 
 def _pause_jobs(reason: str) -> str:
-    from cron.jobs import pause_job
     states = []
     for name in JOB_NAMES:
         job = _job(name)
         if not job:
-            states.append(f"{name}=not-installed")
+            raise RuntimeError(f"{name} is missing from {PROFILE_ROOT}; job pause was not verified.")
         elif not job.get("enabled", True):
             states.append(f"{name}=already-paused")
         else:
-            if pause_job(job["id"], reason=reason) is None:
+            if _cron_operation("pause_job", job["id"], reason=reason) is None:
                 raise RuntimeError(f"Hermes could not pause {name}.")
             states.append(f"{name}=paused")
     return ", ".join(states)
@@ -173,7 +184,10 @@ def _status_text() -> str:
     replication = "on" if state.get("replication_enabled", False) else "off"
     policy = "valid" if state.get("policy_valid", False) else "invalid"
     mismatch = "" if on or (not enabled and job_state != "running") else "; state mismatch: run /trade or /pause_trading"
-    return f"Glitch trading: {'ON' if on else 'OFF'}; policy: {policy}; replication: {replication}; gateway: {gateway}{mismatch}."
+    usage = "; model calls held after provider usage exhaustion: explicit /trade resumes" if (
+        PROFILE_ROOT / "runtime" / "provider-usage-hold.json"
+    ).exists() else ""
+    return f"Glitch trading: {'ON' if on else 'OFF'}; jobs: {job_state}; policy: {policy}; replication: {replication}; gateway: {gateway}{mismatch}{usage}."
 
 
 def _route_account_bindings() -> dict[str, str]:
@@ -335,19 +349,20 @@ def _chat_mode(_raw_args: str) -> str:
 
 
 def _trade(_raw_args: str) -> str:
-    from cron.jobs import resume_job
     jobs = [_job(name) for name in JOB_NAMES]
     if any(job is None for job in jobs):
-        return "Trading and learning jobs must both be installed. Run setup.ps1 first."
+        raise RuntimeError("Trading and learning jobs must both be installed. Run setup.ps1 first.")
     _request("/control", action="TRADING_OFF")
     resumed: list[dict[str, Any]] = []
     try:
         _start_gateway()
         for job in jobs:
             if job and not job.get("enabled", True):
-                if resume_job(job["id"]) is None:
+                if _cron_operation("resume_job", job["id"]) is None:
                     raise RuntimeError(f"Hermes could not resume {job.get('name')}; trading remains OFF.")
                 resumed.append(job)
+        # Explicit resume authorizes one new provider attempt, not repeated quota failures.
+        (PROFILE_ROOT / "runtime" / "provider-usage-hold.json").unlink(missing_ok=True)
         _request("/control", action="TRADING_ON")
     except Exception:
         if resumed:

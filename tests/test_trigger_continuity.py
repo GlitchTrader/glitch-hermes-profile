@@ -410,35 +410,27 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     assert DIRECT.TRIGGER_REVIEW_MARKER in prompt
     assert '"decisive_evidence":"INSTRUMENT_COMPARISON_V1' not in prompt
     assert '"source_cycle_id":"source"' in prompt
-    assert "Do not require the same class of confirmation again at a newer extreme" in prompt
-    assert "HELD preserves the hypothesis but supplies no extra directional evidence" in prompt
-    assert "Price latency once" in prompt
-    assert "deterministic latest-price revalidation skips stale entries" in prompt
-    assert "multiple one-minute packets during model and transport delay" not in prompt
-    assert "stop-distance points times the packet point_value_usd" in prompt
-    assert "never defer because these interpretations were not prewritten" in prompt
-    assert "separate the broader path invalidation from the immediate entry invalidation" in prompt
-    assert "nearest setup-specific structural level" in prompt
-    assert "both falsifies the immediate entry and survives ordinary horizon noise" in prompt
-    assert "Use the broader path invalidation as the stop only when no nearer noise-surviving structural level exists" in prompt
-    assert "an unconsumed objective produce positive target-before-stop expected value after costs" in prompt
-    assert "entry is permitted without completed-bar acceptance or a retest" in prompt
-    # Preserve the genuine abstention and latency boundaries while correcting
-    # the inherited-invalidation false veto seen in the 14:06 trigger review.
-    assert "Enter only when now_ev is POSITIVE" in prompt
-    assert "choose NOTHING only when now_ev is NEGATIVE or irreducibly UNCERTAIN" in prompt
-    assert "confirmation at or beyond that target consumes the trade" in prompt
-    assert "confirmation transition is not automatically the primary profit objective" in prompt
-    assert "construct the strongest fresh compact setup" in prompt
-    assert "condition-change wake is consumed once" in prompt
+    for phrase in (
+        "Do not ratchet the same confirmation to the newest extreme",
+        "crossing itself is not new directional evidence", "Price uncertainty once",
+        "Do not widen it to defeat latest-price revalidation",
+        "point_value_usd, not max_contracts or replication",
+        "do not substitute a remote higher-timeframe stop",
+        "nearer noise-surviving level genuinely invalidates this setup",
+        "Anticipatory entry is allowed without a closed candle, retest or perfect flow",
+        "ENTER requires positive current-zone value",
+        "WAIT must be before the target",
+        "a failed path may yield a fresh setup without waiting five minutes",
+        "condition-change wake is consumed once",
+        "Preserve recent native exit/result continuity even before enriched learner outcomes arrive",
+        "explain what post-exit evidence materially changed before re-entry",
+    ):
+        assert phrase in prompt
     assert '"recent_glitch_ledger":{' in prompt
     assert '"action":"EXIT"' in prompt
     assert '"code":"master_exit_fill_observed"' in prompt
     assert '"master_realized_pnl_usd":-13.75' in prompt
-    assert "master_stop_exit_fill_observed" in prompt
-    assert "completed factual result" in prompt
-    assert "state what materially changed after that exit" in prompt
-    assert "This is evidence reconciliation, not a cooldown" in prompt
+    assert "choose NOTHING only when now_ev is NEGATIVE or irreducibly UNCERTAIN" not in prompt
 
 
 def test_trigger_context_preserves_a_prior_trigger_review_ledger(tmp_path: Path) -> None:

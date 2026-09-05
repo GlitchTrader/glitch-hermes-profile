@@ -27,9 +27,9 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         )
         for phrase in forbidden:
             self.assertNotIn(phrase, text)
-        self.assertIn("current packet", text)
+        self.assertIn("current market packet", text)
         self.assertIn("no setup class is preferred", text)
-        self.assertIn("there is no fixed distance", text)
+        self.assertIn("no default instrument, fixed strategy, dollar stop, atr multiple, reward/risk floor", text)
         self.assertIn("daily monetary objective", text)
 
     def test_reference_vocabulary_contains_no_playbook_or_unverified_base_rates(self) -> None:
@@ -69,7 +69,7 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         ).lower()
 
         self.assertNotIn("independently support the trade", soul)
-        self.assertIn("not independent permission gates", soul)
+        self.assertIn("never back-solve probability from a desired trade, repeat uncertainty as a second veto", soul)
         self.assertIn("future destination need not have traded already", scan)
         self.assertNotIn("until price accepts through the nearer objective", scan)
         self.assertIn("price plausible decision-to-delivery drift once", intent)

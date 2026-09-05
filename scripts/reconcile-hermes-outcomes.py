@@ -21,6 +21,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from native_risk import initial_native_risk
+
 
 DOTNET_EPOCH_TICKS = 621355968000000000
 NATIVE_LOG_QUANTITY_PATTERN = re.compile(r"(?:^|\s)Quantity=(?P<quantity>\d+(?:\.\d+)?)")
@@ -1426,33 +1428,6 @@ def native_follower_protection_submitted(log_directory, trade, account, cache):
         for pair in pairs.values()
     )
     return protected_quantity >= int(abs(trade.get("contracts") or 0)) > 0
-
-
-def initial_native_risk(entry_price, quantity, fields, point_value):
-    if not isinstance(point_value, (int, float)) or point_value <= 0:
-        return [], None, "native_point_value_missing"
-    legs = []
-    remaining = int(quantity)
-    for index in range(1, 4):
-        stop = _float(fields, f"sl{index}")
-        leg_quantity = int(_float(fields, f"leg{index}_qty", 0) or 0)
-        if index == 1 and leg_quantity <= 0 and stop is not None:
-            leg_quantity = remaining
-        if stop is None or leg_quantity <= 0:
-            continue
-        leg_quantity = min(leg_quantity, remaining)
-        risk_points = abs(float(entry_price) - stop)
-        legs.append({
-            "leg": index,
-            "quantity": leg_quantity,
-            "initial_stop_price": stop,
-            "risk_points_per_contract": risk_points,
-            "initial_native_risk_usd": risk_points * leg_quantity * point_value,
-        })
-        remaining -= leg_quantity
-    if not legs or remaining != 0:
-        return legs, None, "native_initial_protection_incomplete"
-    return legs, sum(leg["initial_native_risk_usd"] for leg in legs), "complete"
 
 
 def _match_ledger_trades(ledger, expected_accounts, bracket_by_account, intent, correlation, journal):

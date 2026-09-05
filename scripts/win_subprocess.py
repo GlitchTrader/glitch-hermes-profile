@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,6 +13,46 @@ from pathlib import Path
 
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
+
+
+def _provider_hold_path(profile: str) -> Path:
+    return Path.home() / "AppData" / "Local" / "hermes" / "profiles" / profile / "runtime" / "provider-usage-hold.json"
+
+
+def provider_usage_hold_reason(profile: str) -> str | None:
+    """A provider's exhausted usage is not a fresh market decision each minute."""
+    path = _provider_hold_path(profile)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return "provider_usage_hold_unreadable"
+    if not isinstance(value, dict) or value.get("blocked") is not True:
+        return "provider_usage_hold_unreadable"
+    return "provider_usage_limit_requires_explicit_resume"
+
+
+def record_provider_usage_failure(profile: str, output: str) -> bool:
+    """Latch only explicit exhausted-quota errors, not transient HTTP 429s."""
+    text = output.casefold()
+    if not any(marker in text for marker in (
+        "usage limit has been reached", "usage_limit_reached", "insufficient_quota",
+    )):
+        return False
+    path = _provider_hold_path(profile)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=path.name, suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump({"blocked": True, "reason": "provider_usage_limit", "recorded_unix": time.time()}, stream)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return True
 
 
 def detach_flags() -> int:
