@@ -109,3 +109,23 @@ now accepts the same MES NOTHING with one recorded correction and no live model
 call or order submission. Pre-v72 checkpoint
 `D:/ab/checkpoints/glitch/20260908-pre72-724a0f` verifies 464 files, preserving the
 installed v71 payload and current learner/epoch/configuration/native evidence.
+
+### v72 installed-runtime proof
+
+- Runtime commit `5786435` was published to configured `main` and installed via
+  the supported updater at `2026-09-08T19:14:10Z`. Installed setup completed;
+  all 29 profile and all 95 unchanged native AddOn hashes match source.
+- Config/auth/environment, memories, epoch, account groups/overrides, risk locks
+  and runtime policy remain hash-unchanged. Both existing jobs retain their IDs,
+  schedules and enabled states. The learner honored the AI pause with
+  `ai_auto_off_or_scope_invalid`; no paid validation call was forced.
+- Seven native accounts were flat/order-clear before AI was restored ON at
+  `19:15:31Z`. Replication stayed ON and NinjaTrader was not restarted.
+- Naturally scheduled cycle `20260908T1916Z` used bundle `7a800b6e688c`, attached
+  the three-instrument chart and completed in 61.08 seconds with zero repair or
+  transport retry. Its complete native receipt accepted NOTHING with
+  `no_native_action_requested`. The existing nonnumeric-EV observation remains
+  visible for this no-bracket decision; this is not evidence of a profitable edge.
+
+The exact failed v71 response pair passes the offline replay through the same
+v72 source now installed. No live order was manufactured to exercise the repair.
