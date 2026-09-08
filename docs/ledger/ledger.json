@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-04",
+  "updated": "2026-09-08",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -71,7 +71,7 @@
         "scripts/market_structure.py",
         "tests/test_market_structure.py",
         "tests/test_direct_cycle_contracts.py",
-        "distribution.yaml version 0.0.2.70"
+        "distribution.yaml version 0.0.2.71"
       ],
       "notes": "This supersedes the unwired v0.0.2.18 MNQ-specific observation design. Do not restore that implementation unchanged. The 80% daily-capture ambition is an evaluation target, never a gate or guarantee.",
       "stop_line": "Perception may organize measurements only; it must never become a deterministic trading strategy, action gate, outcome bias, or second LLM decision layer."
@@ -105,7 +105,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.70"
+        "distribution_version": "0.0.2.71"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",
