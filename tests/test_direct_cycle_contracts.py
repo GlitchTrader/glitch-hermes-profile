@@ -2461,6 +2461,67 @@ def test_selection_ev_contradiction_gets_one_same_evidence_consistency_retry(
     assert '"valid_entry_quantities_for_all_books":[1,2]' in calls[1]
 
 
+@pytest.mark.parametrize("book_count", [1, 2])
+@pytest.mark.parametrize("wire_instrument,repaired_selection", [
+    ("MNQ", "MES"),
+    ("MES 09-26", "MES"),
+    ("MNQ", "MNQ"),
+])
+def test_selection_repair_compares_canonical_instrument(
+    monkeypatch, book_count, wire_instrument, repaired_selection,
+) -> None:
+    first, scenario = valid_batch("2026-09-08T19:01:00Z")
+    scenario["market"]["candidates"] = [
+        {"instrument": "MES"}, {"instrument": "MNQ"},
+    ]
+    if book_count == 2:
+        scenario["books"].append({"route_id": "second", "master_account": "Sim301"})
+    first["decisions"][0]["instrument"] = wire_instrument
+    first["decisions"][0]["decision_audit"]["decisive_evidence"] = (
+        DIRECT.CANDIDATE_COMPARISON_MARKER + "\nSELECTION_INSTRUMENT=MES\n"
+        "SELECTION_EV=direction=SHORT;entry=7687;stop=7690.75;target=7676.75;"
+        "risk_points=3.75;reward_points=10.25;friction_points=0.25;"
+        "breakeven_target_first=0.28571429;estimated_target_first_range=0.42-0.50;"
+        "now_ev=UNCERTAIN;wait_price=7685.75;wait_ev=POSITIVE;"
+        "decisive_reason=Wait for better delivery at support.")
+    original = json.loads(json.dumps(first))
+    second = json.loads(json.dumps(first))
+    second["decisions"][0]["decision_audit"]["decisive_evidence"] = (
+        first["decisions"][0]["decision_audit"]["decisive_evidence"]
+        .replace("now_ev=UNCERTAIN", "now_ev=POSITIVE")
+        .replace("SELECTION_INSTRUMENT=MES", "SELECTION_INSTRUMENT=" + repaired_selection))
+    calls = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return first if len(calls) == 1 else second
+
+    def validate(batch, *_args, **_kwargs):
+        issues = []
+        for index, decision in enumerate(batch["decisions"]):
+            ev = next(line.removeprefix("SELECTION_EV=") for line in
+                      decision["decision_audit"]["decisive_evidence"].splitlines()
+                      if line.startswith("SELECTION_EV="))
+            issues.extend(DIRECT.validate_selection_ev(
+                ev, decision["action"], index, "candidate_comparison"))
+        return issues
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    monkeypatch.setattr(DIRECT, "validate_batch", validate)
+    if repaired_selection != "MES":
+        with pytest.raises(ValueError, match="selection_ev_repair_evidence_changed:0:instrument"):
+            DIRECT.invoke_validated_batch("glitch", "ORIGINAL_PROMPT", scenario, None, 30)
+    else:
+        batch, repairs, retries = DIRECT.invoke_validated_batch(
+            "glitch", "ORIGINAL_PROMPT", scenario, None, 30)
+        assert repairs == 1 and retries == 0
+        assert len(batch["decisions"]) == book_count
+        assert all(d["instrument"] == "MES" and d["action"] == "NOTHING"
+                   for d in batch["decisions"])
+    assert len(calls) == 2
+    assert first == original
+
+
 def test_selection_consistency_repair_cannot_originate_or_strengthen_entry() -> None:
     previous, _ = valid_batch("2026-09-03T16:15:00Z")
     repaired = json.loads(json.dumps(previous))

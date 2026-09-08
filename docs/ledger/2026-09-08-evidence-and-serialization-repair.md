@@ -79,3 +79,33 @@ not establish profitability or prove all possible native execution interleavings
 
 The historical invalid-price, stuck-flatten and omitted-instrument cases are
 covered by regression tests, not by deliberately recreating dangerous live orders.
+
+## v72: final live check exposed a comparison defect
+
+The later `20260908T1901Z` attempt failed. Its raw original and repair both put
+MNQ in the duplicate wire field while their authoritative selection ledger chose
+MES. Existing normalization correctly synchronized the wire field to MES. The
+repair guard then compared raw original MNQ with normalized repaired MES, falsely
+reporting `selection_ev_repair_evidence_changed:0:instrument`. Conversely, that
+representation mismatch could miss a genuine MES-to-MNQ selection change.
+
+The bounded v72 fix retains the original prepared/canonical batch for the repair
+comparison. The normalizer, repair prompt, model, action, price/probability checks,
+and evidence-change guard are unchanged. Raw output is still preserved for the
+repair prompt; the comparison snapshot cannot be overwritten by preparing the
+repair. No new strategy, gate, relaxation or market reassessment is introduced.
+
+Six regression cases first fail on v71: unchanged canonical selection with stale
+or contract-suffixed wire names, and actual selection changes, for one and two
+master books. All 147 direct-cycle contract tests pass with the fix, including
+the existing no-new-entry, quantity, direction, probability and geometry guards.
+AI was paused again under Alan's standing deployment authorization. Publication,
+installation and resumed v72 evidence are recorded separately below.
+
+The full v72 profile suite passes all 351 tests. A read-only replay of the exact
+original and correction from Hermes sessions `20260908_160103_be39ec` and
+`20260908_160202_a63088`, against their original packet and unchanged validators,
+now accepts the same MES NOTHING with one recorded correction and no live model
+call or order submission. Pre-v72 checkpoint
+`D:/ab/checkpoints/glitch/20260908-pre72-724a0f` verifies 464 files, preserving the
+installed v71 payload and current learner/epoch/configuration/native evidence.

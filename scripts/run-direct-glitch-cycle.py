@@ -4985,7 +4985,10 @@ def invoke_validated_batch(
             model_call_admission=model_call_admission,
         )
 
+    normalized_source: dict[str, Any] | None = None
+
     def prepare(value: dict[str, Any]) -> dict[str, Any]:
+        nonlocal normalized_source
         batch = stamp_decision_prompt_version(
             stamp_decision_created_utc(
                 stamp_deterministic_intent_fields(
@@ -5003,6 +5006,10 @@ def invoke_validated_batch(
             allow_not_applicable=prior_cognition is None,
         )
         canonicalize_batch_selection_math(batch)
+        if normalized_source is None:
+            # Compare the same canonical representation on both sides of a
+            # repair. Raw wire aliases may differ from the authored selection.
+            normalized_source = copy.deepcopy(batch)
         observations = validate_batch(
             batch,
             scenario,
@@ -5038,6 +5045,7 @@ def invoke_validated_batch(
             canonicalize_batch_selection_math(failed_output)
         # The correction is contract-only or same-evidence self-consistency;
         # the original visual evidence must not invite a second market judgment.
+        repair_source = normalized_source if normalized_source is not None else failed_output
         repaired_raw = invoke(
             contract_repair_prompt(
                 prompt,
@@ -5048,7 +5056,7 @@ def invoke_validated_batch(
             None,
         )
         repaired = prepare(repaired_raw)
-        enforce_selection_repair_boundary(failed_output, repaired, error)
+        enforce_selection_repair_boundary(repair_source, repaired, error)
         return repaired, 1, transport_retry_count
 
 
