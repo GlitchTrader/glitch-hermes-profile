@@ -18,6 +18,7 @@ import math
 import os
 import statistics
 import tempfile
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -297,6 +298,26 @@ def update_state_from_exchange(
 def _median(values: Iterable[Any]) -> float | None:
     clean = [number for value in values if (number := _finite(value)) is not None]
     return statistics.median(clean) if clean else None
+
+
+def _continuous_minutes(rows: list[dict[str, Any]], time_key: str) -> list[dict[str, Any]]:
+    """View the latest contiguous minute sequence without deleting retained history."""
+    def stamp(row: dict[str, Any]) -> datetime | None:
+        try:
+            value = str(row[time_key])
+            parsed = (datetime.strptime(value, "%Y%m%dT%H%MZ") if time_key == "frame_id"
+                      else datetime.fromisoformat(value.replace("Z", "+00:00")))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    if not rows or stamp(rows[-1]) is None:
+        return []
+    for index in range(len(rows) - 1, 0, -1):
+        previous, current = stamp(rows[index - 1]), stamp(rows[index])
+        if previous is None or current is None or current - previous != timedelta(minutes=1):
+            return rows[index:]
+    return rows
 
 
 def _true_ranges(bars: list[dict[str, Any]]) -> list[float]:
@@ -735,8 +756,8 @@ def _order_flow_response(samples: list[dict[str, Any]], atr: float | None) -> di
 
 
 def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
-    bars = [bar for bar in slot.get("bars", []) if isinstance(bar, dict)]
-    samples = [sample for sample in slot.get("samples", []) if isinstance(sample, dict)]
+    bars = _continuous_minutes([bar for bar in slot.get("bars", []) if isinstance(bar, dict)], "native_utc")
+    samples = _continuous_minutes([sample for sample in slot.get("samples", []) if isinstance(sample, dict)], "frame_id")
     economics = slot.get("economics") if isinstance(slot.get("economics"), dict) else {}
     tick_value = _finite(economics.get("tick_size"))
     point_value_value = _finite(economics.get("point_value_usd"))
@@ -883,8 +904,8 @@ def _draw_panel(
     from PIL import ImageDraw
     draw = ImageDraw.Draw(image)
     left, top, right, bottom = bounds
-    bars = [bar for bar in slot.get("bars", []) if isinstance(bar, dict)][-360:]
-    samples = [sample for sample in slot.get("samples", []) if isinstance(sample, dict)][-360:]
+    bars = _continuous_minutes([bar for bar in slot.get("bars", []) if isinstance(bar, dict)], "native_utc")[-360:]
+    samples = _continuous_minutes([sample for sample in slot.get("samples", []) if isinstance(sample, dict)], "frame_id")[-360:]
     overlays = _overlay_values(active_trade_state, root)
     draw.rectangle(bounds, fill="#11161d", outline="#36404a")
     draw.text((left + 10, top + 7), f"{root}  completed 1m + distinct live partial", fill="#e8eef5", font=_font(16))
@@ -1246,6 +1267,7 @@ def build_market_perception(
         "effect": "observation_only_no_execution_or_admission_effect",
         "measurement_contract": {
             "completed_bars": "native_last_completed_bar_only",
+            "continuity": "latest_consecutive_minutes_only;prior_session_levels_retained;coverage_not_entry_permission",
             "live_bar": "partial_separate_not_relabelled_completed",
             "level_tolerance": "max(2_native_ticks,20pct_recent_median_true_range)_rounded_to_tick",
             "vwap_bands": "sigma_inferred_from_native_price_vwap_and_native_deviation_when_available",

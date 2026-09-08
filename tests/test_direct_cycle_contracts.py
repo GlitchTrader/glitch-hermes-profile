@@ -265,6 +265,44 @@ def test_decision_audit_contract_error_names_exact_missing_and_extra_fields() ->
         DIRECT.validate_batch(batch, scenario)
 
 
+def test_normalize_batch_reuses_authored_ev_reason_without_rewriting_entry() -> None:
+    batch, _ = valid_batch("2026-09-08T15:22:22Z")
+    intent = batch["decisions"][0]
+    intent.pop("reason")
+    intent.update(action="ENTER_SHORT", instrument="MES", quantity=1, order_type="MARKET",
+                  stop_loss=7701.5, take_profit_1=7687.5, entry_range_low=7694.5, entry_range_high=7696.75)
+    reason = "Accepted sellers below VWAP support the short toward the prior-session low."
+    evidence = (
+        "INSTRUMENT_COMPARISON_V1\nSELECTION_INSTRUMENT=MES\nSELECTION_ACTION=ENTER_SHORT\n"
+        "NOISE_AND_GEOMETRY=1m ATR 2.4868 points/9.95 ticks/$12.43; 5m ATR 5.8068; latency priced once.\n"
+        "SELECTION_EV=direction=SHORT;entry=7695.75;stop=7701.5;target=7687.5;"
+        "estimated_target_first_range=0.60-0.67;now_ev=POSITIVE;decisive_reason=" + reason
+    )
+    intent["decision_audit"]["decisive_evidence"] = evidence
+    protected = {key: intent[key] for key in ("action", "instrument", "confidence", "quantity", "order_type",
+                                             "stop_loss", "take_profit_1", "entry_range_low", "entry_range_high")}
+    DIRECT.normalize_batch(batch)
+    assert intent["reason"] == reason
+    assert intent["decision_audit"]["decisive_evidence"] == evidence + "\nSELECTION_REASON=" + reason
+    assert {key: intent[key] for key in protected} == protected
+    once = json.dumps(batch, sort_keys=True)
+    DIRECT.normalize_batch(batch)
+    assert json.dumps(batch, sort_keys=True) == once
+
+
+@pytest.mark.parametrize("ev", ["", "SELECTION_EV=decisive_reason=First\nSELECTION_EV=decisive_reason=Second",
+                                    "SELECTION_EV=decisive_reason=First;decisive_reason=Second"])
+def test_normalize_batch_does_not_invent_or_choose_ambiguous_reason(ev: str) -> None:
+    batch, _ = valid_batch("2026-09-08T15:22:22Z")
+    intent = batch["decisions"][0]
+    intent.pop("reason")
+    evidence = "INSTRUMENT_COMPARISON_V1\n" + ev
+    intent["decision_audit"]["decisive_evidence"] = evidence
+    DIRECT.normalize_batch(batch)
+    assert "reason" not in intent
+    assert intent["decision_audit"]["decisive_evidence"] == evidence
+
+
 def test_normalize_batch_recovers_duplicate_reason_from_model_audit() -> None:
     batch, _ = valid_batch("2026-08-03T07:02:41.0414987Z")
     intent = batch["decisions"][0]

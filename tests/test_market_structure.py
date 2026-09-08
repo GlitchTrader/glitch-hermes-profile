@@ -192,6 +192,45 @@ def test_corrupt_state_recovers_neutrally_and_round_trip_is_stable(tmp_path: Pat
     assert path.read_bytes() == first
 
 
+@pytest.mark.parametrize("missing_minutes", [1, 60, 5390])
+@pytest.mark.parametrize("new_bars", [1, 2, 25, 65])
+def test_local_sequences_do_not_bridge_missing_minutes(missing_minutes: int, new_bars: int) -> None:
+    retained, fresh = ms._empty_state(), ms._empty_state()
+    for index in range(80):
+        ms.ingest_frame(retained, frame(index))
+    for index in range(80 + missing_minutes, 80 + missing_minutes + new_bars):
+        value = frame(index)
+        ms.ingest_frame(retained, value)
+        ms.ingest_frame(fresh, value)
+    preserved = json.dumps(retained, sort_keys=True)
+
+    for root in ECONOMICS:
+        # Missing observations must not create swings, FVGs, flow or 60-minute
+        # coverage. Native prior-session references are still supplied in both.
+        actual = ms.instrument_perception(root, retained["instruments"][root])
+        expected = ms.instrument_perception(root, fresh["instruments"][root])
+        assert actual == expected
+        assert actual["evidence_quality"]["completed_bar_count"] == new_bars
+    assert json.dumps(retained, sort_keys=True) == preserved  # no history reset
+
+
+def test_chart_uses_the_same_continuous_evidence_as_text(tmp_path: Path) -> None:
+    retained, fresh = ms._empty_state(), ms._empty_state()
+    for index in range(80):
+        ms.ingest_frame(retained, frame(index))
+    for index in range(5470, 5495):
+        ms.ingest_frame(retained, frame(index))
+        ms.ingest_frame(fresh, frame(index))
+    market_map = {
+        "instrument_order": list(ECONOMICS), "view": "portfolio_scan",
+        "instruments": [ms.instrument_perception(root, fresh["instruments"][root]) for root in ECONOMICS],
+    }
+    retained_image, fresh_image = tmp_path / "retained.png", tmp_path / "fresh.png"
+    ms.render_market_context(retained, market_map, retained_image)
+    ms.render_market_context(fresh, market_map, fresh_image)
+    assert retained_image.read_bytes() == fresh_image.read_bytes()
+
+
 def test_swings_are_causal_and_name_the_confirmation_bar() -> None:
     bars = []
     prices = [10, 11, 14, 12, 9, 10, 13]

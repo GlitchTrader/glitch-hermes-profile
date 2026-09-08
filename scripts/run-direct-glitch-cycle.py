@@ -3740,6 +3740,19 @@ def normalize_batch(
                             evidence.rstrip() + "\nSELECTION_REASON=" + misplaced_reason.strip()
                         )
                     audit.pop("SELECTION_REASON")
+                evidence = str(audit.get("decisive_evidence") or "")
+                if has_selection_ledger and not re.search(r"(?mi)^SELECTION_REASON\s*=", evidence):
+                    ev_lines = re.findall(r"(?mi)^SELECTION_EV[ \t]*=[ \t]*([^\r\n]+)", evidence)
+                    if len(ev_lines) == 1:
+                        reasons = re.findall(
+                            r"(?i)(?:^|;)[ \t]*decisive_reason[ \t]*=[ \t]*([^;\r\n]+)", ev_lines[0]
+                        )
+                        if len(reasons) == 1 and reasons[0].strip():
+                            # Reuse the exact authored selection explanation,
+                            # not another model judgment for a duplicate field.
+                            audit["decisive_evidence"] = (
+                                evidence.rstrip() + "\nSELECTION_REASON=" + reasons[0].strip()
+                            )
             if isinstance(audit, dict) and not str(intent.get("reason") or "").strip():
                 evidence = str(audit.get("decisive_evidence") or "")
                 selection_reason = re.search(

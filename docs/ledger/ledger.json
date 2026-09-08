@@ -22,8 +22,9 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.70",
-        "docs/ledger/2026-09-04-weekend-release.md"
+        "distribution.yaml version 0.0.2.71",
+        "docs/ledger/2026-09-04-weekend-release.md",
+        "docs/ledger/2026-09-08-evidence-and-serialization-repair.md"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."
