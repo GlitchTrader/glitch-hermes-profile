@@ -413,7 +413,8 @@ def test_condition_change_prompt_preserves_fired_prior_path_and_is_compact() -> 
     for phrase in (
         "Do not ratchet the same confirmation to the newest extreme",
         "crossing itself is not new directional evidence", "Price uncertainty once",
-        "Do not widen it to defeat latest-price revalidation",
+        "Never widen an issued range to defeat latest-price revalidation",
+        "an expired order range is not a permanent veto",
         "point_value_usd, not max_contracts or replication",
         "do not substitute a remote higher-timeframe stop",
         "nearer noise-surviving level genuinely invalidates this setup",

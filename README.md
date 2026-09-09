@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.73
+# Glitch Hermes Profile v0.0.2.74
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -35,6 +35,15 @@ Configure the desired master/group in Glitch, turn on Replication if followers s
 `/trade_mode paper|live` remains only as a deprecated compatibility alias. Its argument does not select accounts or change authority.
 
 ## Update
+
+v0.0.2.74 restores known inline ledger separators and a complete misplaced audit
+tail without inventing evidence. Stops and targets are checked against native
+tick size before delivery. In the existing single correction pass, Hermes may
+choose only the adjacent executable ticks for an off-tick entry price; direction,
+size, probability, entry range and already-valid prices cannot change. Native
+preflight and latest-price rejection remain intact. A fresh review may derive a
+new valid zone after an old order expires, without reviving that order. Optional
+VWAP/flow absence is not a blanket veto on a supported price/structure thesis.
 
 v0.0.2.73 preserves observed chart context and already-confirmed swing references
 within the existing bounded lookback when a minute is missing. Gaps remain visible;
