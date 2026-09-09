@@ -103,3 +103,48 @@ files stayed byte-identical during update. Verified 65-file checkpoint:
 both original cron IDs/schedules enabled, replication unchanged, NT PID 19808
 unchanged. Fresh `0254Z` and `0255Z` cycles attached charts and completed with
 zero output repairs or transport retries. This proves operation, not an edge.
+
+## Final v75 deployment verification
+
+- Published implementation: `26ef5b8799b66a11420bc17f8b0a5626e7224b5a`,
+  verified against remote `main`; v75 bundle `3682d1f88485` matches source and
+  installed profile. Supported `hermes profile update glitch --yes` and the
+  installed setup completed successfully.
+- Verified 65-file v74 rollback checkpoint:
+  `D:/ab/checkpoints/glitch-v75-before-20260909T0311Z`. The existing learner was
+  allowed to finish local processing and defer its model call while AI was
+  paused; neither worker was killed and no learner/epoch evidence was reset.
+- All 29 distribution-owned files and the checksum manifest match source.
+  All 33 protected configuration, native-ledger and learning files stayed
+  byte-identical across this installation. Native source/live remain 95/95
+  matching files; NT PID 19808 and its start time are unchanged.
+- Original AI ON state restored at `2026-09-09T03:13:03Z` through native control.
+  Policy valid, execution enabled, replication enabled and effective. Both
+  original cron IDs/schedules remain enabled. All seven native accounts were
+  flat with zero working orders before resumption; no test trade was sent.
+- Post-install regression rerun: 414 profile tests and 61 native/control tests
+  passed. No additional model invocation was initiated for testing.
+- Natural scheduled scan `20260909T0315Z` completed in 50.6 seconds using bundle
+  `3682d1f88485`, with its chart attached, zero output repairs, zero transport
+  retries and a complete native receipt. It chose NOTHING: the prior MNQ target
+  was consumed, the remaining nearby support was too close relative to supplied
+  noise, and no supported new extension target was established. Missing M2K
+  flow/VWAP were described as neutral limitations rather than directional facts.
+  The observational `selection_ev_numeric_invalid` flag remains visible because
+  this abstention supplied `target=NONE_SUPPLIED` and no numeric target-first
+  forecast; this is not a failed delivery or evidence of calibrated probability.
+- Read-only reconstruction from the exact `0315Z` retained state confirms all
+  eight MES/MNQ completed-leg efficiencies lie in [0,1]. M2K has three contiguous
+  completed bars, no completed leg, and unavailable VWAP/order flow; no missing
+  bar or indicator was fabricated. The rail at `03:16:57Z` reports health ON,
+  no reason codes, three fresh instruments and a completed decision worker.
+
+## Acceptance boundary
+
+The witnessed defects are repaired and the tested distribution is live. These
+checks do not establish profitable expectancy, calibrated target-first
+probabilities, or every possible broker/order lifecycle. There was no naturally
+originated v75 trade during this deployment check, so no new fill/protection
+claim is made. Preserve this version for forward evidence rather than adding
+strategy gates, increasing risk, forcing entries or retuning from this one
+abstention. Known missing market evidence remains explicit.
