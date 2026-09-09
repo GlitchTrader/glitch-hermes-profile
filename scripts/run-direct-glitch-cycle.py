@@ -3153,6 +3153,8 @@ def _compact_decimal(value: float) -> str:
 def canonicalize_selection_ev_math(
     value: str,
     forecast: dict[str, Any] | None = None,
+    *,
+    canonicalize_abstention_verdict: bool = False,
 ) -> str:
     """Own exact arithmetic while preserving Hermes-authored geometry and judgment."""
     support = deterministic_selection_math(value, forecast)
@@ -3165,6 +3167,18 @@ def canonicalize_selection_ev_math(
             float(support["computed_breakeven_target_first"])
         ),
     }
+    if (
+        canonicalize_abstention_verdict
+        and "verdict_range_mismatch" in support["calculation_issues"]
+        and re.fullmatch(
+            r"(?i)POSITIVE|NEGATIVE|UNCERTAIN",
+            _selection_ev_fields(value).get("now_ev", ""),
+        )
+    ):
+        # A fixed NOTHING has no entry to admit. Correct its bare arithmetic
+        # label, not its action, probability, geometry or comparative reason.
+        # Entry/management contradictions still require the existing repair.
+        replacements["now_ev"] = support["computed_terminal_ev_verdict"]
     result = value
     for key, replacement in replacements.items():
         pattern = re.compile(rf"(?i)(^|;)\s*{re.escape(key)}\s*=\s*[^;]*")
@@ -3196,7 +3210,10 @@ def canonicalize_batch_selection_math(batch: dict[str, Any]) -> int:
         def replace(match: re.Match[str]) -> str:
             nonlocal corrected
             original = match.group(2)
-            canonical = canonicalize_selection_ev_math(original, forecast)
+            canonical = canonicalize_selection_ev_math(
+                original, forecast,
+                canonicalize_abstention_verdict=intent.get("action") == "NOTHING",
+            )
             if canonical != original:
                 corrected += 1
             return match.group(1) + canonical
@@ -3716,7 +3733,10 @@ def normalize_batch(
                         r"(?P<final_choice>[^\r\n]+?)[ \t]*$",
                         evidence,
                     )
-                    if misplaced_audit_tail and "final_choice" not in audit:
+                    if misplaced_audit_tail and (
+                        "final_choice" not in audit
+                        or audit["final_choice"] == misplaced_audit_tail.group("final_choice").strip()
+                    ):
                         decisive_evidence = evidence[:misplaced_audit_tail.start()].rstrip()
                         disconfirming = misplaced_audit_tail.group("disconfirming").strip()
                         condition = misplaced_audit_tail.group("condition").strip()
@@ -4721,8 +4741,10 @@ def retryable_model_contract_error(error: Exception) -> bool:
 def contract_repair_context(
     scenario: dict[str, Any],
     output: Any,
+    *,
+    decision_mode: str | None = None,
 ) -> dict[str, Any]:
-    """Expose only authoritative arithmetic needed to repair an entry payload."""
+    """Expose authoritative output mode and arithmetic, not new market evidence."""
     decisions = output.get("decisions") if isinstance(output, dict) else None
     selected = instrument_root(
         decisions[0].get("instrument")
@@ -4782,6 +4804,13 @@ def contract_repair_context(
         "schema_version": "glitch.hermes.contract_repair_context.v1",
         "effect": "contract_correction_facts_only_no_market_reassessment",
         "required_entry_order_type": "MARKET",
+        "ordered_master_book_count": len(books),
+        "shared_flat_decision": shared_flat_decision_scope(scenario),
+        "required_decisive_evidence_marker": {
+            "flat_scan": CANDIDATE_COMPARISON_MARKER,
+            "trigger_review": TRIGGER_REVIEW_MARKER,
+            "position_management": POSITION_MANAGEMENT_MARKER,
+        }.get(decision_mode),
         "valid_entry_quantities_for_all_books": common_quantities,
         "candidates": candidates,
     }
@@ -4928,6 +4957,8 @@ def contract_repair_prompt(
         "FORMAT_CORRECTION_ONLY: Preserve the same market judgment, action, instrument, prices, "
         "quantity, protection, confidence, reasons, and audit evidence from PREVIOUS_RESPONSE. Correct only JSON syntax "
         "and the required field or nesting contract named by CONTRACT_ERROR. Return exactly one "
+        "decision per ordered master book (or one shared flat decision), never one decision per candidate instrument; "
+        "preserve the required ledger mode from REPAIR_CONTEXT. This is no market reassessment. Return one "
         "complete strict glitch.intent.batch.v1 JSON object under 9000 characters with no Markdown "
         "or surrounding prose. Keep each case and ledger field to one short evidence-dense clause; "
         "remove duplicate wording but never omit a required field. "
@@ -4946,6 +4977,8 @@ def contract_repair_prompt(
         "with native leg_id and stop_loss; MOVE_TP requires protection_updates with native leg_id, "
         "take_profit, and any intended stop_loss; HOLD and EXIT omit protection_updates.\nCONTRACT_ERROR="
         + error_text
+        + "\nREPAIR_CONTEXT="
+        + repair_context_text
         + "\nPREVIOUS_RESPONSE="
         + prior
     )
@@ -5242,7 +5275,7 @@ def invoke_validated_batch(
                 prompt,
                 failed_output,
                 error,
-                contract_repair_context(scenario, failed_output),
+                contract_repair_context(scenario, failed_output, decision_mode=decision_mode),
             ),
             None,
             repairing=True,

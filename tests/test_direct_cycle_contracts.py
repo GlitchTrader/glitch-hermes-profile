@@ -2462,7 +2462,7 @@ def test_invalid_contract_is_retried_once_without_reconsidering_cognition(
     assert "Preserve the same market judgment" in calls[1]
 
 
-def test_nothing_ev_verdict_mismatch_gets_one_truthful_bounded_correction(monkeypatch) -> None:
+def test_nothing_ev_verdict_mismatch_gets_truthful_arithmetic_without_retry(monkeypatch) -> None:
     first, scenario = valid_batch("2026-09-04T08:39:00Z")
     first["decisions"][0]["decision_audit"]["decisive_evidence"] = (
         "SELECTION_EV=direction=SHORT;entry=29648;stop=29651.625;target=29629;"
@@ -2485,8 +2485,8 @@ def test_nothing_ev_verdict_mismatch_gets_one_truthful_bounded_correction(monkey
     monkeypatch.setattr(DIRECT, "validate_batch", validate)
     batch, repair_count, retry_count = DIRECT.invoke_validated_batch(
         "glitch", "ORIGINAL_PROMPT", scenario, None, 30)
-    assert len(calls) == 2
-    assert repair_count == 1 and retry_count == 0
+    assert len(calls) == 1
+    assert repair_count == 0 and retry_count == 0
     assert batch["decisions"][0]["action"] == "NOTHING"
     assert "now_ev=POSITIVE" in batch["decisions"][0]["decision_audit"]["decisive_evidence"]
     assert "estimated_target_first_range=0.35-0.45" in batch["decisions"][0]["decision_audit"]["decisive_evidence"]
@@ -2569,7 +2569,7 @@ def test_selection_repair_compares_canonical_instrument(
         "SELECTION_EV=direction=SHORT;entry=7687;stop=7690.75;target=7676.75;"
         "risk_points=3.75;reward_points=10.25;friction_points=0.25;"
         "breakeven_target_first=0.28571429;estimated_target_first_range=0.42-0.50;"
-        "now_ev=UNCERTAIN;wait_price=7685.75;wait_ev=POSITIVE;"
+        "now_ev=UNCERTAIN due to location;wait_price=7685.75;wait_ev=POSITIVE;"
         "decisive_reason=Wait for better delivery at support.")
     original = json.loads(json.dumps(first))
     second = json.loads(json.dumps(first))
