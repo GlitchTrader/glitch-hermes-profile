@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.74
+# Glitch Hermes Profile v0.0.2.75
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -35,6 +35,11 @@ Configure the desired master/group in Glitch, turn on Replication if followers s
 `/trade_mode paper|live` remains only as a deprecated compatibility alias. Its argument does not select accounts or change authority.
 
 ## Update
+
+v0.0.2.75 corrects completed-leg path efficiency to use the same pivot endpoints
+for displacement and sampled travel. Intervening closes preserve observed
+reversals; travel inside each bar remains unknown. Other geometry, chart data,
+swing confirmation, execution and v74 decision rules are unchanged.
 
 v0.0.2.74 restores known inline ledger separators and a complete misplaced audit
 tail without inventing evidence. Stops and targets are checked against native

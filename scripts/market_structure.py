@@ -479,7 +479,10 @@ def _legs(
             continue
         segment = bars[start["index"]:end["index"] + 1]
         points = float(end["price"]) - float(start["price"])
-        total_path = sum(abs(float(right["c"]) - float(left["c"])) for left, right in zip(segment, segment[1:]))
+        # Match the displacement endpoints. The starting bar closes after its
+        # pivot; the ending bar's close is after this leg and must be excluded.
+        path = [float(start["price"]), *(float(bar["c"]) for bar in segment[:-1]), float(end["price"])]
+        total_path = sum(abs(right - left) for left, right in zip(path, path[1:]))
         results.append({
             "state": "completed", "from_kind": start["kind"], "to_kind": end["kind"],
             "from_price": _round(start["price"]), "to_price": _round(end["price"]),

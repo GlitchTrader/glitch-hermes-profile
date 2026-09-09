@@ -222,6 +222,35 @@ def test_local_sequences_do_not_bridge_missing_minutes(missing_minutes: int, new
     assert json.dumps(retained, sort_keys=True) == preserved  # no history reset
 
 
+@pytest.mark.parametrize("root", ["MES", "MNQ", "M2K"])
+@pytest.mark.parametrize("sign", [1, -1])
+@pytest.mark.parametrize("closes,expected", [
+    ([0.4, 0.6, 0.8, 0.6], 1.0),  # Native witness: extreme move / smaller close path.
+    ([0.4, 0.7, 0.5, 0.6], 1 / 1.4),  # Intervening reversal remains real travel.
+    ([0.5, 0.5, 0.5, 0.5], 1.0),  # Constant closes do not erase different pivots.
+])
+def test_leg_efficiency_uses_the_same_sampled_endpoints(root, sign, closes, expected):
+    base, scale = BASE[root], SCALE[root]
+    bars = [{"c": base + sign * scale * value} for value in closes]
+    swings = [
+        {"index": 0, "price": base, "kind": "low" if sign > 0 else "high"},
+        {"index": 3, "price": base + sign * scale, "kind": "high" if sign > 0 else "low"},
+    ]
+    original = json.dumps([bars, swings], sort_keys=True)
+    result = ms._legs(bars, swings, scale * 2, ECONOMICS[root]["tick_size"])
+    leg = result[0]
+    assert leg["path_efficiency"] == pytest.approx(expected, abs=1e-6)
+    assert 0 <= leg["path_efficiency"] <= 1
+    assert leg["points"] == pytest.approx(sign * scale)
+    assert leg["atr"] == pytest.approx(sign * 0.5)
+    assert leg["bars"] == 3
+    assert json.dumps([bars, swings], sort_keys=True) == original
+    # The ending pivot bar closes after its extreme. That later move belongs
+    # to the in-progress leg and cannot retroactively alter the completed leg.
+    bars[-1]["c"] = base + sign * scale * 0.1
+    assert ms._legs(bars, swings, scale * 2, ECONOMICS[root]["tick_size"])[0] == leg
+
+
 def test_chart_uses_the_same_continuous_evidence_as_text(tmp_path: Path) -> None:
     retained, fresh = ms._empty_state(), ms._empty_state()
     for index in range(80):

@@ -72,3 +72,34 @@ Rollback: reinstall the checkpointed v73 distribution without resetting evidence
   routing and forbidden recalibration, including after demotion to NOTHING.
   Full profile suite: 396 passed; native/control baseline: 61 passed. Deployment
   and fresh-runtime proof follow; test success alone is not live acceptance.
+
+## Live-input finding after v74 activation
+
+The natural `0254Z` review used the new bundle successfully (31.6 seconds,
+zero repair/retry). Inspecting its input revealed MES completed-leg
+`path_efficiency=1.666667`: `_legs` divided swing-extreme displacement by a
+different close-to-close path. This is a deterministic measurement defect, not a
+reason to retune trading. A bounded v75 follow-up will use identical pivot
+endpoints for numerator and denominator, with intervening observed closes and
+explicit unknown intrabar travel. Preserve swing confirmation, points/ticks/ATR,
+completed/current identity, chart, all other calculations and v74 cognition.
+
+The fix is three calculation lines plus a comment; the existing structure skill
+defines sampled versus unknown intrabar travel once, avoiding repetitive map
+metadata and preserving the existing text budget. Eighteen new mirrored,
+instrument-neutral cases fail on v74 and pass after correction. The focused
+suite passes 236 tests. Replay of actual packet `20260909T0254Z` changes only
+completed-leg efficiencies: MES 1.666667 becomes 1.0; another MNQ leg had 4.875
+and becomes 1.0. Intervening reversals still reduce efficiency. Every other
+measurement, retained state and rendered PNG byte is unchanged. Replay images:
+`D:/ab/t/g75-replay-ff596c`. No model call or runtime evidence mutation was used.
+The complete v75 profile suite passes 414 tests. The native/control suite remains
+61 passing tests; native production files have not changed in either release.
+
+v74 publication/install proof: main `31c1f83`, bundle `863839d9200e`, all 29
+distribution hashes matched; 33 protected configuration/native-ledger/learning
+files stayed byte-identical during update. Verified 65-file checkpoint:
+`D:/ab/checkpoints/glitch-v74-before-20260909T0252Z`. AI restored at 02:54:12Z,
+both original cron IDs/schedules enabled, replication unchanged, NT PID 19808
+unchanged. Fresh `0254Z` and `0255Z` cycles attached charts and completed with
+zero output repairs or transport retries. This proves operation, not an edge.
