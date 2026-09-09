@@ -842,6 +842,40 @@ def test_position_management_rejects_an_unselected_verdict_placeholder() -> None
         )
 
 
+@pytest.mark.parametrize("action", ["HOLD", "EXIT", "MOVE_STOP", "MOVE_TP"])
+def test_management_verdict_accepts_observed_parenthetical_without_replanning(action) -> None:
+    evidence = position_management_evidence(
+        action, "STRADDLES (-$0.01 to +$6.70 per contract before costs)"
+    ).replace("35%-50%", "27%-36%").replace("15.79%", "27.12%")
+    original = evidence
+    DIRECT.validate_position_management(
+        evidence, "M2K", action, 0,
+        {"status": "complete", "hold_target_before_stop_break_even_probability": 0.27118644},
+    )
+    assert evidence == original  # Interpretation only; preserve the authored audit.
+
+
+def test_parenthetical_management_verdict_still_enforces_arithmetic() -> None:
+    with pytest.raises(ValueError, match="position_management_hold_ev_event_inversion"):
+        DIRECT.validate_position_management(
+            position_management_evidence("HOLD", "NEGATIVE (-$2 before costs)"),
+            "M2K", "HOLD", 0,
+            {"status": "complete", "hold_target_before_stop_break_even_probability": 0.15789474},
+        )
+
+
+@pytest.mark.parametrize("verdict", [
+    "POSITIVE or NEGATIVE", "POSITIVE (NEGATIVE)", "POSITIVE (not POSITIVE)",
+    "POSITIVE (before costs) NEGATIVE", "UNKNOWN (+$2)", "POSITIVE ()",
+])
+def test_parenthetical_management_verdict_rejects_ambiguous_or_empty_values(verdict) -> None:
+    with pytest.raises(ValueError, match="position_management_hold_ev_verdict_invalid"):
+        DIRECT.validate_position_management(
+            position_management_evidence("HOLD", verdict), "M2K", "HOLD", 0,
+            {"status": "complete", "hold_target_before_stop_break_even_probability": 0.15789474},
+        )
+
+
 def test_validate_batch_applies_native_management_math_to_positioned_response() -> None:
     batch, scenario = valid_batch("2026-09-02T02:30:24Z")
     scenario["books"][0]["instrument_contexts"] = {
@@ -1419,6 +1453,132 @@ def write_model_admission_runtime(glitch_data: Path) -> None:
         "created_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "feed_bus": {"fresh_instrument_count": 2},
     }), encoding="utf-8")
+
+
+def capture_idle_fixture(tmp_path: Path) -> tuple[dict, dict, Path]:
+    master = {
+        "account": "Sim101", "native_state_available": True,
+        "positions": [], "working_orders": 0,
+        "ai_daily_capture_enabled": True, "ai_daily_capture_context_available": True,
+        "ai_daily_capture_reached": True, "realized_pnl": 110,
+        "ai_daily_capture_target_usd": 100,
+    }
+    follower = {**master, "account": "Sim102", "ai_daily_capture_reached": False}
+    snapshot = {"schema_version": "glitch.portfolio.snapshot.v1",
+                "created_utc": DIRECT.utc_now(), "accounts": [master, follower]}
+    scenario = {"books": [{"master_account": "Sim101", "exposure": [
+        {"account": "Sim101"}, {"account": "Sim102"},
+    ]}]}
+    path = tmp_path / "snapshots" / "portfolio" / "latest.json"
+    path.parent.mkdir(parents=True)
+    return scenario, snapshot, path
+
+
+def test_native_capture_idle_skip_is_not_a_latch_and_ignores_follower_capture(tmp_path: Path) -> None:
+    scenario, snapshot, path = capture_idle_fixture(tmp_path)
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    assert DIRECT.native_capture_idle_reason(tmp_path, scenario, None) == "native_daily_capture_locked_and_group_flat"
+    assert DIRECT.native_capture_idle_reason(tmp_path, scenario, {"instruction": "review"}) is None
+    snapshot["accounts"][0]["ai_daily_capture_reached"] = False
+    snapshot["accounts"][0]["realized_pnl"] = 0
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    assert DIRECT.native_capture_idle_reason(tmp_path, scenario, None) is None
+
+
+@pytest.mark.parametrize(("index", "key", "value"), [
+    (0, "ai_daily_capture_enabled", False), (0, "ai_daily_capture_context_available", None),
+    (0, "ai_daily_capture_reached", "true"), (0, "realized_pnl", 80),
+    (0, "realized_pnl", float("nan")), (0, "ai_daily_capture_target_usd", 0),
+    (0, "ai_daily_capture_target_usd", True), (0, "native_state_available", False),
+    (0, "positions", [{"quantity": 1}]), (0, "positions", None),
+    (0, "working_orders", 1), (0, "working_orders", None),
+    (0, "working_orders", False), (1, "native_state_available", False),
+    (1, "positions", [{"quantity": 2}]), (1, "working_orders", 1),
+])
+def test_capture_skip_never_suppresses_active_or_unknown_scope(tmp_path, index, key, value) -> None:
+    scenario, snapshot, path = capture_idle_fixture(tmp_path)
+    snapshot["accounts"][index][key] = value
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    assert DIRECT.native_capture_idle_reason(tmp_path, scenario, None) is None
+
+
+@pytest.mark.parametrize("case", ["missing", "malformed", "stale", "future", "missing_time", "naive_time", "empty_scope", "unknown_account", "empty_exposure", "eligible_master"])
+def test_capture_skip_requires_complete_fresh_native_authority(tmp_path, case) -> None:
+    scenario, snapshot, path = capture_idle_fixture(tmp_path)
+    if case == "stale": snapshot["created_utc"] = "2000-01-01T00:00:00Z"
+    if case == "future": snapshot["created_utc"] = "2099-01-01T00:00:00Z"
+    if case == "missing_time": snapshot.pop("created_utc")
+    if case == "naive_time": snapshot["created_utc"] = "2026-09-09T18:00:00"
+    if case == "empty_scope": scenario["books"] = []
+    if case == "unknown_account": snapshot["accounts"].pop()
+    if case == "empty_exposure": scenario["books"][0]["exposure"] = []
+    if case == "eligible_master":
+        scenario["books"].append({"master_account": "Sim102", "exposure": [{"account": "Sim102"}]})
+    if case != "missing":
+        path.write_text("{" if case == "malformed" else json.dumps(snapshot), encoding="utf-8")
+    assert DIRECT.native_capture_idle_reason(tmp_path, scenario, None) is None
+
+
+def test_run_once_skips_only_new_model_work_after_native_capture(tmp_path, monkeypatch) -> None:
+    scenario, snapshot, native_path = capture_idle_fixture(tmp_path)
+    native_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    exchange = tmp_path / "exchange"
+    packet_path = exchange / "glitch" / "latest-decision-packet.json"
+    packet_path.parent.mkdir(parents=True)
+    packet = {"packet_id": "20260909T1820Z"}
+    packet_path.write_text(json.dumps(packet), encoding="utf-8")
+    monkeypatch.setattr(DIRECT, "trading_runtime_enabled", lambda *_: True)
+    monkeypatch.setattr(DIRECT, "packet_is_current", lambda *_: True)
+    monkeypatch.setattr(DIRECT, "pending_outbox", lambda *_: None)
+    monkeypatch.setattr(DIRECT, "read_packet_after_imminent_rollover", lambda *_: packet)
+    monkeypatch.setattr(DIRECT, "scheduled_boundary_crossed", lambda *_: True)
+    monkeypatch.setattr(DIRECT, "build_scenario", lambda *_: scenario)
+    monkeypatch.setattr(DIRECT, "active_trade_state", lambda *_: {})
+    monkeypatch.setattr(DIRECT, "scoped_native_position_transition_after_packet", lambda *_: None)
+    monkeypatch.setattr(DIRECT, "model_call_admission_reason", lambda *_: None)
+    monkeypatch.setattr(DIRECT, "repeated_packet_is_suppressed", lambda *_: False)
+    monkeypatch.setattr(DIRECT, "read_operator_directive", lambda *_: None)
+    monkeypatch.setattr(DIRECT, "invocation_reason", lambda *_args, **_kwargs: pytest.fail("should not prepare a model call"))
+    assert DIRECT.run_once(SimpleNamespace(dry_run=False), tmp_path, exchange) == 0
+    event = json.loads((exchange / "hermes" / "events" / "cycles.jsonl").read_text())
+    assert event["reason"] == "native_daily_capture_locked_and_group_flat"
+    assert not (exchange / "hermes" / "model-attempts").exists()
+
+    # Recheck current native authority after preparing a prompt / lock waiting.
+    snapshot["accounts"][0]["ai_daily_capture_reached"] = False
+    native_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    monkeypatch.setattr(DIRECT, "invocation_reason", lambda *_args, **_kwargs: "scheduled")
+    monkeypatch.setattr(DIRECT, "latest_prior_cognition", lambda *_: None)
+    monkeypatch.setattr(DIRECT, "journal_tail", lambda *_: {})
+    monkeypatch.setattr(DIRECT, "learning_context", lambda *_: {})
+    monkeypatch.setattr(DIRECT, "market_perception_context", lambda *_: ({}, None))
+    monkeypatch.setattr(DIRECT, "market_perception_audit", lambda *_: {})
+    monkeypatch.setattr(DIRECT, "build_prompt", lambda *_args, **_kwargs: "PROMPT")
+    monkeypatch.setattr(DIRECT, "scoped_master_position_change", lambda *_: None)
+    def captured_while_waiting(*args, **_kwargs):
+        snapshot["accounts"][0]["ai_daily_capture_reached"] = True
+        snapshot["created_utc"] = DIRECT.utc_now()
+        native_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        reason = args[8]()  # The same callback invoked under the shared model lock.
+        assert reason == "native_daily_capture_locked_and_group_flat"
+        raise DIRECT.ModelCallDeferred(reason)
+    monkeypatch.setattr(DIRECT, "invoke_validated_batch", captured_while_waiting)
+    assert DIRECT.run_once(SimpleNamespace(dry_run=False, profile="glitch", timeout_seconds=30), tmp_path, exchange) == 0
+    attempt = json.loads((exchange / "hermes" / "model-attempts" / f"{packet['packet_id']}.json").read_text())
+    assert attempt["status"] == "deferred"
+    assert attempt["reason"] == "native_daily_capture_locked_and_group_flat"
+
+    # Existing outbox delivery precedes the optimization, even while captured.
+    outbox = exchange / "hermes" / "outbox" / f"{packet['packet_id']}.json"
+    outbox.parent.mkdir(parents=True)
+    outbox.write_text("{}", encoding="utf-8")
+    class ExistingDeliveryReached(Exception):
+        pass
+    def existing_delivery(*_args, **_kwargs):
+        raise ExistingDeliveryReached
+    monkeypatch.setattr(DIRECT, "normalize_batch", existing_delivery)
+    with pytest.raises(ExistingDeliveryReached):
+        DIRECT.run_once(SimpleNamespace(dry_run=False), tmp_path, exchange)
 
 
 def test_model_call_admission_requires_ai_native_open_session_and_complete_fresh_package(
@@ -2729,8 +2889,10 @@ def test_other_selection_math_observations_remain_non_gating(
     assert transport_retry_count == 0
 
 
+@pytest.mark.parametrize("corrected_verdict", ["POSITIVE", "POSITIVE (before costs)"])
 def test_position_management_event_inversion_gets_one_bounded_consistency_retry(
     monkeypatch: pytest.MonkeyPatch,
+    corrected_verdict: str,
 ) -> None:
     invalid, scenario = valid_batch("2026-09-02T02:30:24Z")
     scenario["books"][0]["instrument_contexts"] = {
@@ -2745,7 +2907,7 @@ def test_position_management_event_inversion_gets_one_bounded_consistency_retry(
     intent["decision_audit"]["final_choice"] = "EXIT"
     corrected = json.loads(json.dumps(invalid))
     corrected["decisions"][0]["decision_audit"]["decisive_evidence"] = (
-        position_management_evidence("EXIT", "POSITIVE")
+        position_management_evidence("EXIT", corrected_verdict)
     )
     active_trade_state = {"trades": [{
         "route_id": "glitch",

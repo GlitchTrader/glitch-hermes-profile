@@ -2846,11 +2846,19 @@ def validate_position_management(
             f"declared={declared_break_even:.8f}:"
             f"authoritative_target_first_break_even={expected_break_even:.8f}"
         )
+    # A single authored verdict may carry a parenthetical arithmetic note.
+    # Interpret the label without rewriting the audit or relaxing its math check.
     verdict_match = re.fullmatch(
-        r"(?i)\s*(POSITIVE|NEGATIVE|STRADDLES)\s*",
+        r"(?i)\s*(POSITIVE|NEGATIVE|STRADDLES)(?:\s*\(([^()\r\n]*)\))?\s*",
         hold_fields["gross_hold_terminal_ev"],
     )
-    if not verdict_match:
+    if not verdict_match or (
+        verdict_match.group(2) is not None
+        and (
+            not verdict_match.group(2).strip()
+            or re.search(r"(?i)\b(?:POSITIVE|NEGATIVE|STRADDLES)\b", verdict_match.group(2))
+        )
+    ):
         raise ValueError(f"position_management_hold_ev_verdict_invalid:{index}")
     if estimated_range[1] < expected_break_even:
         expected_verdict = "NEGATIVE"
@@ -6605,6 +6613,58 @@ def packet_window_utc(packet: dict[str, Any]) -> datetime:
     return datetime.strptime(packet_id, "%Y%m%dT%H%MZ").replace(tzinfo=timezone.utc)
 
 
+def native_capture_idle_reason(
+    glitch_data: Path,
+    scenario: dict[str, Any],
+    directive: dict[str, Any] | None,
+) -> str | None:
+    """Avoid a flat scan when fresh native facts already prohibit every entry.
+
+    This mirrors the configured native capture lock, not a trading target or
+    decision rule. Unknown, stale or active exposure stays on the normal path.
+    """
+    if directive is not None:
+        return None
+    try:
+        books = scenario.get("books") or []
+        if not books:
+            return None
+        snapshot = read_json(glitch_data / "snapshots" / "portfolio" / "latest.json")
+        if snapshot.get("schema_version") != "glitch.portfolio.snapshot.v1":
+            return None
+        created = datetime.fromisoformat(snapshot["created_utc"].replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - created).total_seconds()
+        if not -5 <= age <= 10:  # Same freshness bound as native capture admission.
+            return None
+        accounts = {account["account"]: account for account in snapshot["accounts"]}
+        for book in books:
+            master = accounts[book["master_account"]]
+            if not all(master.get(key) is True for key in (
+                "ai_daily_capture_enabled", "ai_daily_capture_context_available",
+                "ai_daily_capture_reached",
+            )):
+                return None
+            realized = master.get("realized_pnl")
+            target = master.get("ai_daily_capture_target_usd")
+            if not all(type(value) in (int, float) and math.isfinite(value) for value in (realized, target)):
+                return None
+            if target <= 0 or realized < target:
+                return None
+            members = book.get("exposure") or []
+            if not members or book["master_account"] not in {member["account"] for member in members}:
+                return None
+            for member in members:
+                account = accounts[member["account"]]
+                if (account.get("native_state_available") is not True
+                    or account.get("positions") != []
+                    or type(account.get("working_orders")) is not int
+                    or account["working_orders"] != 0):
+                    return None
+        return "native_daily_capture_locked_and_group_flat"
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def scoped_master_is_positioned(packet: dict[str, Any], scenario: dict[str, Any]) -> bool:
     frames = packet.get("frames")
     if not isinstance(frames, list) or not frames:
@@ -7037,6 +7097,16 @@ def run_once(
         })
         return 0
     directive = read_operator_directive(exchange)
+    capture_idle_reason = native_capture_idle_reason(glitch_data, scenario, directive)
+    if capture_idle_reason is not None:
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": capture_idle_reason,
+            "recorded_utc": utc_now(),
+            "cycle_id": packet_id,
+        })
+        return 0
     reason = (
         "entry_range_supersession"
         if reassessment_request is not None
@@ -7136,7 +7206,7 @@ def run_once(
             current_packet, scenario, glitch_data
         ) is not None:
             return "position_state_packet_lagging_native_transition"
-        return None
+        return native_capture_idle_reason(glitch_data, scenario, directive)
 
     def current_management_repair_admission() -> str | None:
         if not any(positioned_instruments(book) for book in scenario.get("books") or []):

@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.76
+# Glitch Hermes Profile v0.0.2.77
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -35,6 +35,17 @@ Configure the desired master/group in Glitch, turn on Replication if followers s
 `/trade_mode paper|live` remains only as a deprecated compatibility alias. Its argument does not select accounts or change authority.
 
 ## Update
+
+v0.0.2.77 accepts a single management EV verdict followed by a parenthetical
+explanation without rewriting the authored audit. Ambiguous verdicts and
+arithmetic contradictions remain invalid. Probability, action, native protection,
+freshness, correction limits and trading doctrine are unchanged.
+It also avoids new decision calls when a fresh native snapshot proves every
+selected master is already locked by its configured daily capture and all enabled
+group members are flat with no working orders. Unknown or stale state, eligible
+masters, active exposure and explicit operator instructions retain the normal
+path. Existing delivery and learner calls are unaffected; no local latch, target,
+threshold, or trading strategy is introduced.
 
 v0.0.2.76 computes a contradictory bare terminal EV label for an already-authored
 NOTHING from its unchanged levels, costs and probability range, without another
