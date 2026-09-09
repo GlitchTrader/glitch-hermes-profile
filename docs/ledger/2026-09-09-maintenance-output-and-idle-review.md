@@ -31,8 +31,11 @@ automatically ceases when fresh native facts change. Learner admission is unchan
 Focused tests cover the observed management annotation, all four management
 actions, strict arithmetic, malformed labels, existing correction limits, native
 capture scope/freshness/unknown-state handling, next-session eligibility and
-existing delivery precedence. The full profile suite and unchanged native/control
-contracts must pass before publishing and installing this release.
+existing delivery precedence and native capture changing while awaiting a model
+lock. Validation passed: 485 profile tests, 37 adjacent native/control tests,
+53 compiled native safety checks and 176 host-recovery checks. Offline replay of
+the observed corrected management response fails under v76 and passes under v77
+without changing the authored batch; no provider call was made.
 
 Publication, manifest parity, preserved configuration/learning, and a natural
 new-version cycle are separate checks. The private operational review and native
