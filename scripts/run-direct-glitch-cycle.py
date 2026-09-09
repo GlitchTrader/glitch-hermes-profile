@@ -4780,8 +4780,11 @@ def contract_repair_prompt(
             "break-even event is TARGET_BEFORE_STOP: the supplied break-even is the minimum "
             "P(TARGET_BEFORE_STOP) for nonnegative gross terminal HOLD EV. Its complement is only "
             "the maximum P(STOP_BEFORE_TARGET), never the required target-first probability. "
-            "Correct HOLD_EV, the comparative EV conclusions, reasons, and action/final_choice/"
-            "SELECTION_ACTION only where the corrected event meaning requires it. Remove any claim "
+            "Correct HOLD_EV and its arithmetic explanation. Preserve action, final_choice, "
+            "SELECTION_ACTION, protection_updates, forecast, and all probability estimates. "
+            "A terminal-bracket arithmetic verdict does not select a management action. "
+            "This evidence-free repair cannot re-plan or manufacture a new EXIT, HOLD, or protection move; "
+            "a different management choice requires a fresh full-evidence review. Remove any claim "
             "that pre-entry chart history occurred during the current position; native MFE, MAE, "
             "rollback, and explicitly post-entry timestamps are authoritative for that chronology. "
             "Return exactly one complete strict glitch.intent.batch.v1 JSON object with no Markdown "
@@ -4896,6 +4899,44 @@ def enforce_selection_repair_boundary(
                 raise ValueError(f"selection_ev_repair_evidence_changed:{index}:{key}")
 
 
+def enforce_management_repair_boundary(
+    previous: Any, repaired: dict[str, Any], scenario: dict[str, Any],
+) -> None:
+    """A contract-only pass cannot author a different native position mutation."""
+    if not isinstance(previous, dict):
+        return
+    before = previous.get("decisions")
+    after = repaired.get("decisions")
+    if not isinstance(before, list) or not isinstance(after, list):
+        return
+    for index, book in enumerate(scenario.get("books") or []):
+        if not positioned_instruments(book):
+            continue
+        if index >= len(before) or index >= len(after):
+            raise ValueError(f"management_repair_source_missing:{index}")
+        original, corrected = before[index], after[index]
+        if not isinstance(original, dict) or not isinstance(corrected, dict):
+            raise ValueError(f"management_repair_source_missing:{index}")
+        for key in ("action", "instrument", "protection_updates", "forecast"):
+            if original.get(key) != corrected.get(key):
+                raise ValueError(f"management_repair_requires_fresh_review:{index}:{key}")
+
+        def probability(item: dict[str, Any]) -> tuple[float, float] | None:
+            audit = item.get("decision_audit") or {}
+            match = re.search(r"(?mi)^HOLD_EV\s*=\s*(.+)$", str(audit.get("decisive_evidence") or ""))
+            fields = _selection_ev_fields(match.group(1)) if match else {}
+            return _selection_ev_probability_range(fields.get("target_before_stop_probability_range"))
+
+        if probability(original) != probability(corrected):
+            raise ValueError(f"management_repair_requires_fresh_review:{index}:probability")
+
+
+def management_repair_freshness_reason(source: dict[str, Any], latest: dict[str, Any]) -> str | None:
+    if source.get("packet_id") != latest.get("packet_id"):
+        return "management_contract_repair_superseded_by_fresh_packet"
+    return None
+
+
 def trigger_review_has_held_nothing(batch: dict[str, Any]) -> bool:
     decisions = batch.get("decisions")
     if not isinstance(decisions, list) or not decisions:
@@ -4966,13 +5007,20 @@ def invoke_validated_batch(
     model_call_admission: Any = None,
     image_path: Path | None = None,
     active_trade_state: dict[str, Any] | None = None,
+    management_repair_admission: Any = None,
 ) -> tuple[dict[str, Any], int, int]:
     """Make one bounded Luna call plus at most one contract-only correction."""
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = decision_mode == "trigger_review"
 
-    def invoke(prompt_value: str, attached_image: Path | None) -> dict[str, Any]:
-        reason = model_call_admission() if callable(model_call_admission) else None
+    def invoke(prompt_value: str, attached_image: Path | None, *, repairing: bool = False) -> dict[str, Any]:
+        def admission() -> str | None:
+            reason = model_call_admission() if callable(model_call_admission) else None
+            if reason is None and repairing and callable(management_repair_admission):
+                reason = management_repair_admission()
+            return reason
+
+        reason = admission()
         if reason:
             raise ModelCallDeferred(str(reason))
         return invoke_hermes(
@@ -4982,7 +5030,7 @@ def invoke_validated_batch(
             positioned_only=positioned_only,
             trigger_review_only=trigger_review_only,
             image_path=attached_image,
-            model_call_admission=model_call_admission,
+            model_call_admission=admission,
         )
 
     normalized_source: dict[str, Any] | None = None
@@ -5054,9 +5102,11 @@ def invoke_validated_batch(
                 contract_repair_context(scenario, failed_output),
             ),
             None,
+            repairing=True,
         )
         repaired = prepare(repaired_raw)
         enforce_selection_repair_boundary(repair_source, repaired, error)
+        enforce_management_repair_boundary(repair_source, repaired, scenario)
         return repaired, 1, transport_retry_count
 
 
@@ -6903,6 +6953,14 @@ def run_once(
             return "position_state_packet_lagging_native_transition"
         return None
 
+    def current_management_repair_admission() -> str | None:
+        if not any(positioned_instruments(book) for book in scenario.get("books") or []):
+            return None
+        try:
+            return management_repair_freshness_reason(packet, read_json(packet_path))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return "decision_packet_unavailable"
+
     try:
         batch, output_repair_count, transport_retry_count = invoke_validated_batch(
             args.profile,
@@ -6916,6 +6974,7 @@ def run_once(
             current_model_call_admission,
             market_image_path,
             active_trade_state=trade_state,
+            management_repair_admission=current_management_repair_admission,
         )
         admission_observations = validate_batch(
             batch,

@@ -300,16 +300,19 @@ def _median(values: Iterable[Any]) -> float | None:
     return statistics.median(clean) if clean else None
 
 
+def _minute_stamp(row: dict[str, Any], time_key: str) -> datetime | None:
+    try:
+        value = str(row[time_key])
+        parsed = (datetime.strptime(value, "%Y%m%dT%H%MZ") if time_key == "frame_id"
+                  else datetime.fromisoformat(value.replace("Z", "+00:00")))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _continuous_minutes(rows: list[dict[str, Any]], time_key: str) -> list[dict[str, Any]]:
-    """View the latest contiguous minute sequence without deleting retained history."""
-    def stamp(row: dict[str, Any]) -> datetime | None:
-        try:
-            value = str(row[time_key])
-            parsed = (datetime.strptime(value, "%Y%m%dT%H%MZ") if time_key == "frame_id"
-                      else datetime.fromisoformat(value.replace("Z", "+00:00")))
-            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
-        except (KeyError, TypeError, ValueError):
-            return None
+    """Use uninterrupted observations for gap-sensitive local calculations."""
+    stamp = lambda row: _minute_stamp(row, time_key)
 
     if not rows or stamp(rows[-1]) is None:
         return []
@@ -318,6 +321,34 @@ def _continuous_minutes(rows: list[dict[str, Any]], time_key: str) -> list[dict[
         if previous is None or current is None or current - previous != timedelta(minutes=1):
             return rows[index:]
     return rows
+
+
+def _context_minutes(slot: dict[str, Any], key: str, time_key: str) -> list[dict[str, Any]]:
+    """Keep observed context inside the existing 420-minute horizon, without filling gaps."""
+    rows = [row for row in slot.get(key, []) if isinstance(row, dict)]
+    as_of = _minute_stamp({"frame_id": slot.get("latest_frame_id")}, "frame_id")
+    if as_of is None:
+        as_of = _minute_stamp(rows[-1], time_key) if rows else None
+    if as_of is None:
+        return []
+    cutoff = as_of - timedelta(minutes=MAX_BARS)
+    return [row for row in rows
+            if (stamp := _minute_stamp(row, time_key)) is not None and cutoff <= stamp <= as_of]
+
+
+def _context_swings(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retain already-confirmed references; never confirm a pivot across missing bars."""
+    result: list[dict[str, Any]] = []
+    start = 0
+    for end in range(1, len(bars) + 1):
+        if end < len(bars) and (
+            _minute_stamp(bars[end], "native_utc") - _minute_stamp(bars[end - 1], "native_utc")
+        ) == timedelta(minutes=1):
+            continue
+        for pivot in confirmed_swings(bars[start:end]):
+            result.append({**pivot, "index": pivot["index"] + start})
+        start = end
+    return result
 
 
 def _true_ranges(bars: list[dict[str, Any]]) -> list[float]:
@@ -756,8 +787,9 @@ def _order_flow_response(samples: list[dict[str, Any]], atr: float | None) -> di
 
 
 def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
-    bars = _continuous_minutes([bar for bar in slot.get("bars", []) if isinstance(bar, dict)], "native_utc")
-    samples = _continuous_minutes([sample for sample in slot.get("samples", []) if isinstance(sample, dict)], "frame_id")
+    context_bars = _context_minutes(slot, "bars", "native_utc")
+    bars = _continuous_minutes(context_bars, "native_utc")
+    samples = _continuous_minutes(_context_minutes(slot, "samples", "frame_id"), "frame_id")
     economics = slot.get("economics") if isinstance(slot.get("economics"), dict) else {}
     tick_value = _finite(economics.get("tick_size"))
     point_value_value = _finite(economics.get("point_value_usd"))
@@ -775,11 +807,12 @@ def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
         "recent_median_true_range_points": None,
     }
     swings = confirmed_swings(bars)
+    context_swings = _context_swings(context_bars)
     session = slot.get("session") if isinstance(slot.get("session"), dict) else {}
     tolerance_points = _finite(tolerance.get("points"))
     levels = (
         _levels(
-            bars, swings, session, current or 0.0,
+            bars, context_swings, session, current or 0.0,
             tolerance_points, tick, atr, point_value,
         )
         if bars and current is not None and tolerance_points is not None else []
@@ -794,8 +827,8 @@ def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
     visible_swings = [{
         "kind": pivot["kind"], "price": _round(pivot["price"]),
         "relation_to_prior_same_kind": pivot["relation_to_prior_same_kind"],
-        "age_bars": len(bars) - 1 - int(pivot["index"]),
-    } for pivot in swings[-8:]]
+        "age_bars": len(context_bars) - 1 - int(pivot["index"]),
+    } for pivot in context_swings[-8:]]
     range_reference = _range_reference(bars)
     vwap_path = _vwap_path(samples, tick)
     flow_response = _order_flow_response(samples, atr)
@@ -803,8 +836,9 @@ def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
         "instrument": root, "instrument_full_name": slot.get("instrument_full_name"),
         "current_price": _round(current), "economics": economics,
         "evidence_quality": {
-            "status": "ready" if len(bars) >= 60 else "warming",
-            "completed_bar_count": len(bars), "sample_count": len(samples),
+            "status": "ready" if len(context_bars) >= 60 else "warming",
+            "completed_bar_count": len(context_bars), "sample_count": len(samples),
+            "contiguous_completed_bar_count": len(bars),
             "latest_source_frame_id": slot.get("latest_frame_id"),
             "missing": [
                 name for name, missing in (
@@ -904,8 +938,8 @@ def _draw_panel(
     from PIL import ImageDraw
     draw = ImageDraw.Draw(image)
     left, top, right, bottom = bounds
-    bars = _continuous_minutes([bar for bar in slot.get("bars", []) if isinstance(bar, dict)], "native_utc")[-360:]
-    samples = _continuous_minutes([sample for sample in slot.get("samples", []) if isinstance(sample, dict)], "frame_id")[-360:]
+    bars = _context_minutes(slot, "bars", "native_utc")[-360:]
+    samples = _context_minutes(slot, "samples", "frame_id")[-360:]
     overlays = _overlay_values(active_trade_state, root)
     draw.rectangle(bounds, fill="#11161d", outline="#36404a")
     draw.text((left + 10, top + 7), f"{root}  completed 1m + distinct live partial", fill="#e8eef5", font=_font(16))
@@ -925,7 +959,9 @@ def _draw_panel(
     padding = max((high - low) * 0.05, _finite(_nested(slot, "economics", "tick_size")) or 0.25)
     low, high = low - padding, high + padding
     span = max(high - low, 1e-9)
-    x_count = len(bars) + (1 if partial else 0)
+    first_time = _minute_stamp(bars[0], "native_utc")
+    minute_offsets = [(_minute_stamp(bar, "native_utc") - first_time).total_seconds() / 60 for bar in bars]
+    x_count = minute_offsets[-1] + 1 + (1 if partial else 0)
     x_step = max(1.0, (chart_right - chart_left) / max(1, x_count))
     price_y = lambda value: chart_bottom - (float(value) - low) / span * (chart_bottom - chart_top)
     for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
@@ -941,7 +977,7 @@ def _draw_panel(
         color = "#17332e" if zone.get("kind") == "up_imbalance" else "#3a241d"
         age = max(0, int(_finite(zone.get("age_bars")) or 0))
         formed_index = max(0, len(bars) - 1 - age)
-        formed_x = chart_left + (formed_index + 0.5) * x_step
+        formed_x = chart_left + (minute_offsets[formed_index] + 0.5) * x_step
         draw.rectangle(
             (formed_x, price_y(min(zone_high, high)), chart_right, price_y(max(zone_low, low))),
             fill=color,
@@ -949,7 +985,10 @@ def _draw_panel(
     max_volume = max(float(bar.get("v") or 0) for bar in bars) or 1.0
     frame_x: dict[str, float] = {}
     for index, bar in enumerate(bars):
-        x = chart_left + (index + 0.5) * x_step
+        x = chart_left + (minute_offsets[index] + 0.5) * x_step
+        if index and minute_offsets[index] - minute_offsets[index - 1] > 1:
+            gap_x = x - 0.5 * x_step
+            draw.line((gap_x, chart_top, gap_x, chart_bottom), fill="#77838e", width=1)
         frame_x[str(bar.get("first_observed_frame_id") or "")] = x
         open_y, close_y = price_y(bar["o"]), price_y(bar["c"])
         high_y, low_y = price_y(bar["h"]), price_y(bar["l"])
@@ -960,7 +999,7 @@ def _draw_panel(
         volume_height = float(bar.get("v") or 0) / max_volume * (volume_bottom - volume_top)
         draw.rectangle((x - half, volume_bottom - volume_height, x + half, volume_bottom), fill="#3a5965")
     if partial:
-        x = chart_left + (len(bars) + 0.5) * x_step
+        x = chart_left + (minute_offsets[-1] + 1.5) * x_step
         open_y, close_y = price_y(partial["o"]), price_y(partial["c"])
         draw.line((x, price_y(partial["h"]), x, price_y(partial["l"])), fill="#f2f5f7", width=1)
         half = max(1, min(4, int(x_step * 0.4)))
@@ -989,10 +1028,16 @@ def _draw_panel(
         if delta_high > delta_low and (delta := _finite(sample.get("cumulative_delta"))) is not None:
             y = volume_bottom - (delta - delta_low) / (delta_high - delta_low) * (volume_bottom - volume_top)
             delta_points.append((x, y))
+    def observed_line(points: list[tuple[float, float]], color: str, width: int = 1) -> None:
+        # Do not draw invented continuity through unobserved indicator minutes.
+        for left_point, right_point in zip(points, points[1:]):
+            if right_point[0] - left_point[0] <= x_step * 1.01:
+                _line(draw, [left_point, right_point], color, width)
+
     for offset in (-2, -1, 1, 2):
-        _line(draw, vwap_bands[offset], "#675f38", 1)
-    _line(draw, vwap_bands[0], "#f2c94c", 2)
-    _line(draw, delta_points, "#9b8cff", 1)
+        observed_line(vwap_bands[offset], "#675f38")
+    observed_line(vwap_bands[0], "#f2c94c", 2)
+    observed_line(delta_points, "#9b8cff")
     for level in perception.get("nearest_measured_levels", [])[:8]:
         price = _finite(level.get("price")) if isinstance(level, dict) else None
         if price is not None and low <= price <= high:
@@ -1017,10 +1062,12 @@ def _draw_panel(
     for threshold in (30, 50, 70):
         y = rsi_bottom - threshold / 100 * (rsi_bottom - rsi_top)
         draw.line((chart_left, y, chart_right, y), fill="#27313b", width=1)
-    _line(draw, rsi_points, "#66a7ff", 1)
+    observed_line(rsi_points, "#66a7ff")
     draw.text((left + 10, volume_top), "volume / cumulative delta", fill="#77838e", font=_font(10))
     draw.text((left + 10, rsi_top), "RSI", fill="#77838e", font=_font(10))
     draw.text((chart_left, bottom - 18), str(bars[0].get("native_utc") or "")[:16], fill="#77838e", font=_font(10))
+    if len(bars) < minute_offsets[-1] + 1:
+        draw.text((chart_left + 210, bottom - 18), "missing minutes shown as gaps", fill="#77838e", font=_font(10))
     draw.text((chart_right - 125, bottom - 18), str(bars[-1].get("native_utc") or "")[:16], fill="#77838e", font=_font(10))
     vwap_status = perception.get("vwap_path", {}).get("status")
     flow_status = perception.get("order_flow_response", {}).get("status")
@@ -1267,7 +1314,7 @@ def build_market_perception(
         "effect": "observation_only_no_execution_or_admission_effect",
         "measurement_contract": {
             "completed_bars": "native_last_completed_bar_only",
-            "continuity": "latest_consecutive_minutes_only;prior_session_levels_retained;coverage_not_entry_permission",
+            "continuity": "observed_context_and_confirmed_references_retained_420_minutes;gaps_not_filled;local_windows_flow_and_imbalances_use_latest_consecutive_minutes;coverage_not_entry_permission",
             "live_bar": "partial_separate_not_relabelled_completed",
             "level_tolerance": "max(2_native_ticks,20pct_recent_median_true_range)_rounded_to_tick",
             "vwap_bands": "sigma_inferred_from_native_price_vwap_and_native_deviation_when_available",

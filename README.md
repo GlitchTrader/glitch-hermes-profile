@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.72
+# Glitch Hermes Profile v0.0.2.73
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -35,6 +35,14 @@ Configure the desired master/group in Glitch, turn on Replication if followers s
 `/trade_mode paper|live` remains only as a deprecated compatibility alias. Its argument does not select accounts or change authority.
 
 ## Update
+
+v0.0.2.73 preserves observed chart context and already-confirmed swing references
+within the existing bounded lookback when a minute is missing. Gaps remain visible;
+local movement, flow and imbalance calculations still use consecutive observations.
+Contract repair cannot change a positioned book's action, protection or probabilities.
+An obsolete management repair yields to the next fresh packet instead of starting
+another model call. Entry guidance distinguishes the acceptable fill range from
+stop survival; neither ATR nor a preferred reward/risk ratio becomes an action gate.
 
 ```powershell
 hermes profile update glitch

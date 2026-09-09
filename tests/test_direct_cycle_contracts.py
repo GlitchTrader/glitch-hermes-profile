@@ -701,6 +701,93 @@ def test_position_management_consistency_check_never_chooses_the_action() -> Non
     )
 
 
+@pytest.mark.parametrize("action,repaired_action", [("HOLD", "EXIT"), ("EXIT", "HOLD"), ("HOLD", "HOLD"), ("EXIT", "EXIT")])
+def test_management_arithmetic_repair_cannot_replan_the_trade(monkeypatch, action, repaired_action) -> None:
+    first, scenario = valid_batch("2026-09-01T00:00:00Z")
+    scenario["books"][0]["instrument_contexts"] = {"M2K": {"current_signed_quantity": -1}}
+    intent = first["decisions"][0]
+    intent["instrument"], intent["action"] = "M2K", action
+    intent["decision_audit"]["final_choice"] = action
+    evidence = position_management_evidence(action, "STRADDLES").replace(
+        "35%-50%", "55%-63%"
+    ).replace("15.79%", "63.35%")
+    intent["decision_audit"]["decisive_evidence"] = evidence
+    second = json.loads(json.dumps(first))
+    second["decisions"][0]["action"] = repaired_action
+    second["decisions"][0]["decision_audit"]["final_choice"] = repaired_action
+    second["decisions"][0]["decision_audit"]["decisive_evidence"] = evidence.replace(
+        "gross_hold_terminal_ev=STRADDLES", "gross_hold_terminal_ev=NEGATIVE"
+    ).replace(f"SELECTION_ACTION={action}", f"SELECTION_ACTION={repaired_action}")
+    calls = []
+
+    def invoke(_profile, prompt, _timeout, **_kwargs):
+        calls.append(prompt)
+        return first if len(calls) == 1 else second
+
+    def validate(batch, *_args, **_kwargs):
+        value = batch["decisions"][0]
+        DIRECT.validate_position_management(
+            value["decision_audit"]["decisive_evidence"], "M2K", value["action"], 0,
+            {"status": "complete", "hold_target_before_stop_break_even_probability": 0.6335},
+        )
+        return []
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    monkeypatch.setattr(DIRECT, "validate_batch", validate)
+    if action != repaired_action:
+        with pytest.raises(ValueError, match="management_repair_requires_fresh_review:0:action"):
+            DIRECT.invoke_validated_batch("glitch", "FULL_EVIDENCE", scenario, None, 30)
+    else:
+        result, repairs, retries = DIRECT.invoke_validated_batch("glitch", "FULL_EVIDENCE", scenario, None, 30)
+        assert result["decisions"][0]["action"] == action
+        assert "gross_hold_terminal_ev=NEGATIVE" in result["decisions"][0]["decision_audit"]["decisive_evidence"]
+        assert repairs == 1 and retries == 0
+    assert len(calls) == 2
+    assert "Preserve action, final_choice" in calls[-1]
+
+
+@pytest.mark.parametrize("field", ["protection_updates", "forecast", "probability"])
+def test_management_repair_preserves_authored_protection_and_probabilities(field) -> None:
+    first, scenario = valid_batch("2026-09-01T00:00:00Z")
+    scenario["books"][0]["instrument_contexts"] = {"M2K": {"current_signed_quantity": -1}}
+    first["decisions"][0]["decision_audit"]["decisive_evidence"] = position_management_evidence("HOLD", "POSITIVE")
+    second = json.loads(json.dumps(first))
+    if field == "probability":
+        second["decisions"][0]["decision_audit"]["decisive_evidence"] = position_management_evidence("HOLD", "POSITIVE").replace("35%-50%", "60%-70%")
+    else:
+        second["decisions"][0][field] = [{"changed": True}]
+    with pytest.raises(ValueError, match=f"management_repair_requires_fresh_review:0:{field}"):
+        DIRECT.enforce_management_repair_boundary(first, second, scenario)
+
+
+@pytest.mark.parametrize("after_lock", [False, True])
+def test_management_repair_uses_no_obsolete_second_call(monkeypatch, after_lock) -> None:
+    first, scenario = valid_batch("2026-09-01T00:00:00Z")
+    first["decisions"][0]["decision_audit"].pop("bear_case")
+    source = {"packet_id": "20260901T0001Z"}
+    latest = dict(source)
+    calls = []
+
+    def invoke(_profile, prompt, _timeout, **kwargs):
+        if calls:  # Simulate waiting for the existing shared model lock.
+            latest["packet_id"] = "20260901T0002Z"
+            reason = kwargs["model_call_admission"]()
+            assert reason == "management_contract_repair_superseded_by_fresh_packet"
+            raise DIRECT.ModelCallDeferred(reason)
+        calls.append(prompt)
+        if not after_lock:
+            latest["packet_id"] = "20260901T0002Z"
+        return first
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    with pytest.raises(DIRECT.ModelCallDeferred, match="superseded_by_fresh_packet"):
+        DIRECT.invoke_validated_batch(
+            "glitch", "FULL_EVIDENCE", scenario, None, 30,
+            management_repair_admission=lambda: DIRECT.management_repair_freshness_reason(source, latest),
+        )
+    assert len(calls) == 1  # No second model generation or intent was admitted.
+
+
 def test_position_management_allows_evidence_led_exit_while_original_thesis_is_held() -> None:
     # Current PnL and original thesis status must never select a management action.
     DIRECT.validate_position_management(
@@ -2695,7 +2782,8 @@ def test_position_management_event_inversion_gets_one_bounded_consistency_retry(
     assert calls[1].startswith("POSITION_MANAGEMENT_SELF_CONSISTENCY_CORRECTION_ONLY:")
     assert "Do not make a new market judgment" in calls[1]
     assert "minimum P(TARGET_BEFORE_STOP)" in calls[1]
-    assert "only where the corrected event meaning requires it" in calls[1]
+    assert "Preserve action, final_choice" in calls[1]
+    assert "a different management choice requires a fresh full-evidence review" in calls[1]
 
 
 def test_contract_retry_uses_the_pristine_model_response(

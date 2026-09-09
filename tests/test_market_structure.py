@@ -205,12 +205,20 @@ def test_local_sequences_do_not_bridge_missing_minutes(missing_minutes: int, new
     preserved = json.dumps(retained, sort_keys=True)
 
     for root in ECONOMICS:
-        # Missing observations must not create swings, FVGs, flow or 60-minute
-        # coverage. Native prior-session references are still supplied in both.
+        # A gap limits local calculations, not the already-observed chart or
+        # confirmed references. No old bars become current consecutive minutes.
         actual = ms.instrument_perception(root, retained["instruments"][root])
         expected = ms.instrument_perception(root, fresh["instruments"][root])
-        assert actual == expected
-        assert actual["evidence_quality"]["completed_bar_count"] == new_bars
+        for key in ("measurement_tolerance", "range_reference", "vwap_path", "order_flow_response",
+                    "unfilled_three_bar_imbalances"):
+            assert actual[key] == expected[key]
+        for key in ("windows", "legs", "current_partial_bar"):
+            assert actual["price_sequence"][key] == expected["price_sequence"][key]
+        assert actual["evidence_quality"]["contiguous_completed_bar_count"] == new_bars
+        if missing_minutes == 5390:
+            assert actual == expected  # No Friday-to-Tuesday context or motion.
+        else:
+            assert actual["evidence_quality"]["completed_bar_count"] == 80 + new_bars
     assert json.dumps(retained, sort_keys=True) == preserved  # no history reset
 
 
@@ -229,6 +237,47 @@ def test_chart_uses_the_same_continuous_evidence_as_text(tmp_path: Path) -> None
     ms.render_market_context(retained, market_map, retained_image)
     ms.render_market_context(fresh, market_map, fresh_image)
     assert retained_image.read_bytes() == fresh_image.read_bytes()
+
+
+def test_one_missing_bar_retains_chart_and_only_previously_confirmed_references(tmp_path: Path) -> None:
+    state = ms._empty_state()
+    for index in list(range(80)) + list(range(81, 89)):
+        ms.ingest_frame(state, frame(index))
+    slot = state["instruments"]["MNQ"]
+    context = ms._context_minutes(slot, "bars", "native_utc")
+    assert len(context) == 88
+    assert iso_minute(80) not in {bar["native_utc"] for bar in context}
+    expected = ms.confirmed_swings(context[:80]) + [
+        {**pivot, "index": pivot["index"] + 80}
+        for pivot in ms.confirmed_swings(context[80:])
+    ]
+    assert ms._context_swings(context) == expected
+    view = ms.instrument_perception("MNQ", slot)
+    assert view["evidence_quality"]["status"] == "ready"
+    assert view["evidence_quality"]["contiguous_completed_bar_count"] == 8
+    assert view["price_sequence"]["windows"]["60"]["bars"] == 8
+    old_prices = {pivot["price"] for pivot in expected if pivot["index"] < 80}
+    assert old_prices & {pivot["price"] for pivot in view["price_sequence"]["confirmed_swings"]}
+
+    short_state = json.loads(json.dumps(state))
+    short_state["instruments"]["MNQ"]["bars"] = context[80:]
+    market_map = {"instrument_order": ["MNQ"], "view": "position_management", "instruments": [view]}
+    retained_image, short_image = tmp_path / "context.png", tmp_path / "truncated.png"
+    ms.render_market_context(state, market_map, retained_image)
+    ms.render_market_context(short_state, market_map, short_image)
+    assert retained_image.read_bytes() != short_image.read_bytes()
+
+
+def test_context_horizon_uses_current_frame_and_does_not_mutate_retained_data() -> None:
+    state = ms._empty_state()
+    for index in range(10):
+        ms.ingest_frame(state, frame(index))
+    slot = state["instruments"]["MNQ"]
+    original = json.dumps(slot, sort_keys=True)
+    slot["latest_frame_id"] = minute_id(6000)
+    assert ms._context_minutes(slot, "bars", "native_utc") == []
+    slot["latest_frame_id"] = minute_id(10)
+    assert json.dumps(slot, sort_keys=True) == original
 
 
 def test_swings_are_causal_and_name_the_confirmation_bar() -> None:
