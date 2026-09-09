@@ -41,7 +41,10 @@ NOTHING from its unchanged levels, costs and probability range, without another
 model call. Entry and management contradictions retain strict validation and
 bounded correction. Complete audit tails with an identical repeated final choice
 are relocated verbatim; format repairs receive the required ledger mode and book
-count. Trading doctrine, geometry, execution and learning are unchanged.
+count. The base HOLD/NOTHING template no longer contradicts required action-specific
+entry/protection fields. Missing or invalid protection payloads await a fresh
+full-state review without a futile correction that cannot preserve that payload.
+Trading doctrine, geometry, execution and learning are unchanged.
 
 v0.0.2.75 corrects completed-leg path efficiency to use the same pivot endpoints
 for displacement and sampled travel. Intervening closes preserve observed

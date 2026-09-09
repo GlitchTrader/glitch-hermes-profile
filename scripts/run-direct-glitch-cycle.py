@@ -4705,13 +4705,16 @@ RETRYABLE_MODEL_CONTRACT_ERRORS = (
     "position_management_action_mismatch:",
     "position_management_hold_ev_",
     "position_management_thesis_status_invalid:",
-    "protection_update",
     "selection_ev_",
     "trigger_review_",
     "wake_triggers_",
 )
 
 NON_REPAIRABLE_MODEL_CONTRACT_ERRORS = (
+    # Management repair preserves the original protection payload exactly.
+    # A missing/invalid native mutation needs a fresh full-state decision,
+    # not a second call whose only possible repair the boundary would reject.
+    "protection_update",
     "candidate_comparison_selection_action_mismatch",
     "candidate_comparison_selection_instrument_mismatch",
     "decision_audit_choice_mismatch",
@@ -6400,7 +6403,7 @@ def build_prompt(
     prompt = (
         common
         + instructions
-        + "Return only the model-owned fields shown in required_output_template. The runtime deterministically supplies schema, intent ID, time, route, account, snapshot hash, model version, and prompt version. Preserve instrument and every strict decision_audit key; final_choice must equal action. "
+        + "Use required_output_template for batch and audit shape; include the required action-specific entry or protection fields specified above, and omit fields inapplicable to the selected action. The runtime deterministically supplies schema, intent ID, time, route, account, snapshot hash, model version, and prompt version. Preserve instrument and every strict decision_audit key; final_choice must equal action. "
         + wake_instruction
         + "Keep the entire response under 9000 characters. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)

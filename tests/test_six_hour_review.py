@@ -3,7 +3,7 @@ import copy
 
 import pytest
 
-from test_direct_cycle_contracts import DIRECT, valid_batch
+from test_direct_cycle_contracts import DIRECT, position_management_evidence, valid_batch
 
 
 def selection(estimate="0.24-0.38", verdict="UNCERTAIN"):
@@ -135,3 +135,39 @@ def test_format_repair_receives_authoritative_mode_and_book_count(mode, marker):
     assert "never one decision per candidate instrument" in prompt
     assert "preserve the required ledger mode" in prompt
     assert "no market reassessment" in prompt
+
+
+@pytest.mark.parametrize("message", [
+    "protection_updates_required:0", "protection_update_not_object:0:0",
+    "protection_update_fields_invalid:0:0", "protection_update_leg_invalid:0:0",
+    "protection_update_leg_unknown:0:0", "protection_update_price_invalid:0:0",
+    "protection_update_stop_invalid:0:0",
+])
+def test_invalid_protection_payload_needs_fresh_review_not_impossible_repair(message):
+    assert DIRECT.retryable_model_contract_error(ValueError(message)) is False
+
+
+def test_missing_protection_payload_does_not_spend_a_second_model_call(monkeypatch):
+    batch, scenario = valid_batch("2026-09-09T09:30:00Z")
+    scenario["books"][0]["instrument_contexts"] = {
+        "MNQ": {"current_signed_quantity": -1,
+                "native_protection": {"orders": [{"leg_id": "NATIVE_LEG"}]}}}
+    intent = batch["decisions"][0]
+    intent["action"] = intent["decision_audit"]["final_choice"] = "MOVE_STOP"
+    intent["reason"] = "Move the stop to the authored structural level."
+    intent["decision_audit"]["decisive_evidence"] = position_management_evidence(
+        "MOVE_STOP", "POSITIVE").replace("INSTRUMENT=M2K", "INSTRUMENT=MNQ")
+    calls = []
+
+    def invoke(*args, **kwargs):
+        calls.append(args)
+        assert len(calls) == 1, "A repair cannot add or change a native protection instruction"
+        return copy.deepcopy(batch)
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    with pytest.raises(ValueError, match="^protection_updates_required:0$"):
+        DIRECT.invoke_validated_batch(
+            "glitch", "full native evidence", scenario, None, 30,
+            decision_mode="position_management")
+    assert len(calls) == 1
+    assert "protection_updates" not in intent

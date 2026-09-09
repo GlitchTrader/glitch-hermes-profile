@@ -448,7 +448,6 @@ def test_normalize_batch_repairs_escaped_ledger_line_separators() -> None:
 @pytest.mark.parametrize(
     "message",
     [
-        "protection_updates_required:0",
         "position_management_instrument_mismatch:0",
     ],
 )
@@ -3191,6 +3190,10 @@ def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition()
     positioned_prompt = DIRECT.build_prompt(packet, positioned, {"outcomes": []})
     flat_prompt = DIRECT.build_prompt(packet, flat, {"outcomes": []})
 
+    for prompt in (positioned_prompt, flat_prompt):
+        assert "Return only the model-owned fields shown in required_output_template" not in prompt
+        assert "include the required action-specific entry or protection fields specified above" in prompt
+        assert "omit fields inapplicable to the selected action" in prompt
     assert '"decision_mode":"position_management"' in positioned_prompt
     for phrase in (
         "Use deterministic_management_math as arithmetic authority when complete",
