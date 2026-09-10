@@ -7,9 +7,9 @@ description: Relate delta and aggression to price response for each candidate se
 Use only supplied flow fields and label unavailable fields as unknown. For each instrument and each relevant bullish/bearish path, compare effort with result:
 
 - positive delta with efficient upward progress supports buyer acceptance;
-- positive delta with little upward progress can indicate absorption or trapped buyers;
+- positive delta with flat or falling price can indicate passive sellers absorbing buyers or trapped buyers; this is not by itself seller exhaustion or bullish reversal;
 - negative delta with efficient decline supports seller acceptance;
-- negative delta while price holds or rises can indicate absorption or trapped sellers;
+- negative delta with flat or rising price can indicate passive buyers absorbing sellers or trapped sellers; this is not by itself buyer exhaustion or bearish reversal;
 - weakening delta during extension raises exhaustion risk;
 - a delta flip after a sweep, reclaim, failed acceptance, or microstructure break can transition the current setup.
 

@@ -12,6 +12,15 @@ REFERENCE_PATH = ROOT / "skills" / "glitch-market-structure" / "SKILL.md"
 
 
 class IntelligenceFirstContractTests(unittest.TestCase):
+    def test_flow_absorption_names_the_failing_side_without_selecting_an_action(self) -> None:
+        flow = (ROOT / "skills" / "glitch-order-flow" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("positive delta with flat or falling price can indicate passive sellers absorbing buyers", flow)
+        self.assertIn("not by itself seller exhaustion or bullish reversal", flow)
+        self.assertIn("negative delta with flat or rising price can indicate passive buyers absorbing sellers", flow)
+        self.assertIn("not by itself buyer exhaustion or bearish reversal", flow)
+        self.assertIn("Do not turn delta, imbalance, a single candle, or a high directional score into an automatic entry", flow)
+        self.assertIn("A missing flow field is a limitation, not directional evidence", flow)
+
     def test_hot_path_contains_no_encoded_strategy_recipe(self) -> None:
         text = "\n".join(path.read_text(encoding="utf-8") for path in HOT_PATHS).lower()
         forbidden = (

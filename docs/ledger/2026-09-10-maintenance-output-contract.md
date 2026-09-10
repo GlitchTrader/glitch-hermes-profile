@@ -36,3 +36,20 @@ post-reopen cycle proof must be recorded separately in the operational review.
 Rollback: restore the preceding scoped profile revision through the supported
 profile updater, preserving the verified runtime/configuration checkpoint. Never
 reset learning, account state or native orders to roll back these source changes.
+
+## v0.0.2.81 - absorption interpretation clarification
+
+The separate management review found a decision interpreting positive delta with
+falling price as inefficient sellers. The numerical evidence did not label the
+winning side; that interpretation belonged to the model. The already-injected
+order-flow skill used the ambiguous word "absorption" without naming the passive
+side. Two existing bullets now explicitly distinguish sellers absorbing buyers
+from buyers absorbing sellers. Both remain conditional hypotheses, not proof of
+a reversal, instruction to hold/exit, or a new signal/gate. The same skill is
+already injected into flat scans, trigger reviews, and position management.
+
+This is a wording clarification to existing cognition, intentionally separate
+from the v80 serialization fixes. No runner, numerical calculation, probability,
+entry-range, invalidation, native AddOn, or other skill changes belong to v81.
+The full suite and a text-contract regression check preserve those boundaries;
+they do not prove that future model reasoning or trading results will improve.

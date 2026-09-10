@@ -22,7 +22,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.80",
+        "distribution.yaml version 0.0.2.81",
         "docs/ledger/2026-09-04-weekend-release.md",
         "docs/ledger/2026-09-08-evidence-and-serialization-repair.md",
         "docs/ledger/2026-09-08-context-and-management-boundaries.md",
@@ -112,7 +112,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.80"
+        "distribution_version": "0.0.2.81"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",
