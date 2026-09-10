@@ -6424,7 +6424,7 @@ def build_prompt(
             "For ENTER_LONG/ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, "
             "entry_range_high and forecast. The executable range contains current decision price, is strictly inside the "
             "stop/target, and spans the full zone where this thesis retains value after plausible delivery drift. In the "
-            "existing ENTRY_RANGE field explain the failure of value/geometry at each edge under fill-relative translation; "
+            "existing entry-range audit field explain the failure of value/geometry at each edge under fill-relative translation; "
             "do not invent a narrow quote-centered band when adjacent prices remain valid. Prior cognition's observed "
             "decision timing is one measured past call, not a future bound, market signal, or mandatory range width. "
             "Never widen an issued range to defeat latest-price revalidation or demand it absorb several future packets. "
