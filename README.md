@@ -1,6 +1,8 @@
-# Glitch Hermes Profile v0.0.2.79
+# Glitch Hermes Profile v0.0.2.80
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
+
+v0.0.2.80 narrows a false setup-deferral text match, supplies book-scoped native-leg serialization examples for management actions, and names the exact required verdict in existing management arithmetic repairs. Trading doctrine, probability checks, native execution, protection validation, models, and schedules are unchanged. See [the maintenance output review](docs/ledger/2026-09-10-maintenance-output-contract.md).
 
 Glitch/NinjaTrader remains the market, account, configured-policy, execution, bracket, replication, and journal authority. Hermes proposes structured intent for the master accounts selected by the user in Glitch. The profile does not distinguish paper from live accounts and makes no profitability, unattended-operation, or live-readiness claim.
 
