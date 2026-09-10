@@ -63,6 +63,16 @@ class RailRepairTests(unittest.TestCase):
                 self.assertTrue(path.is_file())
                 self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest().upper(), expected)
 
+    def test_distribution_owns_only_its_named_skills_not_the_shared_skill_root(self):
+        manifest = (ROOT / "distribution.yaml").read_text(encoding="utf-8")
+        owned = re.findall(r"^  - ([^\n]+)$", manifest, re.MULTILINE)
+        expected = {"skills/" + path.name for path in (ROOT / "skills").iterdir() if path.is_dir()}
+        self.assertNotIn("skills", owned)
+        self.assertNotIn("skills/", owned)
+        self.assertEqual({path for path in owned if path.startswith("skills/")}, expected)
+        self.assertNotIn("memories", owned)
+        self.assertNotIn("cron", owned)
+
     def test_durable_decision_log_survives_outbox_consumption(self):
         with tempfile.TemporaryDirectory() as directory:
             decision_log = Path(directory) / "decisions.jsonl"

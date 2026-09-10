@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -888,6 +889,9 @@ def collect_decision_episodes(
         str(row.get("intent_id")) for row in read_jsonl(output_path) if row.get("intent_id")
     }
     frames_root = exchange / "glitch" / "minute-frames"
+    # One stable index per pass; later arrivals remain eligible next invocation.
+    frame_paths = sorted(frames_root.glob("*.json"))
+    frame_ids = [path.stem for path in frame_paths]
     records: list[dict[str, Any]] = []
     for outbox_path in sorted((exchange / "hermes" / "outbox").glob("*.json")):
         cycle_id = outbox_path.stem
@@ -896,15 +900,22 @@ def collect_decision_episodes(
         if not packet_path.is_file() or not receipt_path.is_file():
             continue
         try:
-            packet = DIRECT.read_json(packet_path)
             batch = DIRECT.read_json(outbox_path)
+            if not any(
+                isinstance(intent, dict) and intent.get("intent_id")
+                and str(intent["intent_id"]) not in existing
+                for intent in batch.get("decisions", [])
+            ):
+                continue
+            packet = DIRECT.read_json(packet_path)
             receipt = DIRECT.read_json(receipt_path)
             scenario = DIRECT.build_scenario(packet)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             continue
         if DIRECT.receipt_classification(receipt) == "transport_uncertain":
             continue
-        future_paths = [path for path in sorted(frames_root.glob("*.json")) if path.stem > cycle_id][:5]
+        first_future = bisect_right(frame_ids, cycle_id)
+        future_paths = frame_paths[first_future:first_future + 5]
         if len(future_paths) < 5:
             continue
         future_by_instrument: dict[str, list[dict[str, Any]]] = {}
@@ -926,7 +937,6 @@ def collect_decision_episodes(
             for item in receipt.get("results", []) if isinstance(item, dict)
         }
         books_by_route = {str(book.get("route_id")): book for book in scenario.get("books", [])}
-        prior_cognition = DIRECT.latest_prior_cognition(exchange, cycle_id)
         for intent in batch.get("decisions", []):
             if not isinstance(intent, dict):
                 continue
@@ -1037,6 +1047,7 @@ def collect_decision_episodes(
                     ),
                     "decision_evidence": decision_evidence or None,
                 }
+            prior_cognition = DIRECT.latest_prior_cognition(exchange, cycle_id)
             record = {
                 "schema_version": "glitch.hermes.decision_episode.v2",
                 "episode_id": stable_id("decision-episode", intent_id),

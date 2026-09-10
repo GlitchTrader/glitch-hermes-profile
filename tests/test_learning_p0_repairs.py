@@ -362,6 +362,58 @@ def test_rebuilt_decision_episode_uses_each_instruments_own_path(tmp_path, monke
     assert episode["pre_decision_state"]["position_building_context"]["instrument"] == "MES"
     assert episode["prior_cognition"]["source_cycle_id"] == "prior"
 
+    # Existing episodes need no packet reconstruction, future-bar reads or plan
+    # search. Their frozen evidence must not be rewritten on the next pass.
+    reads = []
+    original_read = LEARNING.DIRECT.read_json
+    def tracked_read(path):
+        reads.append(Path(path))
+        return original_read(path)
+    monkeypatch.setattr(LEARNING.DIRECT, "read_json", tracked_read)
+    monkeypatch.setattr(LEARNING.DIRECT, "build_scenario", lambda _p: pytest.fail("reprocessed episode"))
+    monkeypatch.setattr(LEARNING.DIRECT, "latest_prior_cognition", lambda *_a: pytest.fail("reprocessed plan"))
+    assert LEARNING.collect_decision_episodes(tmp_path, exchange, supervisor) == episodes
+    assert reads == [exchange / f"hermes/outbox/{cycle}.json"]
+
+
+def test_episode_collector_indexes_frames_once_and_retries_incomplete_evidence(tmp_path, monkeypatch):
+    exchange = tmp_path / "exchange"
+    supervisor = exchange / "hermes/supervisor"
+    frames = exchange / "glitch/minute-frames"
+    frames.mkdir(parents=True)
+    for cycle in ("20260101T1200Z", "20260101T1201Z"):
+        for tree, value in (
+            ("hermes/outbox", {"decisions": [{"intent_id": cycle, "action": "HOLD"}]}),
+            ("hermes/receipts", {"complete": True}),
+            ("glitch/decision-packets", {"packet_id": cycle}),
+        ):
+            path = exchange / tree / f"{cycle}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value))
+    for minute in range(2, 6):
+        (frames / f"20260101T12{minute:02d}Z.json").write_text(json.dumps({"market_snapshot": {"instruments": []}}))
+    enumerations, reads = [], []
+    original_glob, original_read = Path.glob, LEARNING.DIRECT.read_json
+    def tracked_glob(path, pattern):
+        if path == frames:
+            enumerations.append(path)
+        return original_glob(path, pattern)
+    def tracked_read(path):
+        if Path(path).parent == frames:
+            reads.append(Path(path).stem)
+        return original_read(path)
+    monkeypatch.setattr(Path, "glob", tracked_glob)
+    monkeypatch.setattr(LEARNING.DIRECT, "read_json", tracked_read)
+    monkeypatch.setattr(LEARNING.DIRECT, "build_scenario", lambda _p: {"books": []})
+    monkeypatch.setattr(LEARNING.DIRECT, "receipt_classification", lambda _r: "successful")
+    monkeypatch.setattr(LEARNING.DIRECT, "latest_prior_cognition", lambda *_a: pytest.fail("ineligible episode"))
+    assert LEARNING.collect_decision_episodes(tmp_path, exchange, supervisor) == []
+    assert len(enumerations) == 1 and reads == []  # Four bars cannot settle a five-bar observation.
+    (frames / "20260101T1206Z.json").write_text(json.dumps({"market_snapshot": {"instruments": []}}))
+    assert LEARNING.collect_decision_episodes(tmp_path, exchange, supervisor) == []
+    assert len(enumerations) == 2
+    assert reads == [f"20260101T12{minute:02d}Z" for minute in range(2, 7)] * 2
+
 
 def test_correlated_account_outcomes_are_one_learning_idea() -> None:
     outcomes = [

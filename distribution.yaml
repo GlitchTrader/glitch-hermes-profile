@@ -8,7 +8,15 @@ distribution_owned:
   - SOUL.md
   - operator.json
   - config.yaml
-  - skills
+  - skills/glitch-build-intent
+  - skills/glitch-learn
+  - skills/glitch-market-scan
+  - skills/glitch-market-structure
+  - skills/glitch-order-flow
+  - skills/glitch-position-management
+  - skills/glitch-runtime
+  - skills/glitch-setup-state
+  - skills/glitch-trade-mnq
   - plugins
   - scripts
   - setup.ps1

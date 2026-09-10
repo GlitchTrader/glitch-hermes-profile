@@ -47,6 +47,12 @@ blocked calculator detours cannot add another tool/continuation round. Learner
 and interactive tools, model, cadence, admission, native orders and replication
 are unchanged. This is a bounded reasoning/latency correction, not evidence of
 profitability or proof of a time-dependent degradation mechanism.
+The learner's evidence collector now indexes minute-frame files once, skips
+already-recorded intents before rebuilding packets, and looks up prior cognition
+only when constructing a new eligible episode. This removes redundant work that
+grew with accumulated history, without changing evidence, learning rules or calls.
+The distribution owns its nine named Glitch skill directories, not the shared
+skills folder; unrelated skills and usage metadata survive supported updates.
 
 v0.0.2.77 accepts a single management EV verdict followed by a parenthetical
 explanation without rewriting the authored audit. Ambiguous verdicts and
