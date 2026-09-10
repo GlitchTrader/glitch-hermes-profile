@@ -3614,6 +3614,18 @@ def test_latest_prior_cognition_uses_one_canonical_decision_from_latest_prior_cy
         "final_choice": "NOTHING",
     }
 
+    attempts = tmp_path / "hermes" / "model-attempts"
+    attempts.mkdir()
+    (attempts / "20260813T1435Z.json").write_text(json.dumps({
+        "status": "completed", "started_utc": "20260813T1435Z",
+        "completed_utc": "2026-08-13T14:35:52Z",
+    }), encoding="utf-8")
+    timed = DIRECT.latest_prior_cognition(tmp_path, "20260813T1440Z")
+    timing = timed.pop("observed_decision_timing")
+    assert timed == prior
+    assert timing["source_cycle_id"] == "20260813T1435Z"
+    assert timing["elapsed_seconds"] == 52
+
 
 def test_latest_trigger_review_keeps_the_prior_full_comparison_baseline(
     tmp_path: Path,

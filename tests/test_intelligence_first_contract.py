@@ -76,6 +76,18 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         self.assertIn("deterministic latest-price revalidation", intent)
         self.assertNotIn("across multiple one-minute packets", intent)
 
+    def test_current_geometry_guidance_preserves_noise_and_delivery_guards(self) -> None:
+        soul = (ROOT / "SOUL.md").read_text(encoding="utf-8").lower()
+        intent = (ROOT / "skills" / "glitch-build-intent" / "SKILL.md").read_text(encoding="utf-8").lower()
+        self.assertIn("best current executable bracket", soul)
+        self.assertIn("a nearer stop needs evidence for a genuinely different local setup", soul)
+        self.assertIn("a touch-triggered stop inside that movement is not thesis invalidation", soul)
+        self.assertIn("rather than resetting permission to the next high/low", soul)
+        self.assertIn("do not force activity after a quiet period", soul)
+        self.assertIn("not a guarantee or a required range width", intent)
+        self.assertIn("never widen an issued range to defeat revalidation", intent)
+        self.assertIn("at a different fill, stop and target both shift by fill minus reference", intent)
+
 
 if __name__ == "__main__":
     unittest.main()

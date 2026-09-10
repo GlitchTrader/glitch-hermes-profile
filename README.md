@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.78
+# Glitch Hermes Profile v0.0.2.79
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -35,6 +35,17 @@ Configure the desired master/group in Glitch, turn on Replication if followers s
 `/trade_mode paper|live` remains only as a deprecated compatibility alias. Its argument does not select accounts or change authority.
 
 ## Update
+
+v0.0.2.79 assesses a surviving path with current supported geometry rather than
+only an inherited remote stop and consumed destination. Reaching a previously
+preferred entry zone does not reset permission to a new extreme; waiting needs
+a specific advantage over acting now or rejecting the setup. Continuation beyond
+the highest supplied reference remains an uncertain hypothesis, not forbidden
+room. Entry ranges describe their actual validity boundaries under fill-relative
+bracket translation, with one completed prior call's duration supplied as context,
+not a latency guarantee or width rule. Short-window coverage survives market-map
+compaction. Noise-surviving invalidation, probabilities, revalidation, model,
+cadence, management, learning and native order handling are unchanged.
 
 v0.0.2.78 distinguishes a routine retest that leaves a thesis intact from the
 boundary that actually invalidates it. It explains the existing native contract:

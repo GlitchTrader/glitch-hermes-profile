@@ -1177,11 +1177,15 @@ def _trim_to_budget(value: dict[str, Any]) -> None:
             windows = sequence.get("windows")
             if isinstance(windows, dict):
                 close_run = None
-                for window in windows.values():
+                for requested, window in windows.items():
                     if not isinstance(window, dict):
                         continue
                     close_run = window.get("current_same_direction_close_run", close_run)
-                    for repeated in ("bars", "net_one_contract_usd", "close_path_points", "current_same_direction_close_run"):
+                    # Coverage is not redundant: a requested 60-minute window
+                    # may contain only a few consecutive bars after a data gap.
+                    if str(window.get("bars")) == str(requested):
+                        window.pop("bars", None)
+                    for repeated in ("net_one_contract_usd", "close_path_points", "current_same_direction_close_run"):
                         window.pop(repeated, None)
                 sequence["current_same_direction_close_run"] = close_run
         auction = instrument.get("auction_evidence")

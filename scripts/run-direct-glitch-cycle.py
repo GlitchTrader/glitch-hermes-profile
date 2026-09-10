@@ -2248,6 +2248,28 @@ def consume_fired_wake_triggers(
     })
 
 
+def observed_decision_timing(exchange: Path, cycle_id: str) -> dict[str, Any] | None:
+    """One already-completed call's duration, not a forecast or entry-width rule."""
+    if re.fullmatch(r"\d{8}T\d{4}Z", cycle_id) is None:
+        return None
+    try:
+        attempt = read_json(model_attempt_path(exchange, cycle_id))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(attempt, dict) or attempt.get("status") != "completed":
+        return None
+    started = _utc_datetime(attempt.get("started_utc"))
+    completed = _utc_datetime(attempt.get("completed_utc"))
+    if started is None or completed is None or completed <= started:
+        return None
+    return {
+        "source_cycle_id": cycle_id,
+        "completed_utc": attempt["completed_utc"],
+        "elapsed_seconds": round((completed - started).total_seconds(), 2),
+        "basis": "observed_prior_call_including_repairs_not_future_latency_bound",
+    }
+
+
 def latest_prior_cognition(
     exchange: Path,
     current_cycle_id: str,
@@ -2299,6 +2321,9 @@ def latest_prior_cognition(
                 "change_condition": str(audit.get("change_condition") or ""),
                 "final_choice": str(audit.get("final_choice") or ""),
             }
+            timing = observed_decision_timing(exchange, path.stem)
+            if timing is not None:
+                event["observed_decision_timing"] = timing
             selection_ev = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", evidence)
             if selection_ev:
                 event["deterministic_selection_math"] = deterministic_selection_math(
@@ -6354,7 +6379,9 @@ def build_prompt(
             "This does not require waiting for that retest, a closed candle, or a higher-timeframe stop. "
             "Distinguish entry trigger, intermediate response/management levels and primary destination. VWAP bands, swings, "
             "range boundaries, session levels and fair-value gaps are evidence, not mandatory targets. A fresh extreme may "
-            "support a discounted extension objective; that objective need not already have traded. Do not invent room. "
+            "support a discounted extension objective; that objective need not already have traded. The highest supplied "
+            "reference is not a ceiling on possible price: evaluate continuation from observed legs/range and current response, "
+            "with uncertainty, rather than demanding a pre-existing higher/lower printed level. Do not invent room. "
             "Compare stop and target distances with supplied one- and five-minute noise, expected path duration, spread, "
             "friction and delivery delay. Dollars alone cannot distinguish noise from opportunity. Do not impose a stop "
             "floor or a preferred ratio, shrink invalidation to manufacture payoff, or expand targets to meet a quota. "
@@ -6380,7 +6407,11 @@ def build_prompt(
             "unchanged-bracket value: name the specific price/probability improvement, lost-room and missed-move cost, "
             "and executable wake level. Do not disguise that comparison as negative arithmetic or demand perfect confirmation. "
             "WAIT must be before the target; lower improves long entry, higher improves short entry. Worse-price confirmation "
-            "must justify the probability gain against consumed room. "
+            "must justify a specific probability gain against consumed room. For a HELD path, compare the best CURRENT "
+            "bracket, not only an inherited remote stop against a consumed target. Re-evaluate supported local invalidation "
+            "and continuation destinations without tightening into normal noise. Assess a valid pullback and current "
+            "continuation before waiting again; reaching your previously preferred zone must not reset permission to "
+            "the next high/low. Ordinary pullback counterflow is uncertainty, not an additional confirmation prerequisite. "
             "Preserve recent native exit/result continuity even before enriched learner outcomes arrive. Same instrument "
             "and direction alone are not a failed thesis; PnL labels are not market evidence. "
             "A NOTHING, HOLD or rejected candidate is not a stopped trade or adverse thesis evidence. If objective, invalidation, "
@@ -6392,7 +6423,10 @@ def build_prompt(
             "a path that cannot fit the remaining window and an orderly exit. "
             "For ENTER_LONG/ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, "
             "entry_range_high and forecast. The executable range contains current decision price, is strictly inside the "
-            "stop/target, and spans only the zone where this thesis retains value after plausible delivery drift. "
+            "stop/target, and spans the full zone where this thesis retains value after plausible delivery drift. In the "
+            "existing ENTRY_RANGE field explain the failure of value/geometry at each edge under fill-relative translation; "
+            "do not invent a narrow quote-centered band when adjacent prices remain valid. Prior cognition's observed "
+            "decision timing is one measured past call, not a future bound, market signal, or mandatory range width. "
             "Never widen an issued range to defeat latest-price revalidation or demand it absorb several future packets. "
             "In a fresh review, an expired order range is not a permanent veto: derive a new current zone and economics "
             "if the thesis survives, including at a better price. Do not revive the expired order or call it a failed trade. "

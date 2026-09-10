@@ -15,6 +15,29 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(DIRECT)
 
 
+def test_observed_timing_reads_only_named_completed_attempt(tmp_path: Path) -> None:
+    attempts = tmp_path / "hermes" / "model-attempts"
+    attempts.mkdir(parents=True)
+    cycle = "20260910T0451Z"
+    path = attempts / f"{cycle}.json"
+    assert DIRECT.observed_decision_timing(tmp_path, cycle) is None
+    assert DIRECT.observed_decision_timing(tmp_path, "../../outside") is None
+    attempt = {
+        "status": "completed", "started_utc": "2026-09-10T04:51:10Z",
+        "completed_utc": "2026-09-10T04:52:03.320Z",
+    }
+    path.write_text(json.dumps(attempt), encoding="utf-8")
+    result = DIRECT.observed_decision_timing(tmp_path, cycle)
+    assert result["elapsed_seconds"] == 53.32
+    assert result["source_cycle_id"] == cycle
+    assert "not_future_latency_bound" in result["basis"]
+    for change in ({"status": "started"}, {"started_utc": "bad"}, {"completed_utc": attempt["started_utc"]}):
+        path.write_text(json.dumps({**attempt, **change}), encoding="utf-8")
+        assert DIRECT.observed_decision_timing(tmp_path, cycle) is None
+    path.write_text("[]", encoding="utf-8")
+    assert DIRECT.observed_decision_timing(tmp_path, cycle) is None
+
+
 def test_change_condition_prices_keep_instrument_identity() -> None:
     intent = {
         "instrument": "MES",

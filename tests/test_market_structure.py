@@ -367,6 +367,22 @@ def test_auction_reference_ladder_spans_near_and_far_causal_levels() -> None:
     assert "prior_session_low" in ladder["below"][-1][2]
 
 
+def test_compaction_keeps_short_window_coverage(monkeypatch) -> None:
+    state = ms._empty_state()
+    for i in range(6):
+        ms.ingest_frame(state, frame(i))
+    item = ms.instrument_perception("M2K", state["instruments"]["M2K"])
+    value = {"instruments": [item]}
+    # Exercise every compaction stage, even past the normal fail-open budget.
+    monkeypatch.setattr(ms, "MAX_SERIALIZED_CHARS", 1)
+    with pytest.raises(ValueError, match="market_perception_text_budget_exceeded"):
+        ms._trim_to_budget(value)
+    windows = item["price_sequence"]["windows"]
+    assert windows["15"]["bars"] == 6
+    assert windows["60"]["bars"] == 6
+    assert "bars" not in windows["5"]  # complete coverage is redundant
+
+
 def test_market_map_is_bounded_neutral_and_missing_flow_stays_unknown(tmp_path: Path) -> None:
     exchange = tmp_path / "exchange"
     seed_exchange(exchange, 90)
@@ -376,6 +392,9 @@ def test_market_map_is_bounded_neutral_and_missing_flow_stays_unknown(tmp_path: 
     assert image_path is not None and image_path.is_file()
     assert len(json.dumps(value, separators=(",", ":"))) <= ms.MAX_SERIALIZED_CHARS
     by_root = {item["instrument"]: item for item in value["instruments"]}
+    for item in by_root.values():
+        for requested, window in item["price_sequence"]["windows"].items():
+            assert window.get("bars", int(requested)) == min(int(requested), item["evidence_quality"]["contiguous_completed_bar_count"])
     assert by_root["M2K"]["vwap_path"]["status"] == "unavailable"
     assert by_root["M2K"]["order_flow_response"]["status"] == "unavailable"
     assert "vwap" in by_root["M2K"]["evidence_quality"]["missing"]
