@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-09",
+  "updated": "2026-09-10",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -22,13 +22,14 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.77",
+        "distribution.yaml version 0.0.2.78",
         "docs/ledger/2026-09-04-weekend-release.md",
         "docs/ledger/2026-09-08-evidence-and-serialization-repair.md",
         "docs/ledger/2026-09-08-context-and-management-boundaries.md",
         "docs/ledger/2026-09-09-decision-delivery-integrity.md",
         "docs/ledger/2026-09-09-0600-review.md",
-        "docs/ledger/2026-09-09-maintenance-output-and-idle-review.md"
+        "docs/ledger/2026-09-09-maintenance-output-and-idle-review.md",
+        "docs/ledger/2026-09-10-geometry-and-decision-tools.md"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."
@@ -109,7 +110,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.76"
+        "distribution_version": "0.0.2.78"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

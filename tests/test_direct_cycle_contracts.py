@@ -2009,6 +2009,64 @@ def test_deterministic_geometry_context_normalizes_contract_noise_without_rankin
     assert "threshold" not in context
 
 
+@pytest.mark.parametrize("reference,stop,target,fill,expected", [
+    (100.0, 96.0, 124.0, 101.25, (97.25, 125.25)),
+    (100.0, 109.25, 83.25, 100.75, (110.0, 84.0)),
+])
+def test_geometry_context_explains_existing_native_fill_offsets(reference, stop, target, fill, expected):
+    candidate = {"instrument": "MNQ", "current_price": reference}
+    context = DIRECT.deterministic_geometry_context(candidate)
+    execution = context["entry_execution"]
+    assert execution["price_basis"] == "fill_relative_offsets"
+    assert execution["decision_reference_price"] == reference
+    assert execution["native_stop"] == "actual_fill + authored_stop - decision_reference_price"
+    assert execution["native_target"] == "actual_fill + authored_target - decision_reference_price"
+    assert (fill + stop - reference, fill + target - reference) == expected
+    assert "market slippage can exceed that range" in execution["meaning"]
+    assert candidate == {"instrument": "MNQ", "current_price": reference}
+    assert "stop_loss" not in context and "action" not in context
+
+
+def test_geometry_context_does_not_invent_missing_native_reference():
+    context = DIRECT.deterministic_geometry_context({"instrument": "MNQ"})
+    assert context["entry_execution"]["decision_reference_price"] is None
+
+
+@pytest.mark.parametrize("positioned,trigger", [(False, False), (False, True), (True, False)])
+def test_scheduled_decision_is_tool_free_without_changing_model_skills_or_image(
+    tmp_path, monkeypatch, positioned, trigger,
+):
+    executable = tmp_path / "hermes.exe"
+    executable.touch()
+    python = tmp_path / "python.exe"
+    python.touch()
+    chart = tmp_path / "chart.png"
+    chart.touch()
+    captured = {}
+    monkeypatch.setattr(DIRECT.shutil, "which", lambda _: str(executable))
+    monkeypatch.setattr(DIRECT, "resolve_python_invocation", lambda p: (p, {}))
+    monkeypatch.setattr(DIRECT, "hermes_profile_lock", lambda *_a, **_k: nullcontext())
+    def run(args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return SimpleNamespace(returncode=0, stderr="", stdout='{"schema_version":"glitch.intent.batch.v1","decisions":[]}')
+    monkeypatch.setattr(DIRECT.subprocess, "run", run)
+    DIRECT.invoke_hermes("fixture", "UNCHANGED_PROMPT", 30, positioned_only=positioned,
+                         trigger_review_only=trigger, image_path=chart)
+    wrapper = captured["args"][2]
+    assert "create_custom_toolset('glitch-decision-only'" in wrapper
+    assert "tools=[],includes=[]" in wrapper
+    assert "'--toolsets', 'glitch-decision-only'" in wrapper
+    assert "'--model', 'gpt-5.6-luna'" in wrapper
+    assert "'--reasoning', 'low'" in wrapper
+    assert "'--max-turns', '1'" in wrapper
+    assert "'--image'" in wrapper and repr(str(chart)) in wrapper
+    assert "glitch-build-intent" in wrapper
+    assert ("glitch-market-scan" in wrapper) == (not positioned and not trigger)
+    assert captured["kwargs"]["input"] == "UNCHANGED_PROMPT"
+    assert "single_query_mode" not in wrapper  # Do not relax unattended approval.
+    compile(wrapper, "decision-wrapper", "exec")
+
+
 def test_forecast_is_validated_as_non_gating_metadata() -> None:
     DIRECT.validate_forecast(None, 0)
     batch, scenario = valid_batch("2026-08-03T07:02:41.0414987Z")
@@ -3308,6 +3366,13 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
         "A NOTHING, HOLD or rejected candidate is not a stopped trade",
         "Same instrument and direction alone are not a failed thesis", "PnL labels are not market evidence",
         "post-exit evidence materially changed",
+        "This pass has no tools", "runtime canonicalizes payoff arithmetic",
+        "name the retest/pullback that could occur while the thesis remains valid",
+        "A touch-triggered stop inside that valid retest is not thesis invalidation",
+        "stops and targets shift by fill minus decision reference",
+        "Judge stop survival and destination at both entry-range edges",
+        "Carry forward the plan, not its probability or robustness label",
+        "This does not require waiting for that retest, a closed candle, or a higher-timeframe stop",
     ):
         assert phrase in prompt
     for phrase in (

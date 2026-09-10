@@ -1,7 +1,7 @@
 """Hermes-owned adaptive-cadence Glitch operator cycle.
 
 This is installed as a Hermes native cron script. It makes no model call until
-Glitch has published a new complete rolling five-frame packet, resumes one persistent
+Glitch has published a new complete rolling five-frame packet, starts one isolated
 Hermes session, contract-validates the returned batch, and posts each intent to
 Glitch's existing authenticated firewall. Codex is not part of this process.
 """
@@ -4166,6 +4166,15 @@ def deterministic_geometry_context(instrument: dict[str, Any]) -> dict[str, Any]
         "point_value_usd_per_point": round(point_value, 8),
         "tick_size_points": round(tick_size, 8),
         "tick_value_usd": round(tick_size * point_value, 8),
+        "entry_execution": {
+            "price_basis": "fill_relative_offsets",
+            "decision_reference_price": instrument.get("current_price"),
+            "native_stop": "actual_fill + authored_stop - decision_reference_price",
+            "native_target": "actual_fill + authored_target - decision_reference_price",
+            "meaning": "Initial risk/reward distances are preserved, not absolute chart levels. "
+                       "Evaluate the shifted bracket throughout the authored entry range; "
+                       "market slippage can exceed that range. Native receipts own actual prices.",
+        },
         "native_order_prices": "integer multiples of tick_size_points; analytical VWAP and averaged levels need native tick alignment before use",
         "atr": atr,
         "spread": spread,
@@ -4626,6 +4635,7 @@ def invoke_hermes(
         "--provider", CORE_PROVIDER,
         "--reasoning", "low",
         "--max-turns", "1",
+        "--toolsets", "glitch-decision-only",
         "--skills", (
             "glitch-setup-state,glitch-order-flow,glitch-position-management,glitch-build-intent"
             if positioned_only else
@@ -4642,6 +4652,10 @@ def invoke_hermes(
         "os.environ['HERMES_HOME']=str(Path.home() / 'AppData' / 'Local' / 'hermes' / 'profiles' / "
         + repr(profile)
         + ");"
+        # Per-process public Hermes API: no execution/memory/skill writes in a
+        # fully supplied decision. Does not alter learner or interactive tools.
+        "from toolsets import create_custom_toolset;"
+        "create_custom_toolset('glitch-decision-only','Supplied evidence to intent JSON',tools=[],includes=[]);"
         "from hermes_cli.main import main;"
         "prompt=sys.stdin.read();"
         "sys.argv=[sys.argv[0]] + " + repr(cli_args) + " + ['-q',prompt];"
@@ -6288,6 +6302,8 @@ def build_prompt(
         "Use only valid_entry_quantities; state total planned risk and target dollars. Preserve the existing rule to "
         "protect progress and seek no new exposure after the configured daily-capture target is reached. "
         "Do not use fixed dollar, ATR, reward/risk, setup or cooldown rules. Do not retrieve or write memory in this hot path. "
+        "This pass has no tools: use the supplied evidence and preloaded skills, return the decision directly; "
+        "the runtime canonicalizes payoff arithmetic from your levels and probability without a calculator call. "
     )
     if positioned_only:
         instructions = (
@@ -6329,6 +6345,13 @@ def build_prompt(
             "nearby invalidation, then use microstructure to time delivery. A shallow pivot does not become valid merely "
             "because it makes a cheap bracket. Conversely, do not substitute a remote higher-timeframe stop when a nearer "
             "noise-surviving level genuinely invalidates this setup. Higher timeframes are context, not required alignment. "
+            "In the existing geometry field name the retest/pullback that could occur while the thesis remains valid, "
+            "then the price evidence that would actually falsify it. A touch-triggered stop inside that valid retest "
+            "is not thesis invalidation. A VWAP/trigger recross or last candle low/high is not sufficient merely "
+            "because it is nearby. Use the supplied swings, legs and observed excursions, not ATR recitation alone. "
+            "Choose genuine invalidation first, then an entry location that makes its risk worthwhile; keep a nearer "
+            "stop only when current evidence establishes a genuinely different, locally invalidated setup. "
+            "This does not require waiting for that retest, a closed candle, or a higher-timeframe stop. "
             "Distinguish entry trigger, intermediate response/management levels and primary destination. VWAP bands, swings, "
             "range boundaries, session levels and fair-value gaps are evidence, not mandatory targets. A fresh extreme may "
             "support a discounted extension objective; that objective need not already have traded. Do not invent room. "
@@ -6347,6 +6370,9 @@ def build_prompt(
             "The runtime canonicalizes risk/reward and exact break-even from authored levels; use "
             "(risk_points + friction_points) / (risk_points + reward_points) for the cost-adjusted hurdle. Use "
             "deterministic_geometry_context for tick values, ATR/spread and dollar arithmetic. These facts are not signals. "
+            "Its entry_execution is the native contract: stops and targets shift by fill minus decision reference. "
+            "Judge stop survival and destination at both entry-range edges under that shift; do not promise fixed "
+            "chart prices or rescue marginal geometry with an assumed future managed exit. "
             "The frozen range wholly above the cost-adjusted hurdle means POSITIVE, wholly below NEGATIVE, otherwise "
             "UNCERTAIN (0.5 percentage-point rounding tolerance). Include all named uncertainty in the range once; "
             "never back-solve it from desired action or reuse the same uncertainty as another veto. "
@@ -6360,6 +6386,8 @@ def build_prompt(
             "A NOTHING, HOLD or rejected candidate is not a stopped trade or adverse thesis evidence. If objective, invalidation, "
             "location and auction path remain the same, explain what post-exit evidence materially changed before re-entry. "
             "A new bar or recross alone is not a new setup; a genuinely changed setup may be entered immediately. "
+            "Carry forward the plan, not its probability or robustness label: reassess those against current "
+            "volatility, location and contrary evidence. Repeated prior prose is not independent confirmation. "
             "Respect account_context.must_flat_utc and seconds_until_must_flat as the actual schedule horizon; do not start "
             "a path that cannot fit the remaining window and an orderly exit. "
             "For ENTER_LONG/ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, "

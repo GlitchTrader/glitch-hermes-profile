@@ -1,4 +1,4 @@
-# Glitch Hermes Profile v0.0.2.77
+# Glitch Hermes Profile v0.0.2.78
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
@@ -35,6 +35,18 @@ Configure the desired master/group in Glitch, turn on Replication if followers s
 `/trade_mode paper|live` remains only as a deprecated compatibility alias. Its argument does not select accounts or change authority.
 
 ## Update
+
+v0.0.2.78 distinguishes a routine retest that leaves a thesis intact from the
+boundary that actually invalidates it. It explains the existing native contract:
+initial stops and targets retain their distance from the decision reference and
+shift with the actual fill. Hermes evaluates that geometry across its entry range
+without a fixed dollar, ATR or reward/risk floor or a mandatory confirmation wait.
+Scheduled decisions receive an explicitly empty per-process toolset: supplied
+data, chart, preloaded skills and deterministic arithmetic handling remain, while
+blocked calculator detours cannot add another tool/continuation round. Learner
+and interactive tools, model, cadence, admission, native orders and replication
+are unchanged. This is a bounded reasoning/latency correction, not evidence of
+profitability or proof of a time-dependent degradation mechanism.
 
 v0.0.2.77 accepts a single management EV verdict followed by a parenthetical
 explanation without rewriting the authored audit. Ambiguous verdicts and
