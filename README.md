@@ -1,6 +1,8 @@
-# Glitch Hermes Profile v0.0.2.84
+# Glitch Hermes Profile v0.0.2.85
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
+
+v0.0.2.85 preserves Windows CRLF line-ending compatibility in the selection parser introduced by v84. Root/scope checks, accepted contract suffixes and all cognitive/numeric rules are unchanged.
 
 v0.0.2.84 accepts native contract suffixes in the selection ledger, collapses uniquely owned identical wake copies, and restores omitted management action/reason mirrors only from agreeing explicit choices. Geometry validation recognizes the selected candidate's adjacent execution-uncertainty clause without dropping any required dimension. Management wording separates choosing an exit from claiming its execution, and requires a concrete comparison when defending negative terminal HOLD value. No execution, replication, protection, probability, risk or cadence rule changes. See [the daily maintenance review](docs/ledger/2026-09-11-maintenance-format-and-management.md).
 

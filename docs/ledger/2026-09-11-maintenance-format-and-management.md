@@ -42,3 +42,13 @@ cadence, learner or market-admission change. Source tests are not proof of tradi
 profitability. Closed-market admission remains enforced; natural new-release
 cycle proof may await reopening. Rollback uses a scoped source revert and the
 supported profile updater, preserving learning/configuration and native state.
+
+## Compatibility follow-up: v0.0.2.85
+
+Final review reproduced a line-ending regression in the v84 selection pattern:
+valid Windows CRLF evidence was accepted by the previous selector but rejected by
+the new one. An optional carriage return at the same line-end boundary restores
+compatibility. Regression cases cover LF and CRLF for the root-only and both
+supported expiry-suffix examples; candidate scope and extra-judgment rejection
+remain unchanged. This is a formatting compatibility fix, not a cognitive change
+or evidence that a live CRLF decision failed.

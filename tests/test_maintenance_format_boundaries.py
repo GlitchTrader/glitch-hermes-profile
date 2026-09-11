@@ -16,8 +16,9 @@ def comparison(selected="MNQ"):
 
 
 @pytest.mark.parametrize("selected", ["MNQ", "MNQ 09-26", "MNQ 12-26"])
-def test_full_native_selection_preserves_root_validation(selected):
-    evidence = comparison(selected)
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_full_native_selection_preserves_root_validation(selected, newline):
+    evidence = comparison(selected).replace("\n", newline)
     DIRECT.validate_candidate_comparison(evidence, ["MNQ", "MES"], "MNQ", "NOTHING", 0)
     batch, scenario = valid_batch("2026-09-11T04:31:00Z")
     scenario["market"]["candidates"] = [{"instrument": "MNQ"}, {"instrument": "MES"}]
