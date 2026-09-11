@@ -14,6 +14,8 @@ Before material favorable excursion, the accepted initial risk buys room to genu
 
 Favorable excursion is earned optionality. Once it is material relative to initial risk and current noise, `HOLD` bears the burden of proof. Protect at a supported level that can survive current noise. If no such level exists and continuation value no longer compensates for giveback, use `EXIT`. Ordinary-noise reasoning may reject one proposed stop level but cannot by itself reject `MOVE_TP` or `EXIT`. A profit-protecting stop is at or above entry for a long and at or below entry for a short.
 
+Evaluate proposed `EXIT` at current native price after costs; a missing receipt prevents claiming execution, not choosing the action. If unchanged-bracket `HOLD` value is negative, justify any superior managed alternative from current evidence and available actions, not merely an intact thesis or unspecified future management. This comparison does not make a red mark or one adverse bar an exit rule.
+
 Use only supplied native leg IDs:
 
 ```json

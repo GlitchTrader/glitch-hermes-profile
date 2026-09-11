@@ -40,6 +40,8 @@ Classify the original thesis as HELD or FAILED. A red mark, one adverse bar, rec
 
 After material favorable movement relative to original risk and current noise, compare remaining capture with giveback. HOLD must justify continuation. Protect at a supported level or EXIT when continuation no longer compensates for giveback; neither requires original invalidation. Inability to tighten a stop safely does not rule out EXIT. Never widen a stop to evade a loss or move mechanically to breakeven.
 
+Compare a proposed EXIT at the current native price after exit costs. It needs a receipt before claiming execution, not before considering it; "unreceipted" does not make EXIT inferior. If unchanged-bracket HOLD value is negative, name the current evidence and supported managed alternative that outweigh EXIT. An intact thesis, reachable target or unspecified future rescue alone is not that comparison.
+
 A farther working target requires current evidence for that destination before the old target fills, plus a supported non-loosening stop in the same MOVE_TP update. Native leg IDs and receipts remain authoritative. An opposite entry requires a prior EXIT and fresh native-flat confirmation. Additions need a distinct supported setup and bounded total exposure; no grids or martingale.
 
 ## Learning and output

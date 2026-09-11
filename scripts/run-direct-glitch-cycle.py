@@ -108,6 +108,10 @@ TRIGGER_REVIEW_FIELDS = (
     "SELECTION_INSTRUMENT", "SELECTION_ACTION", "SELECTION_REASON",
 )
 POSITION_MANAGEMENT_MARKER = "POSITION_MANAGEMENT_V1"
+SELECTION_INSTRUMENT_PATTERN = (
+    r"(?mi)^SELECTION_INSTRUMENT[ \t]*=[ \t]*"
+    r"([A-Za-z0-9._-]+(?:[ \t]+[0-9]{2}-[0-9]{2})?)[ \t]*$"
+)
 POSITION_MANAGEMENT_FIELDS = (
     "POSITION_SIDE", "ENTRY_CURRENT_STOP_TARGET", "MFE_MAE_ROLLBACK",
     "CURRENT_SETUP", "CONTINUATION_EVIDENCE", "REVERSAL_EVIDENCE",
@@ -2968,7 +2972,7 @@ def validate_candidate_comparison(
                 raise ValueError(f"candidate_comparison_field_placeholder:{index}:{root}:{field}")
             section_values[root][field] = value
     ranking = re.search(r"(?mi)^RANKING\s*=\s*(.+?)\s*$", text)
-    selection = re.search(r"(?mi)^SELECTION_INSTRUMENT\s*=\s*([A-Za-z0-9._-]+)\s*$", text)
+    selection = re.search(SELECTION_INSTRUMENT_PATTERN, text)
     selection_action = re.search(r"(?mi)^SELECTION_ACTION\s*=\s*([A-Za-z_]+)\s*$", text)
     selection_ev = re.search(r"(?mi)^SELECTION_EV\s*=\s*(.+?)\s*$", text)
     selection_reason = re.search(r"(?mi)^SELECTION_REASON\s*=\s*(.+?)\s*$", text)
@@ -2989,8 +2993,16 @@ def validate_candidate_comparison(
         [f"selection_ev_missing:{index}:candidate_comparison"]
     )
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
+        selected_root = instrument_root(selected_instrument)
+        uncertainty = re.search(
+            r"(?mi)^(?:[-*]\s*)?EXECUTION_UNCERTAINTY[ \t]*=[ \t]*([^\r\n]+)",
+            sections[selected_root],
+        )
+        # An authored adjacent clause belongs to this candidate, not another
+        # instrument. Keep every geometry dimension required; add no evidence.
         validate_entry_geometry_evidence(
-            section_values[instrument_root(selected_instrument)]["NOISE_AND_GEOMETRY"],
+            section_values[selected_root]["NOISE_AND_GEOMETRY"]
+            + (" " + uncertainty.group(1) if uncertainty else ""),
             index,
             "candidate_comparison",
         )
@@ -3719,11 +3731,15 @@ def normalize_batch(
         len(decisions) == 1
         and isinstance(decisions[0], dict)
         and "wake_triggers" in batch
-        and "wake_triggers" not in decisions[0]
+        and (
+            "wake_triggers" not in decisions[0]
+            or decisions[0]["wake_triggers"] == batch["wake_triggers"]
+        )
     ):
         # Luna occasionally closes the sole decision one delimiter late and
         # leaves this known decision field at batch level. Relocate only that
-        # field; ambiguous multi-decision output remains invalid.
+        # field or collapse an identical copy. Conflicting or ambiguous
+        # multi-decision output remains invalid.
         decisions[0]["wake_triggers"] = batch.pop("wake_triggers")
     if (
         len(decisions) == 1
@@ -3873,7 +3889,7 @@ def normalize_batch(
                 if (CANDIDATE_COMPARISON_MARKER in evidence
                         or TRIGGER_REVIEW_MARKER in evidence):
                     selections = re.findall(
-                        r"(?mi)^SELECTION_INSTRUMENT\s*=\s*([A-Za-z0-9._-]+)\s*$",
+                        SELECTION_INSTRUMENT_PATTERN,
                         evidence,
                     )
                     if len(selections) == 1:
@@ -3898,6 +3914,31 @@ def normalize_batch(
             if action in ACTION_ALIASES:
                 action = ACTION_ALIASES[action]
                 intent["action"] = action
+            if (
+                isinstance(audit, dict)
+                and action in {"HOLD", "EXIT", "MOVE_STOP", "MOVE_TP"}
+                and audit.get("final_choice") == action
+            ):
+                evidence = str(audit.get("decisive_evidence") or "")
+                if (POSITION_MANAGEMENT_MARKER in evidence
+                        and not re.search(r"(?mi)^SELECTION_ACTION\b", evidence)):
+                    # Both authoritative authored choices agree. Restore only
+                    # their omitted mirror; never select or change an action,
+                    # probability, verdict, price or conflicting explicit line.
+                    audit["decisive_evidence"] = (
+                        evidence.rstrip() + "\nSELECTION_ACTION=" + action
+                    )
+                evidence = str(audit.get("decisive_evidence") or "")
+                reason = intent.get("reason")
+                if (POSITION_MANAGEMENT_MARKER in evidence
+                        and not re.search(r"(?mi)^SELECTION_REASON\b", evidence)
+                        and isinstance(reason, str) and reason.strip()
+                        and "\n" not in reason and "\r" not in reason):
+                    # The wire reason is already the authored choice rationale,
+                    # not the HOLD arithmetic reason or newly inferred evidence.
+                    audit["decisive_evidence"] = (
+                        evidence.rstrip() + "\nSELECTION_REASON=" + reason.strip()
+                    )
             if action in {"ENTER_LONG", "ENTER_SHORT"}:
                 for alias, canonical in ENTRY_FIELD_ALIASES.items():
                     if alias not in intent:
@@ -6478,6 +6519,10 @@ def build_prompt(
             "not discomfort with the accepted loss budget. After material favorable excursion, compare remaining capture "
             "with giveback and current structure; HOLD must justify continuation. EXIT need not await original invalidation. "
             "Use a supported protection level when available; inability to tighten safely does not rule out EXIT. "
+            "Compare a proposed EXIT at current native price after exit costs; lack of an execution receipt is not "
+            "a disadvantage of choosing it. A receipt is needed only before claiming the exit happened. If unchanged-"
+            "bracket HOLD value is negative, an intact thesis alone cannot justify HOLD: identify the current evidence "
+            "and supported managed alternative that outweigh EXIT, rather than relying on unspecified future rescue. "
             "Never widen a stop or move mechanically to breakeven. Extend a working target only when current evidence "
             "already supports the farther destination, before the old target fills, with a non-loosening supported stop "
             "in the same MOVE_TP update. Do not wait for price to trade beyond a target that will already close the position. "

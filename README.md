@@ -1,6 +1,8 @@
-# Glitch Hermes Profile v0.0.2.83
+# Glitch Hermes Profile v0.0.2.84
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
+
+v0.0.2.84 accepts native contract suffixes in the selection ledger, collapses uniquely owned identical wake copies, and restores omitted management action/reason mirrors only from agreeing explicit choices. Geometry validation recognizes the selected candidate's adjacent execution-uncertainty clause without dropping any required dimension. Management wording separates choosing an exit from claiming its execution, and requires a concrete comparison when defending negative terminal HOLD value. No execution, replication, protection, probability, risk or cadence rule changes. See [the daily maintenance review](docs/ledger/2026-09-11-maintenance-format-and-management.md).
 
 v0.0.2.83 clarifies forecast expiry versus reusable market structure: an earlier target touch completes the old forecast but does not permanently retire that price level. Fresh return-to-level or extension hypotheses use current geometry and new probabilities; no old order or forecast is revived. This is a wording-only follow-up to a live v82 review, with no validation, execution, schedule or risk change.
 
