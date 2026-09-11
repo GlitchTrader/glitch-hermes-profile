@@ -95,7 +95,8 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         self.assertIn("do not force activity after a quiet period", soul)
         self.assertIn("not a guarantee or a required range width", intent)
         self.assertIn("never widen an issued range to defeat revalidation", intent)
-        self.assertIn("at a different fill, stop and target both shift by fill minus reference", intent)
+        self.assertIn("each level + range edge - decision reference", intent)
+        self.assertIn("actual touch stop still survives the stated normal pullback at both edges", intent)
 
 
 if __name__ == "__main__":

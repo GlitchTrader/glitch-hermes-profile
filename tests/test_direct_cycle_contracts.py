@@ -3376,7 +3376,7 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
     ):
         assert phrase in prompt
     for phrase in (
-        "larger auction path, regime and location", "genuine nearby invalidation",
+        "larger auction path, regime and location", "genuine invalidation",
         "A shallow pivot does not become valid merely because it makes a cheap bracket",
         "Higher timeframes are context, not required alignment",
         "Distinguish entry trigger, intermediate response/management levels and primary destination",
@@ -3470,7 +3470,7 @@ def test_flat_multibook_prompt_requests_one_shared_decision() -> None:
     assert "binds the identical decision to every ordered master book" in prompt
     assert "estimate a coarse target-first range from evidence before looking at the payoff hurdle" in prompt
     assert "runtime deterministically supplies schema, intent ID, time, route, account" in prompt
-    assert "decision_audit closes before wake_triggers" in prompt
+    assert "Close decision_audit before decision-level wake_triggers and action-specific fields" in prompt
 
 
 def test_prompt_mirrors_change_condition_prices_into_wake_triggers() -> None:

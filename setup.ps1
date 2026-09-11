@@ -254,7 +254,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.81'
+    distribution_version = '0.0.2.82'
     gateway_supervised = $true
     plugin_enabled = $true
     jobs = @($directJob, $learningJob)

@@ -3725,6 +3725,19 @@ def normalize_batch(
         # leaves this known decision field at batch level. Relocate only that
         # field; ambiguous multi-decision output remains invalid.
         decisions[0]["wake_triggers"] = batch.pop("wake_triggers")
+    if (
+        len(decisions) == 1
+        and isinstance(decisions[0], dict)
+        and decisions[0].get("action") in {"MOVE_STOP", "MOVE_TP"}
+        and isinstance(batch.get("protection_updates"), list)
+        and (
+            "protection_updates" not in decisions[0]
+            or decisions[0]["protection_updates"] == batch["protection_updates"]
+        )
+    ):
+        # Ownership is unique; preserve every authored leg and price. Normal
+        # action/protection validation still rejects missing or foreign values.
+        decisions[0]["protection_updates"] = batch.pop("protection_updates")
     candidate_roots = {
         instrument_root(row.get("instrument"))
         for row in (scenario or {}).get("market", {}).get("candidates", [])
@@ -3741,9 +3754,9 @@ def normalize_batch(
                 intent.setdefault("wake_triggers", misplaced)
             if isinstance(audit, dict):
                 for field in ("disconfirming_evidence", "change_condition", "final_choice"):
-                    if field in intent and field not in audit:
-                        # Relocate only documented audit siblings without
-                        # changing their values. Duplicates remain invalid.
+                    if field in intent and (field not in audit or intent[field] == audit[field]):
+                        # Relocate documented siblings or collapse identical
+                        # copies only. Conflicting values remain invalid.
                         audit[field] = intent.pop(field)
             if isinstance(audit, dict):
                 evidence = audit.get("decisive_evidence")
@@ -4220,6 +4233,60 @@ def deterministic_geometry_context(instrument: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def attach_reference_distance_math(
+    model_packet: dict[str, Any], market_perception: dict[str, Any] | None,
+) -> None:
+    """Annotate the model-only copy with units for existing same-packet levels."""
+    if (not isinstance(market_perception, dict) or not model_packet.get("packet_id")
+            or market_perception.get("source_packet_id") != model_packet["packet_id"]):
+        return
+    frames = model_packet.get("frames", [])
+    if not frames:
+        return
+    perceptions = {
+        instrument_root(item.get("instrument")): item
+        for item in market_perception.get("instruments", []) if isinstance(item, dict)
+    }
+    for instrument in frames[-1].get("market_snapshot", {}).get("instruments", []):
+        root = instrument_root(instrument.get("instrument") or instrument.get("instrument_root"))
+        context = instrument.get("deterministic_geometry_context")
+        ladder = perceptions.get(root, {}).get("auction_reference_ladder")
+        economics = resolve_instrument_economics(instrument)
+        current = instrument.get("current_price")
+        if (not isinstance(context, dict) or not isinstance(ladder, dict)
+                or economics["source"] == LEGACY_FIXTURE_ECONOMICS["source"]
+                or isinstance(current, bool) or not isinstance(current, (int, float))
+                or not math.isfinite(current)):
+            continue
+        rows = []
+        for side in ("above", "below"):
+            levels = ladder.get(side)
+            for level in levels[:3] if isinstance(levels, list) else []:
+                if not isinstance(level, list) or not level:
+                    continue
+                price = level[0]
+                if (isinstance(price, bool) or not isinstance(price, (int, float))
+                        or not math.isfinite(price)):
+                    continue
+                distance = abs(price - current)
+                atr_ratios = []
+                for horizon in ("1m", "5m"):
+                    atr = context["atr"].get(horizon, {}).get("points")
+                    atr_ratios.append(round(distance / atr, 6) if atr and atr > 0 else None)
+                rows.append([
+                    price, round(price - current, 8),
+                    round(distance / economics["tick_size"], 8),
+                    round(distance * economics["point_value_usd"], 8), *atr_ratios,
+                ])
+        if rows:
+            context["reference_distances"] = {
+                "basis": "current_price;absolute_distance_except_signed_points;before_costs;references_not_orders_or_gates",
+                "row_format": ["reference_price", "signed_distance_points", "distance_ticks",
+                               "one_contract_usd", "distance_1m_atr", "distance_5m_atr"],
+                "rows": rows,
+            }
+
+
 def _compact_model_instrument(
     instrument: dict[str, Any],
     *,
@@ -4433,6 +4500,14 @@ def validate_protection_updates(
 def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
     """Repair only observed, unambiguous terminal JSON serialization defects."""
 
+    def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("ambiguous_duplicate_json_key")
+            value[key] = item
+        return value
+
     def parse_candidate(
         candidate: str,
         *,
@@ -4440,8 +4515,8 @@ def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
         require_labeled_audit_tail: bool = False,
     ) -> dict[str, Any] | None:
         try:
-            value, end = json.JSONDecoder().raw_decode(candidate)
-        except json.JSONDecodeError:
+            value, end = json.JSONDecoder(object_pairs_hook=unique_fields).raw_decode(candidate)
+        except (json.JSONDecodeError, ValueError):
             return None
         trailing = candidate[end:].strip()
         if trailing and any(item not in "]}" for item in trailing):
@@ -4458,6 +4533,9 @@ def repair_terminal_json_delimiters(text: str) -> dict[str, Any] | None:
         allowed_batch_fields = {
             "schema_version", "cycle_id", "next_review_seconds", "decisions", "wake_triggers",
         }
+        if (len(decisions) == 1 and decisions[0].get("action") in {"MOVE_STOP", "MOVE_TP"}
+                and isinstance(value.get("protection_updates"), list)):
+            allowed_batch_fields.add("protection_updates")
         if not set(value).issubset(allowed_batch_fields):
             return None
         if "wake_triggers" in value and not isinstance(value["wake_triggers"], list):
@@ -6344,12 +6422,14 @@ def build_prompt(
         "next_review_seconds": 60 if scoped_master_is_positioned(packet, scenario) else 300,
         "decisions": decisions,
     }
+    model_packet = packet_for_model(packet, scenario, positioned_only=positioned_only)
+    attach_reference_distance_math(model_packet, market_perception)
     envelope = {
         "decision_mode": decision_mode,
         "invocation_context": invocation_context,
         "prior_cognition": prior_cognition if decision_mode in {"flat_scan", "trigger_review"} else None,
         "market_perception": market_perception,
-        "decision_packet": packet_for_model(packet, scenario, positioned_only=positioned_only),
+        "decision_packet": model_packet,
         "execution_scope": scenario_for_model(scenario, positioned_only),
         "recent_glitch_ledger": ledger_for_model(journals, positioned_only),
         "operator_advisory": directive,
@@ -6416,8 +6496,9 @@ def build_prompt(
     else:
         instructions = (
             "Use the injected scan/setup/order-flow/intent skills for adaptive judgment, not a checklist of permissions. "
-            "Start with the larger auction path, regime and location; identify meaningful unconsumed destination and genuine "
-            "nearby invalidation, then use microstructure to time delivery. A shallow pivot does not become valid merely "
+            "Start with the larger auction path, regime and location; choose the meaningful move and its horizon BEFORE "
+            "the bracket. Name its unconsumed destination and genuine invalidation, then use microstructure to time delivery. "
+            "A shallow pivot does not become valid merely "
             "because it makes a cheap bracket. Conversely, do not substitute a remote higher-timeframe stop when a nearer "
             "noise-surviving level genuinely invalidates this setup. Higher timeframes are context, not required alignment. "
             "In the existing geometry field name the retest/pullback that could occur while the thesis remains valid, "
@@ -6428,7 +6509,10 @@ def build_prompt(
             "stop only when current evidence establishes a genuinely different, locally invalidated setup. "
             "This does not require waiting for that retest, a closed candle, or a higher-timeframe stop. "
             "Distinguish entry trigger, intermediate response/management levels and primary destination. VWAP bands, swings, "
-            "range boundaries, session levels and fair-value gaps are evidence, not mandatory targets. A fresh extreme may "
+            "range boundaries, session levels and fair-value gaps are evidence, not mandatory targets. The nearest level "
+            "is a management reference unless it genuinely ends the chosen auction path; do not build a tiny bracket first "
+            "and rename it a directional opportunity. Ordinary counterflow within an intact move is not itself a new "
+            "opposite auction. A fresh extreme may "
             "support a discounted extension objective; that objective need not already have traded. The highest supplied "
             "reference is not a ceiling on possible price: evaluate continuation from observed legs/range and current response, "
             "with uncertainty, rather than demanding a pre-existing higher/lower printed level. Do not invent room. "
@@ -6446,10 +6530,13 @@ def build_prompt(
             "estimated_target_first_range, now_ev, wait_price, wait_ev and decisive_reason. Use one numeric friction total. "
             "The runtime canonicalizes risk/reward and exact break-even from authored levels; use "
             "(risk_points + friction_points) / (risk_points + reward_points) for the cost-adjusted hurdle. Use "
-            "deterministic_geometry_context for tick values, ATR/spread and dollar arithmetic. These facts are not signals. "
+            "deterministic_geometry_context for tick values, ATR/spread and dollar arithmetic. Its reference_distances "
+            "puts the existing levels in instrument-specific dollars and 1m/5m ATR units, before costs; these are not signals. "
             "Its entry_execution is the native contract: stops and targets shift by fill minus decision reference. "
-            "Judge stop survival and destination at both entry-range edges under that shift; do not promise fixed "
-            "chart prices or rescue marginal geometry with an assumed future managed exit. "
+            "Judge stop survival and destination at both entry-range edges: in the existing entry-range field give "
+            "the numeric shifted stop/target pairs, using level + range_edge - reference. A touch stop must remain outside "
+            "the described valid pullback at both edges, not depend on sustained acceptance after it would already fill. "
+            "Do not promise fixed chart prices or rescue marginal geometry with an assumed future managed exit. "
             "The frozen range wholly above the cost-adjusted hurdle means POSITIVE, wholly below NEGATIVE, otherwise "
             "UNCERTAIN (0.5 percentage-point rounding tolerance). Include all named uncertainty in the range once; "
             "never back-solve it from desired action or reuse the same uncertainty as another veto. "
@@ -6527,9 +6614,9 @@ def build_prompt(
         + wake_instruction
         + "Keep the entire response under 9000 characters. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
-        + "\nOUTPUT_CLOSURE: End each decision exactly with "
-        + "...,\"change_condition\":\"...\",\"final_choice\":\"SAME_AS_ACTION\"},\"wake_triggers\":[]}. "
-        + "decision_audit closes before wake_triggers."
+        + "\nOUTPUT_CLOSURE: Close decision_audit before decision-level wake_triggers and action-specific fields. "
+        + "Keep protection_updates inside its decision, not beside decisions at batch level. Close each decision "
+        + "only after all its fields, then close the decisions array and the batch object."
     )
     return apply_cognitive_overlay(prompt, journals.get("active_cognitive_overlay"))
 

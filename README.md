@@ -1,8 +1,8 @@
-# Glitch Hermes Profile v0.0.2.81
+# Glitch Hermes Profile v0.0.2.82
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
-v0.0.2.81 clarifies the two existing order-flow absorption examples: identify the passive side absorbing effort rather than reversing its meaning. These remain conditional evidence, not action rules. No calculations, probabilities, geometry, native execution, models, or schedules change.
+v0.0.2.82 chooses the meaningful auction move before constructing the entry bracket, explicitly checks fill-shifted geometry at both range edges, and supplies native-dollar/ATR conversions for existing market reference levels. No fixed stop floor, reward/risk gate, instrument preference, or new market signal is added. Narrow output recovery preserves unambiguously authored management fields and identical audit siblings; conflicting values and ambiguous ownership still fail. Native execution, replication, configured risk, model, schedules and learning remain unchanged.
 
 v0.0.2.80 narrows a false setup-deferral text match, supplies book-scoped native-leg serialization examples for management actions, and names the exact required verdict in existing management arithmetic repairs. Trading doctrine, probability checks, native execution, protection validation, models, and schedules are unchanged. See [the maintenance output review](docs/ledger/2026-09-10-maintenance-output-contract.md).
 
