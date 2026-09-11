@@ -213,4 +213,7 @@ def test_flat_prompt_prioritizes_auction_without_fixed_stops_or_more_confirmatio
     assert "numeric shifted stop/target pairs" in prompt
     assert "Anticipatory entry is allowed without a closed candle, retest or perfect flow" in prompt
     assert "Do not impose a stop floor or a preferred ratio" in prompt
+    assert "An earlier target touch completes the OLD forecast" in prompt
+    assert "Previously touched does not mean zero current room" in prompt
+    assert "never count the earlier touch as success or revive the old order/forecast" in prompt
     assert len(prompt.split("CURRENT_CYCLE=")[0]) < 12500

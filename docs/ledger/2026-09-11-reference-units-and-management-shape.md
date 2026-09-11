@@ -47,3 +47,22 @@ separately. None proves future profitability or zero defects.
 Rollback uses a scoped source revert and supported profile update, while retaining
 the verified configuration/learning/epoch checkpoint. No account, order or learner
 reset belongs to this release.
+
+## v0.0.2.83 - forecast completion does not retire a market level
+
+The natural v82 trigger review and following full scan both treated an earlier
+target touch as leaving no objective after price had moved away. The full scan
+then supplied nonnumeric geometry instead of comparing a fresh path. Existing
+references to an "unconsumed destination" did not clearly distinguish old forecast
+completion from present entry-to-level room.
+
+One paragraph in SOUL and the matching entry prompt now makes that distinction:
+an earlier touch ends the old forecast, not the usable price reference. A fresh
+return-to-level or extension hypothesis is assessed from current location and
+changed response, with new geometry and probabilities. A prior touch cannot count
+toward the new forecast and no expired order is revived. This does not require
+entry, assume the level will be reached again, or relax any admission check.
+
+The follow-up changes wording only; all worker mechanics and deterministic
+calculations remain as v82. A prompt-contract regression preserves the distinction
+alongside the existing no-fixed-gate and no-confirmation-prerequisite assertions.

@@ -1,6 +1,8 @@
-# Glitch Hermes Profile v0.0.2.82
+# Glitch Hermes Profile v0.0.2.83
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
+
+v0.0.2.83 clarifies forecast expiry versus reusable market structure: an earlier target touch completes the old forecast but does not permanently retire that price level. Fresh return-to-level or extension hypotheses use current geometry and new probabilities; no old order or forecast is revived. This is a wording-only follow-up to a live v82 review, with no validation, execution, schedule or risk change.
 
 v0.0.2.82 chooses the meaningful auction move before constructing the entry bracket, explicitly checks fill-shifted geometry at both range edges, and supplies native-dollar/ATR conversions for existing market reference levels. No fixed stop floor, reward/risk gate, instrument preference, or new market signal is added. Narrow output recovery preserves unambiguously authored management fields and identical audit siblings; conflicting values and ambiguous ownership still fail. Native execution, replication, configured risk, model, schedules and learning remain unchanged.
 
