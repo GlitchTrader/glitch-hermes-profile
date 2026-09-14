@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-11",
+  "updated": "2026-09-14",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -22,7 +22,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.85",
+        "distribution.yaml version 0.0.2.86",
         "docs/ledger/2026-09-04-weekend-release.md",
         "docs/ledger/2026-09-08-evidence-and-serialization-repair.md",
         "docs/ledger/2026-09-08-context-and-management-boundaries.md",
@@ -33,7 +33,8 @@
         "docs/ledger/2026-09-10-opportunity-and-delivery.md",
         "docs/ledger/2026-09-10-maintenance-output-contract.md",
         "docs/ledger/2026-09-11-reference-units-and-management-shape.md",
-        "docs/ledger/2026-09-11-maintenance-format-and-management.md"
+        "docs/ledger/2026-09-11-maintenance-format-and-management.md",
+        "docs/ledger/2026-09-14-trigger-field-recovery.md"
       ],
       "completed_at": "2026-08-05T22:55:14-03:00",
       "stop_line": "Do not replace removed recipes with another strategy, score, quota, or hidden gate."

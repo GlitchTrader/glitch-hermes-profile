@@ -159,3 +159,144 @@ def test_management_receipts_are_not_action_permission_and_noise_tolerance_remai
     assert "not merely an intact thesis or unspecified future management" in skill
     assert "Before material favorable excursion" in skill
     assert "not make a red mark or one adverse bar an exit rule" in skill
+
+
+TRIGGER_SELECTION_FIELDS = (
+    "ALTERNATIVE_CANDIDATES", "SELECTION_INSTRUMENT", "SELECTION_ACTION", "SELECTION_EV",
+)
+
+
+def trigger_selection_batch():
+    batch, scenario = valid_batch("2026-09-14T10:17:00.0000000Z")
+    values = {key: "Authored evidence." for key in DIRECT.TRIGGER_REVIEW_FIELDS}
+    values.update(
+        PRIOR_TRIGGER_REVIEW="HELD: original invalidation remains intact",
+        ALTERNATIVE_CANDIDATES="MES has less room; MNQ remains the selected comparison.",
+        SELECTION_INSTRUMENT="MNQ", SELECTION_ACTION="NOTHING",
+        SELECTION_EV="direction=LONG;entry=100;stop=98;target=104;risk_points=2;reward_points=4;"
+                     "friction_points=0;estimated_target_first_range=20%-30%;"
+                     "breakeven_target_first=33.33%;now_ev=NEGATIVE;wait_price=99;"
+                     "wait_ev=better price if reached;decisive_reason=Authored reason",
+    )
+    audit = batch["decisions"][0]["decision_audit"]
+    audit["decisive_evidence"] = "\n".join([
+        DIRECT.TRIGGER_REVIEW_MARKER,
+        *(f"{key}={value}" for key, value in values.items()),
+    ])
+    scenario["market"]["candidates"] = [{"instrument": "MNQ"}, {"instrument": "MES"}]
+    DIRECT.normalize_batch(batch, scenario)
+    return batch, scenario
+
+
+@pytest.mark.parametrize("fields", [TRIGGER_SELECTION_FIELDS, ("SELECTION_EV",)])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_misplaced_trigger_selection_fields_are_lossless_and_idempotent(fields, newline):
+    batch, scenario = trigger_selection_batch()
+    audit = batch["decisions"][0]["decision_audit"]
+    evidence = audit["decisive_evidence"]
+    values = dict(line.split("=", 1) for line in evidence.splitlines()[1:])
+    retained = [line for line in evidence.splitlines() if line.split("=", 1)[0] not in fields]
+    audit["decisive_evidence"] = newline.join(retained)
+    expected = copy.deepcopy(batch)
+    expected["decisions"][0]["decision_audit"]["decisive_evidence"] = (
+        audit["decisive_evidence"] + "".join(f"\n{key}={values[key]}" for key in fields)
+    )
+    for key in fields:
+        audit[key] = values[key]
+    DIRECT.normalize_batch(batch, scenario)
+    assert batch == expected  # No changed choice, probability, level, route or wake trigger.
+    DIRECT.validate_batch(batch, scenario)
+    DIRECT.normalize_batch(batch, scenario)
+    assert batch == expected
+
+
+@pytest.mark.parametrize("field", TRIGGER_SELECTION_FIELDS)
+def test_identical_trigger_selection_copy_collapses_but_conflict_stays_invalid(field):
+    batch, scenario = trigger_selection_batch()
+    expected = copy.deepcopy(batch)
+    audit = batch["decisions"][0]["decision_audit"]
+    values = dict(line.split("=", 1) for line in audit["decisive_evidence"].splitlines()[1:])
+    audit[field] = values[field]
+    DIRECT.normalize_batch(batch, scenario)
+    assert batch == expected
+    audit[field] = "Conflicting authored value"
+    DIRECT.normalize_batch(batch, scenario)
+    assert audit[field] == "Conflicting authored value"
+    with pytest.raises(ValueError, match="decision_audit_contract_invalid"):
+        DIRECT.validate_batch(batch, scenario)
+
+
+@pytest.mark.parametrize("value", ["", None, {}, "first\nsecond", "first\rsecond"])
+def test_invalid_trigger_selection_value_is_not_inferred(value):
+    batch, scenario = trigger_selection_batch()
+    audit = batch["decisions"][0]["decision_audit"]
+    before = audit["decisive_evidence"]
+    audit["ALTERNATIVE_CANDIDATES"] = value
+    DIRECT.normalize_batch(batch, scenario)
+    assert audit["decisive_evidence"] == before
+    assert "ALTERNATIVE_CANDIDATES" in audit
+    with pytest.raises(ValueError, match="decision_audit_contract_invalid"):
+        DIRECT.validate_batch(batch, scenario)
+
+
+def test_relocation_does_not_invent_missing_fields_or_change_other_modes():
+    batch, scenario = trigger_selection_batch()
+    audit = batch["decisions"][0]["decision_audit"]
+    audit["decisive_evidence"] = "\n".join(
+        line for line in audit["decisive_evidence"].splitlines()
+        if not line.startswith("ALTERNATIVE_CANDIDATES=")
+    )
+    DIRECT.normalize_batch(batch, scenario)
+    with pytest.raises(ValueError, match="trigger_review_field_missing:0:ALTERNATIVE_CANDIDATES"):
+        DIRECT.validate_batch(batch, scenario)
+    for marker in ("ordinary evidence", DIRECT.CANDIDATE_COMPARISON_MARKER,
+                   DIRECT.POSITION_MANAGEMENT_MARKER):
+        audit["decisive_evidence"] = marker
+        audit["ALTERNATIVE_CANDIDATES"] = "Authored value"
+        DIRECT.normalize_batch(batch)
+        assert audit["ALTERNATIVE_CANDIDATES"] == "Authored value"
+
+
+def test_misplaced_trigger_fields_keep_entry_payload_unchanged():
+    batch, scenario = trigger_selection_batch()
+    intent = batch["decisions"][0]
+    intent.update(action="ENTER_LONG", quantity=1, order_type="MARKET", stop_loss=98,
+                  take_profit_1=104, entry_range_low=99.5, entry_range_high=100.5,
+                  forecast={"event": "STOP_BEFORE_PRIMARY_TARGET", "probability": .4,
+                            "method": "Authored estimate", "confidence": .5})
+    audit = intent["decision_audit"]
+    audit["final_choice"] = "ENTER_LONG"
+    audit["decisive_evidence"] = audit["decisive_evidence"].replace(
+        "SELECTION_ACTION=NOTHING", "SELECTION_ACTION=ENTER_LONG")
+    DIRECT.normalize_batch(batch, scenario)
+    expected = copy.deepcopy(batch)
+    audit["SELECTION_ACTION"] = "ENTER_LONG"  # Identical misplaced duplicate.
+    DIRECT.normalize_batch(batch, scenario)
+    assert batch == expected
+    audit["SELECTION_ACTION"] = "ENTER_SHORT"
+    DIRECT.normalize_batch(batch, scenario)
+    assert intent["action"] == "ENTER_LONG"
+    assert audit["SELECTION_ACTION"] == "ENTER_SHORT"
+
+
+def test_misplaced_trigger_fields_do_not_need_an_extra_model_call(monkeypatch):
+    batch, scenario = trigger_selection_batch()
+    audit = batch["decisions"][0]["decision_audit"]
+    lines = audit["decisive_evidence"].splitlines()
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key in TRIGGER_SELECTION_FIELDS:
+            audit[key] = value
+    audit["decisive_evidence"] = "\n".join(
+        line for line in lines if line.partition("=")[0] not in TRIGGER_SELECTION_FIELDS)
+    calls = []
+
+    def invoke(*args, **kwargs):
+        calls.append(args)
+        return copy.deepcopy(batch)
+
+    monkeypatch.setattr(DIRECT, "invoke_hermes", invoke)
+    result, repairs, retries = DIRECT.invoke_validated_batch(
+        "glitch", "offline fixture", scenario, None, 60, decision_mode="trigger_review")
+    assert len(calls) == 1 and repairs == 0 and retries == 0
+    assert result["decisions"][0]["action"] == "NOTHING"

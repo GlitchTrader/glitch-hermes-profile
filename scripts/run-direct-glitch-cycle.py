@@ -3844,6 +3844,28 @@ def normalize_batch(
                                 audit["disconfirming_evidence"] = disconfirming
                                 audit["change_condition"] = condition
                                 evidence = decisive_evidence
+                if isinstance(evidence, str) and TRIGGER_REVIEW_MARKER in evidence:
+                    for field in (
+                        "ALTERNATIVE_CANDIDATES", "SELECTION_INSTRUMENT",
+                        "SELECTION_ACTION", "SELECTION_EV",
+                    ):
+                        value = audit.get(field)
+                        if (not isinstance(value, str) or not value.strip()
+                                or "\n" in value or "\r" in value):
+                            continue
+                        existing = re.findall(
+                            rf"(?mi)^{field}[ \t]*=[ \t]*([^\r\n]*)", evidence
+                        )
+                        if existing and (len(existing) != 1 or existing[0].strip() != value.strip()):
+                            continue
+                        # These trigger-review lines sometimes arrive as audit
+                        # siblings. Move only the authored single-line value or
+                        # collapse an identical copy. Conflicts remain invalid;
+                        # all semantic and execution checks still run afterward.
+                        if not existing:
+                            evidence = evidence.rstrip() + f"\n{field}=" + value.strip()
+                        audit.pop(field)
+                    audit["decisive_evidence"] = evidence
                 misplaced_reason = audit.get("SELECTION_REASON")
                 has_selection_ledger = (
                     isinstance(evidence, str)
