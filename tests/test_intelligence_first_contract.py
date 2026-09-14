@@ -96,7 +96,8 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         self.assertIn("not a guarantee or a required range width", intent)
         self.assertIn("never widen an issued range to defeat revalidation", intent)
         self.assertIn("each level + range edge - decision reference", intent)
-        self.assertIn("actual touch stop still survives the stated normal pullback at both edges", intent)
+        self.assertIn("the shifted long stop stays below the chosen failure boundary, the short stop above it, at both edges", intent)
+        self.assertIn("preserved dollar risk does not prove that", intent)
 
 
 if __name__ == "__main__":

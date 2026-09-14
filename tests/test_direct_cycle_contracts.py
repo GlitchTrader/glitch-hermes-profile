@@ -1535,7 +1535,7 @@ def test_run_once_skips_only_new_model_work_after_native_capture(tmp_path, monke
     monkeypatch.setattr(DIRECT, "build_scenario", lambda *_: scenario)
     monkeypatch.setattr(DIRECT, "active_trade_state", lambda *_: {})
     monkeypatch.setattr(DIRECT, "scoped_native_position_transition_after_packet", lambda *_: None)
-    monkeypatch.setattr(DIRECT, "model_call_admission_reason", lambda *_: None)
+    monkeypatch.setattr(DIRECT, "model_call_admission_reason", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(DIRECT, "repeated_packet_is_suppressed", lambda *_: False)
     monkeypatch.setattr(DIRECT, "read_operator_directive", lambda *_: None)
     monkeypatch.setattr(DIRECT, "invocation_reason", lambda *_args, **_kwargs: pytest.fail("should not prepare a model call"))

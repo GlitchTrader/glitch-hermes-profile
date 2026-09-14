@@ -9,6 +9,7 @@ Glitch's existing authenticated firewall. Codex is not part of this process.
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import hashlib
 import json
@@ -163,6 +164,49 @@ def cognitive_bundle_hash() -> str:
 
 
 DIRECT_PROMPT_VERSION = f"{DIRECT_PROMPT_REVISION}-{cognitive_bundle_hash()}"
+
+
+def guidance_cognition_hash(profile_root: Path | None = None) -> str:
+    """Compatibility of advisory prose, not decision/overlay release provenance.
+
+    Include the actual prompt assembly, templates, input projections and math
+    sources. Output parsers and transport do not change the guidance's meaning.
+    The full runner hash above remains authoritative for decisions and promotion.
+    """
+    profile_root = profile_root or Path(__file__).resolve().parent.parent
+    symbols = {
+        "CORE_MODEL", "DIRECT_PROMPT_REVISION", "ACTIONS", "DECISION_AUDIT_FIELD_ORDER",
+        "CANDIDATE_COMPARISON_MARKER", "CANDIDATE_COMPARISON_FIELDS",
+        "TRIGGER_REVIEW_MARKER", "TRIGGER_REVIEW_FIELDS",
+        "POSITION_MANAGEMENT_MARKER", "POSITION_MANAGEMENT_FIELDS",
+        "build_prompt", "contract_repair_prompt", "candidate_comparison_template",
+        "trigger_review_template", "position_management_template",
+        "packet_for_model", "scenario_for_model", "ledger_for_model",
+        "_compact_model_instrument", "deterministic_geometry_context",
+        "attach_reference_distance_math", "management_payload_contract",
+        "positioned_instruments", "all_scoped_books_positioned",
+    }
+    digest = hashlib.sha256(b"glitch.guidance-cognition.v1\0")
+    for relative_path in COGNITIVE_BUNDLE_RELATIVE_PATHS:
+        data = (profile_root / relative_path).read_bytes()
+        if relative_path == "scripts/run-direct-glitch-cycle.py":
+            nodes = []
+            found = set()
+            for node in ast.parse(data).body:
+                names = ({node.name} if isinstance(node, ast.FunctionDef) else {
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                } if isinstance(node, ast.Assign) else set())
+                if names & symbols:
+                    nodes.append(ast.dump(node, include_attributes=False))
+                    found.update(names & symbols)
+            if found != symbols:
+                raise ValueError("guidance_cognition_symbols_missing")
+            data = "\n".join(nodes).encode("utf-8")
+        digest.update(relative_path.encode("utf-8") + b"\0" + data + b"\0")
+    return digest.hexdigest()
+
+
+GUIDANCE_COGNITION_HASH = guidance_cognition_hash()
 
 
 def base_prompt_version(value: Any) -> str:
@@ -1066,7 +1110,16 @@ def read_trading_learning_artifact(path: Path, schema_version: str) -> dict[str,
     return value if (
         value
         and value.get("trading_influence") == "outcome_backed"
-        and value.get("decision_prompt_version") == DIRECT_PROMPT_VERSION
+        and (
+            (
+                "guidance_cognition_hash" not in value
+                and value.get("decision_prompt_version") == DIRECT_PROMPT_VERSION
+            ) or (
+                schema_version == CURRENT_GUIDANCE_SCHEMA
+                and bool(value.get("decision_prompt_version"))
+                and value.get("guidance_cognition_hash") == GUIDANCE_COGNITION_HASH
+            )
+        )
     ) else None
 
 
@@ -4469,6 +4522,10 @@ def packet_for_model(
                 )
             ]
             market["instrument_count"] = len(market["instruments"])
+            if active_roots:
+                market["fresh_instrument_count"] = sum(
+                    row.get("is_fresh") is True for row in instruments
+                )
             if not latest_frame:
                 frame["market_snapshot"] = {
                     key: market.get(key) for key in (
@@ -6545,11 +6602,15 @@ def build_prompt(
             "a disadvantage of choosing it. A receipt is needed only before claiming the exit happened. If unchanged-"
             "bracket HOLD value is negative, an intact thesis alone cannot justify HOLD: identify the current evidence "
             "and supported managed alternative that outweigh EXIT, rather than relying on unspecified future rescue. "
+            "STRADDLES is uncertainty, not negative value or proof that EXIT wins. Do not reapply the fresh-entry "
+            "confidence hurdle each minute. Explain what changed from the entry plan; ordinary movement already "
+            "allowed by it is not new deterioration, and small sampled MFE is not material earned profit. "
             "Never widen a stop or move mechanically to breakeven. Extend a working target only when current evidence "
             "already supports the farther destination, before the old target fills, with a non-loosening supported stop "
             "in the same MOVE_TP update. Do not wait for price to trade beyond a target that will already close the position. "
             "Begin HOLD_EV with target_before_stop_probability_range=LOW%-HIGH%;"
             "target_before_stop_break_even=VALUE%;gross_hold_terminal_ev=POSITIVE|NEGATIVE|STRADDLES;reason=... . "
+            "Give current numeric probability bounds even if unchanged; NOT_REESTIMATED is not a numeric range. "
             "hold_target_before_stop_break_even_probability is the required TARGET-first probability, not STOP-first. "
             "Its complement is hold_stop_before_target_maximum_probability. Above/below/straddling the hurdle determines "
             "the arithmetic verdict, not which management action wins. This is unchanged-bracket gross terminal value, "
@@ -6605,8 +6666,10 @@ def build_prompt(
             "puts the existing levels in instrument-specific dollars and 1m/5m ATR units, before costs; these are not signals. "
             "Its entry_execution is the native contract: stops and targets shift by fill minus decision reference. "
             "Judge stop survival and destination at both entry-range edges: in the existing entry-range field give "
-            "the numeric shifted stop/target pairs, using level + range_edge - reference. A touch stop must remain outside "
-            "the described valid pullback at both edges, not depend on sustained acceptance after it would already fill. "
+            "the numeric shifted stop/target pairs, using level + range_edge - reference. Check the actual inequality: "
+            "the shifted long stop stays below the chosen failure boundary, the short stop above it, at both edges. "
+            "Preserved dollar risk does not prove structural survival. If it fails, correct the authored offset or "
+            "executable zone; do not keep a contradictory bracket and merely call it robust. "
             "Do not promise fixed chart prices or rescue marginal geometry with an assumed future managed exit. "
             "The frozen range wholly above the cost-adjusted hurdle means POSITIVE, wholly below NEGATIVE, otherwise "
             "UNCERTAIN (0.5 percentage-point rounding tolerance). Include all named uncertainty in the range once; "
@@ -6771,8 +6834,10 @@ def market_snapshot_is_fresh(packet: dict[str, Any], max_age_seconds: int | None
     return age is not None and -60 <= age <= max_age_seconds
 
 
-def model_market_package_is_fresh(packet: dict[str, Any]) -> bool:
-    """Require every instrument in the model package to be natively fresh."""
+def model_market_package_is_fresh(
+    packet: dict[str, Any], required_instruments: set[str] | None = None,
+) -> bool:
+    """Require all data used by this pass; None retains full-universe admission."""
     if not packet_is_current(packet) or not market_snapshot_is_fresh(packet):
         return False
     if packet.get("is_contiguous") is not True or packet.get("frame_count") != 5:
@@ -6791,6 +6856,30 @@ def model_market_package_is_fresh(packet: dict[str, Any]) -> bool:
         coverage = market.get("coverage")
         fresh_count = market.get("fresh_instrument_count")
         instrument_count = market.get("instrument_count")
+        if required_instruments is not None:
+            if (
+                not required_instruments
+                or not isinstance(instruments, list)
+                or not isinstance(coverage, list)
+                or type(instrument_count) is not int
+                or instrument_count != len(instruments)
+                or len(coverage) != len(instruments)
+            ):
+                return False
+            for rows in (instruments, coverage):
+                selected = [
+                    row for row in rows if isinstance(row, dict)
+                    and instrument_root(row.get("instrument_root") or row.get("instrument"))
+                    in required_instruments
+                ]
+                if (
+                    len(selected) != len(required_instruments)
+                    or {instrument_root(row.get("instrument_root") or row.get("instrument"))
+                        for row in selected} != required_instruments
+                    or any(row.get("is_fresh") is not True for row in selected)
+                ):
+                    return False
+            return True
         return bool(
             isinstance(instruments, list)
             and instruments
@@ -6805,7 +6894,19 @@ def model_market_package_is_fresh(packet: dict[str, Any]) -> bool:
             and all(isinstance(row, dict) and row.get("is_fresh") is True for row in instruments)
         )
 
-    return all(frame_is_fresh(frame) for frame in frames)
+    if not all(frame_is_fresh(frame) for frame in frames):
+        return False
+    if required_instruments is not None:
+        # A fresh unrelated root must not mask an aged held instrument either.
+        for row in frames[-1]["market_snapshot"]["instruments"]:
+            if (isinstance(row, dict)
+                and instrument_root(row.get("instrument_root") or row.get("instrument")) in required_instruments):
+                scoped = {"policy": packet.get("policy"), "frames": [{
+                    "market_snapshot": {"instruments": [row]},
+                }]}
+                if not market_snapshot_is_fresh(scoped):
+                    return False
+    return True
 
 
 def packet_trading_session_is_open(packet: dict[str, Any]) -> bool:
@@ -6829,6 +6930,7 @@ def model_call_admission_reason(
     glitch_data: Path,
     packet: dict[str, Any],
     now: datetime | None = None,
+    scenario: dict[str, Any] | None = None,
 ) -> str | None:
     """Return why no Glitch model call may start; fail closed on missing evidence."""
     try:
@@ -6839,7 +6941,10 @@ def model_call_admission_reason(
             return maintenance
         if not packet_trading_session_is_open(packet):
             return "market_session_closed"
-        if not model_market_package_is_fresh(packet):
+        required = {
+            root for book in scenario["books"] for root in positioned_instruments(book)
+        } if scenario is not None and all_scoped_books_positioned(scenario) else None
+        if not model_market_package_is_fresh(packet, required):
             return "stale_market_package"
         if not feed_observation_is_fresh(glitch_data):
             return "stale_feed_observation"
@@ -7346,7 +7451,10 @@ def run_once(
         })
         return 0
 
-    admission_reason = model_call_admission_reason(glitch_data, packet)
+    # Explicit entry reassessments retain full-scan/image admission even if a
+    # position appeared since the superseded entry requested its follow-up.
+    admission_scenario = scenario if reassessment_request is None else None
+    admission_reason = model_call_admission_reason(glitch_data, packet, scenario=admission_scenario)
     if admission_reason is not None:
         append_event(events_path, {
             "schema_version": "glitch.hermes.cycle_event.v1",
@@ -7460,18 +7568,22 @@ def run_once(
     })
 
     def current_model_call_admission() -> str | None:
-        original_reason = model_call_admission_reason(glitch_data, packet)
+        original_reason = model_call_admission_reason(glitch_data, packet, scenario=admission_scenario)
         if original_reason is not None:
             return original_reason
         try:
             current_packet = read_json(packet_path)
+            current_scenario = build_scenario(current_packet)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return "decision_packet_unavailable"
-        current_reason = model_call_admission_reason(glitch_data, current_packet)
-        if current_reason is not None:
-            return current_reason
         if scoped_master_position_change(packet, current_packet, scenario) is not None:
             return "position_state_changed_since_prompt"
+        current_reason = model_call_admission_reason(
+            glitch_data, current_packet,
+            scenario=current_scenario if reassessment_request is None else None,
+        )
+        if current_reason is not None:
+            return current_reason
         if scoped_native_position_transition_after_packet(
             current_packet, scenario, glitch_data
         ) is not None:

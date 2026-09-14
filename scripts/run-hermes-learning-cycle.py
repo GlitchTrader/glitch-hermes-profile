@@ -2213,6 +2213,7 @@ def persist_hourly(record: dict[str, Any], supervisor: Path, episode_ids: list[s
         "recorded_utc": record.get("recorded_utc") or utc_now(),
         "source_review_id": record["review_id"],
         "decision_prompt_version": DIRECT.DIRECT_PROMPT_VERSION,
+        "guidance_cognition_hash": DIRECT.GUIDANCE_COGNITION_HASH,
         "trading_influence": "outcome_backed" if trade_count >= 2 else "observational",
         "trade_episode_count": trade_count,
         "decision_episode_count": decision_count,

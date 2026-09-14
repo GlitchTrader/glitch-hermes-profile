@@ -1,8 +1,8 @@
-# Glitch Hermes Profile v0.0.2.86
+# Glitch Hermes Profile v0.0.2.87
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
-v0.0.2.86 restores four explicitly authored trigger-review ledger fields when serialized as audit siblings. Identical copies collapse; conflicting, missing, multiline or non-string values are not inferred. All existing decision, probability, geometry and native validation remains. No trading prompt, native code, model, cadence or learning rule changes. See [the format repair](docs/ledger/2026-09-14-trigger-field-recovery.md).
+v0.0.2.87 matches management freshness checks to the held-instrument payload, preserves compatible outcome-backed advisory guidance across parser-only releases, and clarifies fill-shifted stop survival and uncertain HOLD-versus-EXIT comparisons. Full-market scans, learner admission, exact release attribution, lesson promotion, native execution, models and cadence remain unchanged. See [the bounded management repair](docs/ledger/2026-09-14-management-continuity.md). The [v0.0.2.86 format repair](docs/ledger/2026-09-14-trigger-field-recovery.md) is retained.
 
 v0.0.2.85 preserves Windows CRLF line-ending compatibility in the selection parser introduced by v84. Root/scope checks, accepted contract suffixes and all cognitive/numeric rules are unchanged.
 
