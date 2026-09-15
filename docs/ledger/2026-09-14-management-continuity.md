@@ -8,6 +8,9 @@
 - Cognition checks the actual shifted stop against its selected failure boundary at both entry-range edges. Equal dollar risk does not establish stop survival through a still-valid pullback. Adjust authored offsets or the executable zone without inventing a different thesis; no native translation change or new numeric gate.
 - STRADDLES remains uncertainty, not negative expected value or proof that EXIT wins. Repeated fresh-entry confidence tests must not replace comparison against the existing entry plan. Insignificant sampled MFE is not material earned profit. Exits before original invalidation remain permitted for specific deterioration, expiry or binding constraints; HOLD is not compulsory. Numeric probability bounds remain required, even when unchanged.
 
+Advisory fingerprints hash the selected source segments, not interpreter-specific
+AST dumps; identical cognition remains compatible across supported Python runtimes.
+
 ## Protected behavior
 
 No NinjaTrader source, execution, replication, protection, Flatten All, account,

@@ -192,12 +192,15 @@ def guidance_cognition_hash(profile_root: Path | None = None) -> str:
         if relative_path == "scripts/run-direct-glitch-cycle.py":
             nodes = []
             found = set()
-            for node in ast.parse(data).body:
+            worker_source = data.decode("utf-8").replace("\r\n", "\n")
+            for node in ast.parse(worker_source).body:
                 names = ({node.name} if isinstance(node, ast.FunctionDef) else {
                     target.id for target in node.targets if isinstance(target, ast.Name)
                 } if isinstance(node, ast.Assign) else set())
                 if names & symbols:
-                    nodes.append(ast.dump(node, include_attributes=False))
+                    # AST locates source; its dump schema differs across Python
+                    # versions even when the model-facing source is identical.
+                    nodes.append(ast.get_source_segment(worker_source, node))
                     found.update(names & symbols)
             if found != symbols:
                 raise ValueError("guidance_cognition_symbols_missing")
