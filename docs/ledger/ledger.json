@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-14",
+  "updated": "2026-09-16",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -22,7 +22,9 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.87",
+        "distribution.yaml version 0.0.2.88",
+        "docs/ledger/2026-09-16-feed-contract-geometry.md",
+        "tests/test_feed_geometry_repair.py",
         "docs/ledger/2026-09-04-weekend-release.md",
         "docs/ledger/2026-09-08-evidence-and-serialization-repair.md",
         "docs/ledger/2026-09-08-context-and-management-boundaries.md",
@@ -117,7 +119,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.87"
+        "distribution_version": "0.0.2.88"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

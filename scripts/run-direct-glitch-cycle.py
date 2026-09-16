@@ -2389,6 +2389,7 @@ def latest_prior_cognition(
                 event["deterministic_selection_math"] = deterministic_selection_math(
                     selection_ev.group(1),
                     decision.get("forecast"),
+                    submitted_selection_geometry(decision),
                 )
             break
         if event is None:
@@ -3147,14 +3148,19 @@ def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
 def deterministic_selection_math(
     value: str,
     forecast: dict[str, Any] | None = None,
+    geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reconcile proposed levels exactly without approving or suppressing an intent."""
     fields = _selection_ev_fields(value) if isinstance(value, str) else {}
-    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields.get("direction", ""))
+    direction_match = re.match(r"(?i)^\s*(?:(?:MES|MNQ|M2K)\s+)?(LONG|SHORT)\b", fields.get("direction", ""))
     direction = direction_match.group(1).upper() if direction_match else None
     entry = _first_unsigned_number(fields.get("entry"))
+    if geometry is None and re.search(r"\d\s*(?:-|–|to)\s*\d", fields.get("entry", "")):
+        entry = None  # An authored range is not the native decision reference.
     stop = _first_unsigned_number(fields.get("stop"))
     target = _first_unsigned_number(fields.get("target"))
+    if geometry is not None:
+        direction, entry, stop, target = (geometry.get(key) for key in ("direction", "entry", "stop", "target"))
     friction = _first_unsigned_number(fields.get("friction_points"))
     declared_risk = _first_unsigned_number(fields.get("risk_points"))
     declared_reward = _first_unsigned_number(fields.get("reward_points"))
@@ -3167,6 +3173,7 @@ def deterministic_selection_math(
         "status": "incomplete",
         "formula": "(risk_points + friction_points) / (risk_points + reward_points)",
         "direction": direction,
+        "geometry_basis": "submitted_primary_leg_and_packet_reference" if geometry else "authored_selection_levels",
         "entry": entry,
         "stop": stop,
         "target": target,
@@ -3256,9 +3263,14 @@ def canonicalize_selection_ev_math(
     forecast: dict[str, Any] | None = None,
     *,
     canonicalize_abstention_verdict: bool = False,
+    geometry: dict[str, Any] | None = None,
 ) -> str:
     """Own exact arithmetic while preserving Hermes-authored geometry and judgment."""
-    support = deterministic_selection_math(value, forecast)
+    authored_direction = re.match(r"(?i)^\s*(?:(?:MES|MNQ|M2K)\s+)?(LONG|SHORT)\b",
+                                  _selection_ev_fields(value).get("direction", ""))
+    if geometry and authored_direction and authored_direction.group(1).upper() != geometry["direction"]:
+        return value  # Preserve contradictory authored intent for the existing validator/repair.
+    support = deterministic_selection_math(value, forecast, geometry)
     if support.get("status") != "complete":
         return value
     replacements = {
@@ -3268,6 +3280,10 @@ def canonicalize_selection_ev_math(
             float(support["computed_breakeven_target_first"])
         ),
     }
+    if geometry is not None:
+        replacements.update(direction=str(geometry["direction"]), **{
+            key: _compact_decimal(float(geometry[key])) for key in ("entry", "stop", "target")
+        })
     if (
         canonicalize_abstention_verdict
         and "verdict_range_mismatch" in support["calculation_issues"]
@@ -3296,7 +3312,32 @@ def canonicalize_selection_ev_math(
     return result
 
 
-def canonicalize_batch_selection_math(batch: dict[str, Any]) -> int:
+def submitted_selection_geometry(
+    intent: dict[str, Any], scenario: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Primary-leg geometry exactly as the native fill-offset executor sees it."""
+    action = intent.get("action")
+    if action not in {"ENTER_LONG", "ENTER_SHORT"}:
+        return None
+    root = instrument_root(intent.get("instrument"))
+    candidates = ((scenario or {}).get("market") or {}).get("candidates", [])
+    candidate = next((row for row in candidates if isinstance(row, dict)
+        and instrument_root(row.get("instrument") or row.get("instrument_root")) == root), {})
+    reference = candidate.get("current_price")
+    if reference is None:
+        revalidation = intent.get("entry_revalidation")
+        reference = revalidation.get("source_price") if isinstance(revalidation, dict) else None
+    try:
+        entry, stop, target = float(reference), float(intent["stop_loss"]), float(intent["take_profit_1"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(number) and number > 0 for number in (entry, stop, target)):
+        return None
+    return {"direction": "LONG" if action == "ENTER_LONG" else "SHORT",
+            "entry": entry, "stop": stop, "target": target}
+
+
+def canonicalize_batch_selection_math(batch: dict[str, Any], scenario: dict[str, Any] | None = None) -> int:
     """Canonicalize only deterministic SELECTION_EV fields in model-authored text."""
     corrected = 0
     for intent in batch.get("decisions") or []:
@@ -3314,6 +3355,7 @@ def canonicalize_batch_selection_math(batch: dict[str, Any]) -> int:
             canonical = canonicalize_selection_ev_math(
                 original, forecast,
                 canonicalize_abstention_verdict=intent.get("action") == "NOTHING",
+                geometry=submitted_selection_geometry(intent, scenario),
             )
             if canonical != original:
                 corrected += 1
@@ -3363,7 +3405,7 @@ def validate_selection_ev(
             observations.append(f"selection_ev_entry_not_positive:{index}:{source}")
         # Positive unchanged-bracket value does not prove NOW beats WAIT.
         # Hermes must explain its alternative; code must not originate an order.
-    direction_match = re.match(r"(?i)^\s*(LONG|SHORT)\b", fields.get("direction", ""))
+    direction_match = re.match(r"(?i)^\s*(?:(?:MES|MNQ|M2K)\s+)?(LONG|SHORT)\b", fields.get("direction", ""))
     if not direction_match:
         observations.append(f"selection_ev_direction_invalid:{index}:{source}")
         direction = None
@@ -5499,7 +5541,7 @@ def invoke_validated_batch(
             batch,
             allow_not_applicable=prior_cognition is None,
         )
-        canonicalize_batch_selection_math(batch)
+        canonicalize_batch_selection_math(batch, scenario)
         if normalized_source is None:
             # Compare the same canonical representation on both sides of a
             # repair. Raw wire aliases may differ from the authored selection.
@@ -5536,7 +5578,7 @@ def invoke_validated_batch(
         failed_output: Any = error.output if isinstance(error, InvalidModelResponseError) else raw
         if isinstance(failed_output, dict):
             failed_output = copy.deepcopy(failed_output)
-            canonicalize_batch_selection_math(failed_output)
+            canonicalize_batch_selection_math(failed_output, scenario)
         # The correction is contract-only or same-evidence self-consistency;
         # the original visual evidence must not invite a second market judgment.
         repair_source = normalized_source if normalized_source is not None else failed_output

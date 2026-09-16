@@ -25,7 +25,7 @@ from typing import Any, Iterable
 
 
 SCHEMA_VERSION = "glitch.hermes.market_perception.v2"
-STATE_SCHEMA_VERSION = "glitch.hermes.market_perception_state.v2"
+STATE_SCHEMA_VERSION = "glitch.hermes.market_perception_state.v3"
 MAX_BARS = 420
 MAX_SAMPLES = 420
 MAX_BACKFILL_FRAMES = 180
@@ -194,8 +194,13 @@ def _bar_from_instrument(frame: dict[str, Any], row_1m: dict[str, Any]) -> dict[
 
 def _instrument_slot(state: dict[str, Any], instrument: dict[str, Any], root: str) -> dict[str, Any]:
     slots = state.setdefault("instruments", {})
+    contract = str(instrument.get("instrument_full_name") or instrument.get("instrument") or root).upper()
+    if root in slots and slots[root].get("instrument_full_name") != contract:
+        # Derived chart history is contract-specific. Raw frames and all learning
+        # remain untouched; never interpret a rollover basis gap as a market move.
+        slots[root] = {"bars": [], "samples": []}
     slot = slots.setdefault(root, {"bars": [], "samples": []})
-    slot["instrument_full_name"] = instrument.get("instrument_full_name") or instrument.get("instrument")
+    slot["instrument_full_name"] = contract
     economics = instrument.get("instrument_economics")
     if isinstance(economics, dict):
         slot["economics"] = {
@@ -213,7 +218,7 @@ def _instrument_slot(state: dict[str, Any], instrument: dict[str, Any], root: st
     return slot
 
 
-def ingest_frame(state: dict[str, Any], frame: dict[str, Any]) -> None:
+def ingest_frame(state: dict[str, Any], frame: dict[str, Any], contracts: dict[str, str] | None = None) -> None:
     frame_id = str(frame.get("minute_id") or "")
     market = frame.get("market_snapshot")
     if not frame_id or not isinstance(market, dict):
@@ -224,6 +229,13 @@ def ingest_frame(state: dict[str, Any], frame: dict[str, Any]) -> None:
         root = _root(instrument.get("instrument") or instrument.get("instrument_root"))
         row_1m = _timeframe(instrument, 1)
         if not root or row_1m is None:
+            continue
+        contract = str(instrument.get("instrument_full_name") or instrument.get("instrument") or root).upper()
+        if contracts and contracts.get(root, contract) != contract:
+            continue
+        native_contract = (_nested(row_1m, "descriptive_state", "native_observations", "instrument_full_name")
+                           or _nested(row_1m, "native_observations", "instrument_full_name"))
+        if native_contract and str(native_contract).upper() != contract:
             continue
         slot = _instrument_slot(state, instrument, root)
         bar = _bar_from_instrument(frame, row_1m)
@@ -271,10 +283,21 @@ def update_state_from_exchange(
 ) -> dict[str, Any]:
     """Catch up from retained frames without ever reading beyond this packet."""
     ceiling = _packet_ceiling(packet)
+    contracts: dict[str, str] = {}
+    packet_frames = [frame for frame in packet.get("frames", []) if isinstance(frame, dict)]
+    for frame in sorted(packet_frames, key=lambda value: str(value.get("minute_id") or "")):
+        for instrument in (frame.get("market_snapshot") or {}).get("instruments", []):
+            root = _root(instrument.get("instrument") or instrument.get("instrument_root"))
+            if root:
+                contracts[root] = str(instrument.get("instrument_full_name") or instrument.get("instrument") or root).upper()
     if str(state.get("last_source_frame_id") or "") > ceiling:
         state = _empty_state()
     directory = exchange / "glitch" / "minute-frames"
     previous = str(state.get("last_source_frame_id") or "")
+    if any(root in state.get("instruments", {})
+           and state["instruments"][root].get("instrument_full_name") != contract
+           for root, contract in contracts.items()):
+        previous = ""  # bounded, causal backfill for the newly selected contract
     try:
         paths = [
             path for path in sorted(directory.glob("*.json"))
@@ -288,10 +311,10 @@ def update_state_from_exchange(
         except (OSError, ValueError, TypeError):
             continue
         if isinstance(frame, dict):
-            ingest_frame(state, frame)
+            ingest_frame(state, frame, contracts)
     for frame in packet.get("frames", []):
         if isinstance(frame, dict) and (not ceiling or str(frame.get("minute_id") or "") <= ceiling):
-            ingest_frame(state, frame)
+            ingest_frame(state, frame, contracts)
     return state
 
 

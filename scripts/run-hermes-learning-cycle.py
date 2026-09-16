@@ -383,6 +383,7 @@ def _selection_ev_probability_range(value: Any) -> tuple[float, float] | None:
 def selection_ev_arithmetic_audit(
     decision_audit: Any,
     forecast: Any = None,
+    geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Derive probability and EV consistency evidence; never alter an intent."""
     result: dict[str, Any] = {
@@ -400,9 +401,10 @@ def selection_ev_arithmetic_audit(
         result["reason"] = "selection_ev_missing"
         return result
     fields = DIRECT._selection_ev_fields(match.group(1))
-    risk = DIRECT._first_unsigned_number(fields.get("risk_points"))
-    reward = DIRECT._first_unsigned_number(fields.get("reward_points"))
-    friction = DIRECT._first_unsigned_number(fields.get("friction_points"))
+    support = DIRECT.deterministic_selection_math(match.group(1), forecast, geometry)
+    risk = support.get("computed_risk_points")
+    reward = support.get("computed_reward_points")
+    friction = support.get("friction_points")
     declared = DIRECT._first_unsigned_number(fields.get("breakeven_target_first"))
     if declared is not None and ("%" in fields.get("breakeven_target_first", "") or declared > 1):
         declared /= 100
@@ -414,15 +416,17 @@ def selection_ev_arithmetic_audit(
         return result
     deterministic = (risk + friction) / (risk + reward)
     error = abs(declared - deterministic)
-    arithmetic_status = "reconciled" if error <= 0.01 else "mismatch"
+    geometry_mismatch = any(issue in support["calculation_issues"] for issue in (
+        "declared_risk_mismatch", "declared_reward_mismatch"))
+    arithmetic_status = "reconciled" if error <= 0.01 and not geometry_mismatch else "mismatch"
     estimated_range = _selection_ev_probability_range(
         fields.get("estimated_target_first_range")
     )
     if estimated_range is None:
         range_relation = None
-    elif estimated_range[0] > deterministic + 0.01:
+    elif estimated_range[0] > deterministic:
         range_relation = "above_break_even"
-    elif estimated_range[1] < deterministic - 0.01:
+    elif estimated_range[1] < deterministic:
         range_relation = "below_break_even"
     else:
         range_relation = "straddles_break_even"
@@ -467,6 +471,8 @@ def selection_ev_arithmetic_audit(
         "absolute_error_percentage_points": round(error * 100, 4),
         "tolerance_percentage_points": 1.0,
         "arithmetic_status": arithmetic_status,
+        "geometry_basis": support["geometry_basis"],
+        "calculation_issues": support["calculation_issues"],
         "estimated_target_first_range": (
             {"low": estimated_range[0], "high": estimated_range[1]}
             if estimated_range is not None else None
@@ -582,7 +588,8 @@ def entry_decision_context(
             "decision_audit": entry_intent.get("decision_audit"),
         },
         "selection_ev_arithmetic": selection_ev_arithmetic_audit(
-            entry_intent.get("decision_audit"), entry_intent.get("forecast")
+            entry_intent.get("decision_audit"), entry_intent.get("forecast"),
+            DIRECT.submitted_selection_geometry(entry_intent, scenario),
         ),
         "pre_entry": book.get("position_building_context"),
         "decision_reference_price": decision_reference_price,
@@ -1079,7 +1086,8 @@ def collect_decision_episodes(
                 "reason": intent.get("reason"),
                 "decision_audit": intent.get("decision_audit"),
                 "selection_ev_arithmetic": selection_ev_arithmetic_audit(
-                    intent.get("decision_audit"), intent.get("forecast")
+                    intent.get("decision_audit"), intent.get("forecast"),
+                    DIRECT.submitted_selection_geometry(intent, scenario),
                 ),
                 "prior_cognition": prior_cognition,
                 "pre_decision_state": {
