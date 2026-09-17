@@ -1302,6 +1302,7 @@ def test_active_trade_state_starts_fresh_after_native_flat_boundary(tmp_path: Pa
         "planned_stop": 29485.25,
         "planned_targets": [29593],
         "reason": None,
+        "geometry_context": {},
         "disconfirming_evidence": None,
         "change_condition": None,
     }]

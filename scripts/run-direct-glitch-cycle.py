@@ -182,6 +182,7 @@ def guidance_cognition_hash(profile_root: Path | None = None) -> str:
         "build_prompt", "contract_repair_prompt", "candidate_comparison_template",
         "trigger_review_template", "position_management_template",
         "packet_for_model", "scenario_for_model", "ledger_for_model",
+        "active_trade_state", "entry_plan_geometry", "_instrument_comparison_section",
         "_compact_model_instrument", "deterministic_geometry_context",
         "attach_reference_distance_math", "management_payload_contract",
         "positioned_instruments", "all_scoped_books_positioned",
@@ -1497,6 +1498,25 @@ def initial_risk_for_entries(
     return result
 
 
+def entry_plan_geometry(intent: dict[str, Any]) -> dict[str, str]:
+    """Carry only the selected entry's authored path/geometry, without reinterpreting it."""
+    audit = intent.get("decision_audit")
+    text = str(audit.get("decisive_evidence") or "") if isinstance(audit, dict) else ""
+    if CANDIDATE_COMPARISON_MARKER in text:
+        text = _instrument_comparison_section(text, str(intent.get("instrument") or ""))
+        fields = {"CURRENT_AUCTION", "OBJECTIVE_INVALIDATION", "ENTRY_RANGE", "NOISE_AND_GEOMETRY"}
+        fields.add("BULLISH_PATH" if intent.get("action") == "ENTER_LONG" else "BEARISH_PATH")
+    elif TRIGGER_REVIEW_MARKER in text:
+        fields = {"CURRENT_AUCTION", "REMAINING_OBJECTIVE_INVALIDATION", "ENTRY_RANGE_NOISE_GEOMETRY"}
+    else:
+        return {}
+    labels = list(re.finditer(r"(?m)^(?:[-*][ \t]*)?([A-Z][A-Z0-9_]*)[ \t]*=[ \t]*", text))
+    return {
+        label.group(1): text[label.end():labels[index + 1].start() if index + 1 < len(labels) else len(text)].strip()
+        for index, label in enumerate(labels) if label.group(1) in fields
+    }
+
+
 def active_trade_state(
     packet: dict[str, Any],
     scenario: dict[str, Any],
@@ -1526,6 +1546,13 @@ def active_trade_state(
         row for row in _jsonl_objects(glitch_data / "intents" / "executions.jsonl")
         if _at_or_before(row.get("recorded_utc"), as_of)
     ]
+    latest_execution_results: dict[str, dict[str, Any]] = {}
+    for row in sorted(executions, key=lambda item: _utc_datetime(item.get("recorded_utc"))
+                      or datetime.min.replace(tzinfo=timezone.utc)):
+        if row.get("intent_id"):
+            latest_execution_results[str(row["intent_id"])] = {
+                key: row.get(key) for key in ("recorded_utc", "status", "code", "message")
+            }
     native_entry_times = _native_entry_times(executions)
     outcomes = [
         row for row in _jsonl_objects(glitch_data / "intents" / "hermes-trade-outcomes.jsonl")
@@ -1744,6 +1771,7 @@ def active_trade_state(
                 "planned_stop": row.get("stop_loss"),
                 "planned_targets": [row.get(key) for key in ("take_profit_1", "take_profit_2", "take_profit_3") if row.get(key) is not None],
                 "reason": row.get("reason"),
+                "geometry_context": entry_plan_geometry(row),
                 "disconfirming_evidence": (
                     row.get("decision_audit", {}).get("disconfirming_evidence")
                     if isinstance(row.get("decision_audit"), dict) else None
@@ -1760,6 +1788,8 @@ def active_trade_state(
                 "action": row.get("action"),
                 "stop_loss": row.get("stop_loss"),
                 "take_profit_1": row.get("take_profit_1"),
+                "protection_updates": row.get("protection_updates") or [],
+                "latest_execution_result": latest_execution_results.get(str(row.get("intent_id") or "")),
                 "reason": row.get("reason"),
             } for row in management[-20:]],
         })
@@ -6635,16 +6665,18 @@ def build_prompt(
     if positioned_only:
         instructions = (
             "This is a fast position-management pass. Do not rescan flat instruments or propose new exposure. "
-            "Use POSITION_MANAGEMENT_V1 for each actual native instrument. Reconstruct entry intent and original "
-            "disconfirmation from recent_glitch_ledger.active_trade_state, then compare HOLD, MOVE_STOP, MOVE_TP and EXIT. "
+            "Use POSITION_MANAGEMENT_V1. Read active_trade_state.entry_plans.geometry_context and entry notes: "
+            "preserve the wager's horizon and allowed pullback. A review level is not automatically the chosen wager's failure; "
+            "resolve conflicting notes explicitly against geometry and current evidence. Compare HOLD, MOVE_STOP, MOVE_TP and EXIT. "
+            "Match recent_management.protection_updates and latest_execution_result to native working_orders: "
+            "a rejected protection request did not change the stop. Reassess now; do not blindly retry or forget its motive. "
+            "Unconfirmed requests prove no change. "
             "Use deterministic_management_math as arithmetic authority when complete; cite calculation_issues otherwise. "
             "Its initial_risk is the original intent-bound native fill/protection risk, not aggregate_giveback_to_stop_usd. "
-            "Unknown original risk stays unknown; do not infer it from today's stop. If quantity changed, do not divide "
-            "current-position excursion by original total risk as if size were unchanged. Excursions are native portfolio "
-            "snapshot samples, not tick-exact extrema: no observed MFE does not prove no between-snapshot excursion. "
-            "Chart history before entry is setup context, never post-entry price history. Use explicitly post-entry evidence. "
-            "Use price_basis.selected_current_price for position economics; conflicting analytics prices remain "
-            "time-stamped market context, with the supplied disagreement acknowledged. "
+            "Unknown original risk stays unknown. Size changes invalidate comparisons to original total risk. "
+            "Excursions are sampled, not tick-exact extrema: no observed MFE does not prove no between-snapshot excursion. "
+            "Chart history before entry is setup context, never post-entry price history. "
+            "Use price_basis.selected_current_price for economics; acknowledge disagreement with time-stamped analytics. "
             "Begin CURRENT_SETUP with HELD: or FAILED:. HELD means the original path has not failed, not that holding "
             "must beat exiting. A red mark, one adverse bar or lack of immediate follow-through alone is not failure. "
             "Before material favorable excursion, let genuine invalidation work through ordinary noise. Exit early only "
@@ -6652,8 +6684,7 @@ def build_prompt(
             "not discomfort with the accepted loss budget. After material favorable excursion, compare remaining capture "
             "with giveback and current structure; HOLD must justify continuation. EXIT need not await original invalidation. "
             "Use a supported protection level when available; inability to tighten safely does not rule out EXIT. "
-            "Compare a proposed EXIT at current native price after exit costs; lack of an execution receipt is not "
-            "a disadvantage of choosing it. A receipt is needed only before claiming the exit happened. If unchanged-"
+            "Compare EXIT at current native price after costs; receipts prove execution, not whether EXIT is selectable. If unchanged-"
             "bracket HOLD value is negative, an intact thesis alone cannot justify HOLD: identify the current evidence "
             "and supported managed alternative that outweigh EXIT, rather than relying on unspecified future rescue. "
             "STRADDLES is uncertainty, not negative value or proof that EXIT wins. Do not reapply the fresh-entry "
@@ -6661,7 +6692,7 @@ def build_prompt(
             "allowed by it is not new deterioration, and small sampled MFE is not material earned profit. "
             "Never widen a stop or move mechanically to breakeven. Extend a working target only when current evidence "
             "already supports the farther destination, before the old target fills, with a non-loosening supported stop "
-            "in the same MOVE_TP update. Do not wait for price to trade beyond a target that will already close the position. "
+            "in the same MOVE_TP update. "
             "Begin HOLD_EV with target_before_stop_probability_range=LOW%-HIGH%;"
             "target_before_stop_break_even=VALUE%;gross_hold_terminal_ev=POSITIVE|NEGATIVE|STRADDLES;reason=... . "
             "Give current numeric probability bounds even if unchanged; NOT_REESTIMATED is not a numeric range. "
@@ -6669,17 +6700,17 @@ def build_prompt(
             "Its complement is hold_stop_before_target_maximum_probability. Above/below/straddling the hurdle determines "
             "the arithmetic verdict, not which management action wins. This is unchanged-bracket gross terminal value, "
             "not the expected value of every future managed path; compare exit costs and alternatives separately. "
-            "management_payload_contract supplies action-specific wire shapes and each book's native leg IDs, "
-            "not proposed actions or prices. If selecting MOVE_STOP or MOVE_TP, add protection_updates as a "
-            "decision-level sibling of decision_audit, with your chosen numeric prices and affected native legs. "
-            "A price described only in reason or audit does not request a native change. Never copy placeholder "
-            "strings or invent missing leg IDs; HOLD and EXIT omit protection_updates. "
+            "Use management_payload_contract's wire shapes and native leg IDs, never its placeholders as prices. "
+            "MOVE_STOP/MOVE_TP require decision-level protection_updates beside decision_audit, with chosen numeric "
+            "prices and supplied legs. A price described only in reason or audit does not request a native change. "
+            "HOLD/EXIT omit protection_updates. "
         )
     else:
         instructions = (
             "Use the injected skills for adaptive judgment, not permission gates. "
             "Start with the larger auction path, regime and location; choose one coherent wager and its horizon BEFORE "
             "the bracket. Name its destination and genuine invalidation; use microstructure to time entry. "
+            "Disconfirm this wager, not a discarded local attempt. "
             "A shallow pivot does not become valid merely because it makes a cheap bracket. A local attempt cannot "
             "borrow the parent auction's destination or confidence while stopping inside its valid pullback; "
             "it needs its own objective and touch-stop probability. Conversely, do not substitute a remote higher-timeframe stop "

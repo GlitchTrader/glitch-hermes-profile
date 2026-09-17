@@ -22,7 +22,9 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.89",
+        "distribution.yaml version 0.0.2.90",
+        "docs/ledger/2026-09-17-management-handoff.md",
+        "tests/test_management_handoff.py",
         "docs/ledger/2026-09-17-stop-thesis-coherence.md",
         "docs/ledger/2026-09-16-feed-contract-geometry.md",
         "tests/test_feed_geometry_repair.py",
@@ -120,7 +122,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.89"
+        "distribution_version": "0.0.2.90"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",
