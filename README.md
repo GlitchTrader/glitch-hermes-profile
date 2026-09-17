@@ -1,6 +1,8 @@
-# Glitch Hermes Profile v0.0.2.90
+# Glitch Hermes Profile v0.0.2.91
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
+
+v0.0.2.91 clarifies v90's receipt semantics: a request is not confirmation, and a failed/partial result must be reconciled against each current native leg rather than assuming all legs are unchanged. No mechanical change.
 
 v0.0.2.90 carries the selected entry's existing wager/geometry into position management, along with requested protection updates and their latest as-of native execution result. Management distinguishes an earlier review level from the chosen wager's actual failure and reconciles rejected protection before deciding again. No new strategy gate, stop floor, order action, model call, cadence or epoch change. See [the management handoff repair](docs/ledger/2026-09-17-management-handoff.md).
 

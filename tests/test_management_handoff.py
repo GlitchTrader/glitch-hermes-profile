@@ -101,5 +101,6 @@ def test_prompt_preserves_entry_thesis_and_native_rejection_feedback():
     assert "geometry_context" in prompt
     assert "review level is not automatically the chosen wager's failure" in prompt
     assert "latest_execution_result" in prompt
-    assert "rejected protection request did not change the stop" in prompt
+    assert "requests are not confirmed changes" in prompt
+    assert "including failed or partial results" in prompt
     assert "EXIT need not await original invalidation" in prompt
