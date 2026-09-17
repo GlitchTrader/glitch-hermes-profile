@@ -99,6 +99,19 @@ class IntelligenceFirstContractTests(unittest.TestCase):
         self.assertIn("the shifted long stop stays below the chosen failure boundary, the short stop above it, at both edges", intent)
         self.assertIn("preserved dollar risk does not prove that", intent)
 
+    def test_stop_event_and_parent_auction_are_not_interchangeable(self) -> None:
+        soul = (ROOT / "SOUL.md").read_text(encoding="utf-8").lower()
+        setup = (ROOT / "skills" / "glitch-setup-state" / "SKILL.md").read_text(encoding="utf-8").lower()
+        intent = (ROOT / "skills" / "glitch-build-intent" / "SKILL.md").read_text(encoding="utf-8").lower()
+        self.assertIn("one coherent wager", soul)
+        self.assertIn("do not borrow its destination or confidence", soul)
+        self.assertIn("a stop fires on touch, before a later close can prove acceptance", soul)
+        self.assertIn("one tick beyond an analytical boundary is not evidence of clearance", soul)
+        self.assertIn("parent rotation must survive the pullbacks/probes", setup)
+        self.assertIn("not required pre-labeled fields or mandatory higher-timeframe alignment", setup)
+        self.assertIn("equality with a boundary is not strictly beyond it", intent)
+        self.assertIn("without making the retest mandatory", intent)
+
 
 if __name__ == "__main__":
     unittest.main()

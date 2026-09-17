@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 import sys
@@ -3373,6 +3374,13 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
         "Judge stop survival and destination at both entry-range edges",
         "Carry forward the plan, not its probability or robustness label",
         "This does not require waiting for that retest, a closed candle, or a higher-timeframe stop",
+        "choose one coherent wager and its horizon BEFORE the bracket",
+        "A local attempt cannot borrow the parent auction's destination or confidence",
+        "Acceptance-failure and stop-on-touch are different events",
+        "wick/probe extremes and adverse legs",
+        "do not shave invalidation, inflate the target or assume a management rescue",
+        "Write decision_audit FIRST, then the final executable fields",
+        "latest-price revalidation cannot repair an invalid range edge",
     ):
         assert phrase in prompt
     for phrase in (
@@ -3392,6 +3400,34 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
                     "treat 1:1 to 2:1 as exceptional", "RECURSIVE_ABSTENTION_VETO"):
         assert removed not in prompt
     assert len(prompt.split("CURRENT_CYCLE=")[0]) < 12500
+
+
+def test_entry_template_serializes_audit_before_binding_fields_only_while_flat() -> None:
+    flat = multibook_flat_scenario()
+    flat["books"] = flat["books"][:1]
+    flat["books"][0]["followers"] = []
+    flat["books"][0]["exposure"] = []
+    flat["books"][0]["position_building_context"] = {"instrument": "MNQ"}
+    packet = {"packet_id": "cycle-9", "policy": {}, "frames": [{
+        "market_snapshot": {"instruments": [{"instrument": "MNQ"}], "coverage": []},
+        "portfolio_snapshot": {"accounts": [{"account": "Sim101"}]},
+    }]}
+    for mode in ("flat_scan", "trigger_review", "position_management"):
+        scenario = copy.deepcopy(flat)
+        kwargs = {}
+        if mode == "trigger_review":
+            kwargs = {"invocation_reason": "condition_change", "invocation_context": {
+                "fired_triggers": [{"instrument": "MNQ", "direction": "ABOVE", "price": 100}],
+            }}
+        elif mode == "position_management":
+            scenario["books"][0]["instrument_contexts"]["MNQ"]["current_signed_quantity"] = 1
+        prompt = DIRECT.build_prompt(packet, scenario, {}, **kwargs)
+        envelope, _ = json.JSONDecoder().raw_decode(prompt.split("CURRENT_CYCLE=", 1)[1])
+        assert envelope["decision_mode"] == mode
+        template = envelope["required_output_template"]["decisions"][0]
+        assert next(iter(template)) == ("instrument" if mode == "position_management" else "decision_audit")
+        assert set(template) == {"instrument", "action", "confidence", "reason", "decision_audit", "wake_triggers"}
+        assert ("Write decision_audit FIRST" in prompt) == (mode != "position_management")
 
 
 def test_position_prompt_rebases_earned_profit_without_changing_flat_cognition() -> None:

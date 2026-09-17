@@ -6581,6 +6581,15 @@ def build_prompt(
             },
             "wake_triggers": [],
         })
+    if not positioned_only:
+        # Keep planning before binding prices in the generated response. A later
+        # prose correction cannot amend numeric fields already emitted earlier.
+        decisions = [
+            {"decision_audit": decision["decision_audit"], **{
+                key: value for key, value in decision.items() if key != "decision_audit"
+            }}
+            for decision in decisions
+        ]
     output_template = {
         "schema_version": "glitch.intent.batch.v1",
         "cycle_id": scenario["cycle_id"],
@@ -6668,18 +6677,19 @@ def build_prompt(
         )
     else:
         instructions = (
-            "Use the injected scan/setup/order-flow/intent skills for adaptive judgment, not a checklist of permissions. "
-            "Start with the larger auction path, regime and location; choose the meaningful move and its horizon BEFORE "
-            "the bracket. Name its unconsumed destination and genuine invalidation, then use microstructure to time delivery. "
-            "A shallow pivot does not become valid merely "
-            "because it makes a cheap bracket. Conversely, do not substitute a remote higher-timeframe stop when a nearer "
-            "noise-surviving level genuinely invalidates this setup. Higher timeframes are context, not required alignment. "
+            "Use the injected skills for adaptive judgment, not permission gates. "
+            "Start with the larger auction path, regime and location; choose one coherent wager and its horizon BEFORE "
+            "the bracket. Name its destination and genuine invalidation; use microstructure to time entry. "
+            "A shallow pivot does not become valid merely because it makes a cheap bracket. A local attempt cannot "
+            "borrow the parent auction's destination or confidence while stopping inside its valid pullback; "
+            "it needs its own objective and touch-stop probability. Conversely, do not substitute a remote higher-timeframe stop "
+            "when a nearer noise-surviving level genuinely invalidates this setup. "
+            "Higher timeframes are context, not required alignment. "
             "In the existing geometry field name the retest/pullback that could occur while the thesis remains valid, "
             "then the price evidence that would actually falsify it. A touch-triggered stop inside that valid retest "
-            "is not thesis invalidation. A VWAP/trigger recross or last candle low/high is not sufficient merely "
-            "because it is nearby. Use the supplied swings, legs and observed excursions, not ATR recitation alone. "
-            "Choose genuine invalidation first, then an entry location that makes its risk worthwhile; keep a nearer "
-            "stop only when current evidence establishes a genuinely different, locally invalidated setup. "
+            "is not thesis invalidation. Acceptance-failure and stop-on-touch are different events: a one-tick stop "
+            "cannot wait for a close. Use supplied wick/probe extremes and adverse legs for clearance, not ATR recitation. "
+            "Compare better locations or wagers; do not shave invalidation, inflate the target or assume a management rescue. "
             "This does not require waiting for that retest, a closed candle, or a higher-timeframe stop. "
             "Distinguish entry trigger, intermediate response/management levels and primary destination. VWAP bands, swings, "
             "range boundaries, session levels and fair-value gaps are evidence, not mandatory targets. The nearest level "
@@ -6793,7 +6803,11 @@ def build_prompt(
         + wake_instruction
         + "Keep the entire response under 9000 characters. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
-        + "\nOUTPUT_CLOSURE: Close decision_audit before decision-level wake_triggers and action-specific fields. "
+        + "\nOUTPUT_CLOSURE: "
+        + ("Write decision_audit FIRST, then the final executable fields. Apply any geometry/range correction "
+           "from that audit to the numeric fields before emitting them; prose cannot amend an order and "
+           "latest-price revalidation cannot repair an invalid range edge. " if not positioned_only else "")
+        + "Close decision_audit before decision-level wake_triggers and action-specific fields. "
         + "Keep protection_updates inside its decision, not beside decisions at batch level. Close each decision "
         + "only after all its fields, then close the decisions array and the batch object."
     )

@@ -1,6 +1,8 @@
-# Glitch Hermes Profile v0.0.2.88
+# Glitch Hermes Profile v0.0.2.89
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
+
+v0.0.2.89 aligns the intended auction, allowed pullback, stop-on-touch event, destination and probability as one coherent wager. A local attempt cannot borrow a parent recovery's confidence while stopping inside movement that recovery permits; an acceptance-failure level is not a hard stop that waits for acceptance. Flat/trigger responses put the existing audit before executable fields so a discovered geometry correction can be applied before binding prices are emitted. This replaces existing wording, preserves genuinely supported nearby stops and anticipatory entries, and adds no dollar/ATR/ratio floor or execution gate. No native execution, protection, replication, quantity, model, cadence or epoch change. See [the stop/thesis correction](docs/ledger/2026-09-17-stop-thesis-coherence.md).
 
 v0.0.2.88 separates derived chart history by native contract and reconciles selection/learner arithmetic against the submitted primary bracket and packet reference. It does not change strategy, prompts, schedules, models, stops, targets, probabilities, replication or admission thresholds. The paired AddOn repair preserves fresh chart analytics against fallback-feed collisions and routes management to native held contracts. See [the data and geometry repair](docs/ledger/2026-09-16-feed-contract-geometry.md).
 

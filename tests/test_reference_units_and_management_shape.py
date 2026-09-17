@@ -209,7 +209,7 @@ def test_prompt_keeps_units_in_current_scoped_instrument_and_correct_wire_closur
 def test_flat_prompt_prioritizes_auction_without_fixed_stops_or_more_confirmation():
     packet, perception, scenario = geometry_packet()
     prompt = DIRECT.build_prompt(packet, scenario, {"outcomes": []}, market_perception=perception)
-    assert "choose the meaningful move and its horizon BEFORE the bracket" in prompt
+    assert "choose one coherent wager and its horizon BEFORE the bracket" in prompt
     assert "numeric shifted stop/target pairs" in prompt
     assert "Anticipatory entry is allowed without a closed candle, retest or perfect flow" in prompt
     assert "Do not impose a stop floor or a preferred ratio" in prompt
