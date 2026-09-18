@@ -1,6 +1,8 @@
-# Glitch Hermes Profile v0.0.2.91
+# Glitch Hermes Profile v0.0.2.92
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
+
+v0.0.2.92 uses one management standard while green and red, adds causal completed-bar excursion alongside sampled native P&L, and supplies a bounded original-bracket post-exit review. A normal debrief waits for its 30-minute observation window; the schedule and model-call admission remain unchanged. No execution, risk, replication, entry gate or epoch change. See [the management evidence correction](docs/ledger/2026-09-18-management-path-evidence.md).
 
 v0.0.2.91 clarifies v90's receipt semantics: a request is not confirmation, and a failed/partial result must be reconciled against each current native leg rather than assuming all legs are unchanged. No mechanical change.
 

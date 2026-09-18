@@ -156,9 +156,10 @@ def test_management_receipts_are_not_action_permission_and_noise_tolerance_remai
     soul = (root / "SOUL.md").read_text(encoding="utf-8")
     skill = (root / "skills/glitch-position-management/SKILL.md").read_text(encoding="utf-8")
     assert '"unreceipted" does not make EXIT inferior' in soul
-    assert "not merely an intact thesis or unspecified future management" in skill
-    assert "Before material favorable excursion" in skill
-    assert "not make a red mark or one adverse bar an exit rule" in skill
+    assert "not an unspecified future rescue" in skill
+    assert "same decision standard while green and red" in skill
+    assert "an adverse mark, a one-minute indicator reversal or a probability estimate alone is not that evidence" in skill
+    assert "do not wait for it to turn red" in skill
 
 
 TRIGGER_SELECTION_FIELDS = (

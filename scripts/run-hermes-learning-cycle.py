@@ -59,6 +59,9 @@ LOOP_SCHEMAS = {
 MAX_DEBRIEF_OUTCOMES = 4
 MAX_DEBRIEF_MANAGEMENT_DECISIONS = 24
 MAX_DEBRIEF_MARKET_OBSERVATIONS = 60
+# Observation budget only, never a holding-time or trading rule. One normal
+# debrief waits for this window rather than paying for an immediate rerun.
+POST_EXIT_REVIEW_MINUTES = 30
 MAX_HOURLY_EVIDENCE = 24
 MAX_PLANNING_REVIEWS = 6
 MAX_PLANNING_EPISODES = 12
@@ -339,6 +342,78 @@ def market_path(glitch_data: Path, entry: datetime, exit_time: datetime, instrum
             "tradeability_score": (one_minute.get("derived_analytics") or {}).get("tradeability_score"),
         })
     return list(reversed(values[-90:]))
+
+
+def debrief_window_mature(outcome: dict[str, Any], now: datetime) -> bool:
+    exited = DIRECT._utc_datetime(outcome.get("exit_utc"))
+    return exited is not None and now >= exited + timedelta(minutes=POST_EXIT_REVIEW_MINUTES)
+
+
+def post_exit_bracket_review(
+    glitch_data: Path, outcome: dict[str, Any], as_of: datetime | None = None,
+) -> dict[str, Any]:
+    """Observe the original authored bracket after exit, without inventing a fill.
+
+    Missing minutes, a mixed exit minute, or both barriers in one bar cannot
+    establish chronology. This is separate from realized P&L and entry labels.
+    """
+    result: dict[str, Any] = {
+        "window_minutes": POST_EXIT_REVIEW_MINUTES,
+        "effect": "retrospective_only_not_fill_or_forecast_label",
+        "geometry_source": "original_authored_stop_and_primary_target",
+        "chronology": "unavailable", "first_touch_bar_utc": None,
+        "observed_bars": 0, "missing_minutes": 0,
+    }
+    exited = DIRECT._utc_datetime(outcome.get("exit_utc"))
+    contract = str(outcome.get("contract") or "")
+    action = str(outcome.get("action") or "")
+    try:
+        stop, target = float(outcome.get("planned_stop")), float(outcome.get("planned_target"))
+        if not all(DIRECT.math.isfinite(n) for n in (stop, target)):
+            return result
+    except (TypeError, ValueError):
+        return result
+    if (exited is None or " " not in contract or action not in {"ENTER_LONG", "ENTER_SHORT"}
+            or (stop >= target if action == "ENTER_LONG" else stop <= target)):
+        return result
+    now = as_of or datetime.now(timezone.utc)
+    end = exited + timedelta(minutes=POST_EXIT_REVIEW_MINUTES)
+    cutoff = min(end, now)
+    result.update(contract=contract, exit_utc=exited.isoformat(), window_end_utc=end.isoformat(),
+                  as_of_utc=now.isoformat(), stop=stop, target=target,
+                  chronology="neither_reached" if now >= end else "pending_window")
+    opened = exited.replace(second=0, microsecond=0)
+    root = glitch_data / "hermes" / "exchange" / "glitch" / "minute-frames"
+    while opened + timedelta(minutes=1) <= cutoff:
+        closed = opened + timedelta(minutes=1)
+        path = root / (closed.strftime("%Y%m%dT%H%MZ") + ".json")
+        try:
+            frame = DIRECT.read_json(path)
+            bars = DIRECT.completed_contract_bars([frame], contract, opened, cutoff)
+            bar = next((b for b in bars if DIRECT._utc_datetime(b["utc_time"]) == opened), None)
+        except (OSError, ValueError, TypeError):
+            bar = None
+        if bar is None:
+            result["missing_minutes"] += 1
+        else:
+            result["observed_bars"] += 1
+            stop_hit = bar["low"] <= stop if action == "ENTER_LONG" else bar["high"] >= stop
+            target_hit = bar["high"] >= target if action == "ENTER_LONG" else bar["low"] <= target
+            if stop_hit or target_hit:
+                if result["missing_minutes"]:
+                    result["chronology"] = "unresolved_gap"
+                elif opened < exited:
+                    result["chronology"] = "ambiguous_exit_bar"
+                elif stop_hit and target_hit:
+                    result["chronology"] = "ambiguous_same_bar"
+                else:
+                    result["chronology"] = "stop_before_target" if stop_hit else "target_before_stop"
+                    result["first_touch_bar_utc"] = bar["utc_time"]
+                return result
+        opened = closed
+    if result["missing_minutes"] and now >= end:
+        result["chronology"] = "unresolved_gap"
+    return result
 
 
 def market_evidence_context(candidate: dict[str, Any], decision_utc: Any) -> dict[str, Any]:
@@ -783,6 +858,7 @@ def debrief_evidence(glitch_data: Path, outcomes: list[dict[str, Any]]) -> list[
                 market_path(glitch_data, entry, exit_time, str(outcome.get("instrument") or "")),
                 MAX_DEBRIEF_MARKET_OBSERVATIONS,
             ),
+            "post_exit_bracket_review": post_exit_bracket_review(glitch_data, outcome),
         })
     return evidence
 
@@ -1270,7 +1346,10 @@ def build_prompt(loop_id: str, evidence: Any, template: dict[str, Any], continui
     loop_instruction = {
         "debrief": (
             "Produce exactly one evidence-linked debrief per supplied completed master outcome. Attribute cognition and PnL to the master only; classify follower results as replication diagnostics. "
-            "Separate market cognition, execution/replication, infrastructure/data quality, deterministic rejection, and variance. Judge the decision ex ante and preserve uncertainty."
+            "Separate market cognition, execution/replication, infrastructure/data quality, deterministic rejection, and variance. Judge the decision ex ante and preserve uncertainty. "
+            "Compare the same management standard while green and red: identify contradictions between HOLD_EV, action and the entry's allowed pullback. "
+            "Independently assess post_exit_bracket_review: it is later original-bracket evidence, not information available at exit, an actual fill, realized PnL or an entry-forecast label. "
+            "A later target does not alone make EXIT wrong, nor does plausible exit prose prove it right. Name premature exits and avoided losses when supported; preserve gaps and ambiguous chronology."
         ),
         "hourly": (
             "Supervise supplied completed trade and decision episodes. Do not double-count correlated route/master/follower implementations. Classify every supplied flat NOTHING episode exactly once and cite representative episode IDs in the summary. "
@@ -1547,6 +1626,7 @@ def compact_episode(row: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(master_result, dict) and key in master_result
             },
             "entry_decision_context": entry_context_compact,
+            "post_exit_bracket_review": facts.get("post_exit_bracket_review"),
         }
         common["facts_sha256"] = row.get("facts_sha256")
     return common
@@ -2476,17 +2556,18 @@ def run_once(args, *, refresh_derived: bool = True) -> dict[str, Any]:
         row for row in eligible
         if DIRECT.outcome_idea_key(row) not in processed_idea_keys
     ]
+    now = datetime.now(timezone.utc)
     new_outcomes = sorted(
-        pending,
+        [row for row in pending if debrief_window_mature(row, now)],
         key=outcome_completed_utc,
     )[:MAX_DEBRIEF_OUTCOMES]
-    now = datetime.now(timezone.utc)
     result = {
         "debriefed": 0,
         "hourly": False,
         "planning": False,
         "daily": False,
         "weekly": False,
+        "awaiting_post_exit_window": sum(not debrief_window_mature(row, now) for row in pending),
     }
     yield_debrief_to_supervision = (
         bool(new_outcomes)

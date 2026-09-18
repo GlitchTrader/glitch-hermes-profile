@@ -182,7 +182,8 @@ def guidance_cognition_hash(profile_root: Path | None = None) -> str:
         "build_prompt", "contract_repair_prompt", "candidate_comparison_template",
         "trigger_review_template", "position_management_template",
         "packet_for_model", "scenario_for_model", "ledger_for_model",
-        "active_trade_state", "entry_plan_geometry", "_instrument_comparison_section",
+        "active_trade_state", "entry_plan_geometry", "completed_contract_bars",
+        "post_entry_bar_excursion", "_instrument_comparison_section",
         "_compact_model_instrument", "deterministic_geometry_context",
         "attach_reference_distance_math", "management_payload_contract",
         "positioned_instruments", "all_scoped_books_positioned",
@@ -1517,6 +1518,96 @@ def entry_plan_geometry(intent: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def completed_contract_bars(
+    frames: list[Any], contract: str, start: datetime, as_of: datetime,
+) -> list[dict[str, Any]]:
+    """Validated, already-observed complete minutes inside the supplied bounds."""
+    from market_structure import _bar_from_instrument, _nested
+
+    bars: dict[datetime, dict[str, Any]] = {}
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        observed = _utc_datetime(frame.get("captured_utc") or frame.get("created_utc"))
+        if observed is None or observed > as_of:
+            continue
+        market = frame.get("market_snapshot") or {}
+        if not isinstance(market, dict) or not isinstance(market.get("instruments"), list):
+            continue
+        instruments = [row for row in market.get("instruments", []) if isinstance(row, dict)
+                       and str(row.get("instrument_full_name") or "").upper() == contract.upper()]
+        if len(instruments) != 1:
+            continue
+        if not isinstance(instruments[0].get("timeframe_bars"), list):
+            continue
+        rows = [row for row in instruments[0].get("timeframe_bars", [])
+                if isinstance(row, dict) and row.get("minutes") == 1]
+        if len(rows) != 1:
+            continue
+        native_contract = (_nested(rows[0], "descriptive_state", "native_observations", "instrument_full_name")
+                           or _nested(rows[0], "native_observations", "instrument_full_name"))
+        if native_contract and str(native_contract).upper() != contract.upper():
+            continue
+        bar = _bar_from_instrument(frame, rows[0])
+        opened = _utc_datetime(bar.get("native_utc")) if bar else None
+        closed = _utc_datetime(bar.get("native_closed_utc")) if bar else None
+        if (opened is None or closed is None or opened < start or closed > observed
+                or (closed - opened).total_seconds() != 60):
+            continue
+        bars[opened] = {"utc_time": opened.isoformat(), "closed_utc": closed.isoformat(),
+                        "high": bar["h"], "low": bar["l"], "close": bar["c"]}
+    return [bars[key] for key in sorted(bars)]
+
+
+def post_entry_bar_excursion(
+    frames: list[Any], *, contract: str, start: datetime | None, as_of: datetime,
+    side: str, entry_price: Any, quantity: int, point_value: Any,
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A separate price-path observation, not native executable or realized P&L."""
+    value: dict[str, Any] = {"status": "unavailable", "basis": "completed_bar_prices_not_executable_pnl"}
+    if start is None or start > as_of or side not in {"long", "short"} or " " not in contract:
+        return value
+    try:
+        entry, dollars = float(entry_price), float(point_value)
+        if not all(math.isfinite(n) for n in (entry, dollars, quantity)) or dollars <= 0 or quantity <= 0:
+            return value
+    except (TypeError, ValueError):
+        return value
+    identity = {"contract": contract, "start_utc": start.isoformat(), "side": side,
+                "entry_price": entry, "quantity": quantity, "point_value_usd": dollars}
+    prior = previous if isinstance(previous, dict) else {}
+    last = _utc_datetime(prior.get("last_closed_utc"))
+    if (prior.get("status") != "observed" or any(prior.get(k) != v for k, v in identity.items())
+            or last is None or last > as_of):
+        prior, last = {}, None
+    if prior:
+        try:
+            if (not all(math.isfinite(float(prior[k])) for k in ("highest_price", "lowest_price"))
+                    or float(prior["highest_price"]) < float(prior["lowest_price"])
+                    or int(prior.get("observed_bars", 0)) <= 0):
+                prior, last = {}, None
+        except (KeyError, TypeError, ValueError):
+            prior, last = {}, None
+    bars = [b for b in completed_contract_bars(frames, contract, start, as_of)
+            if last is None or _utc_datetime(b["closed_utc"]) > last]
+    highs = [b["high"] for b in bars] + ([float(prior["highest_price"])] if prior else [])
+    lows = [b["low"] for b in bars] + ([float(prior["lowest_price"])] if prior else [])
+    if not highs:
+        return value
+    high, low = max(highs), min(lows)
+    favorable = high - entry if side == "long" else entry - low
+    adverse = low - entry if side == "long" else entry - high
+    value.update(identity)
+    value.update(status="observed", highest_price=high, lowest_price=low,
+                 observed_bars=int(prior.get("observed_bars", 0)) + len(bars),
+                 last_closed_utc=bars[-1]["closed_utc"] if bars else prior["last_closed_utc"],
+                 mfe_gross_usd=round(max(0, favorable) * dollars * quantity, 8),
+                 mae_gross_usd=round(min(0, adverse) * dollars * quantity, 8),
+                 coverage="observed_complete_minutes_only_entry_minute_and_gaps_not_imputed")
+    return value
+
+
 def active_trade_state(
     packet: dict[str, Any],
     scenario: dict[str, Any],
@@ -1740,6 +1831,22 @@ def active_trade_state(
         management_math["excursion_basis"] = (
             "native_portfolio_snapshot_samples_since_entry_not_tick_exact_extrema"
         )
+        initial = management_math["initial_risk"]
+        # A complete native bracket receipt proves a fill occurred before this
+        # cutoff. Unknown provenance, scaling or a new average cannot borrow an
+        # earlier position's excursion. Existing sampled P&L remains untouched.
+        stable_fill = (
+            initial.get("position_quantity_matches_initial") is True
+            and len(initial.get("entries", [])) == 1
+            and initial["entries"][0].get("initial_fill_price") == position.get("average_price")
+        )
+        bar_excursion = post_entry_bar_excursion(
+            frames, contract=str(position.get("instrument") or ""),
+            start=_utc_datetime(initial["entries"][0].get("recorded_utc")) if stable_fill else None,
+            as_of=now, side=side, entry_price=position.get("average_price"), quantity=abs(net),
+            point_value=instrument_context.get("point_value_usd"),
+            previous=prior.get("post_entry_bar_excursion") if same_trade else None,
+        )
         trades.append({
             "master_account": master,
             "route_id": book.get("route_id"),
@@ -1751,6 +1858,7 @@ def active_trade_state(
             "peak_unrealized_pnl_usd": peak,
             "trough_unrealized_pnl_usd": trough,
             "rollback_from_peak_usd": peak - unrealized,
+            "post_entry_bar_excursion": bar_excursion,
             "deterministic_management_math": management_math,
             "management_context": {
                 "gross_breakeven_price": position.get("average_price"),
@@ -6674,22 +6782,24 @@ def build_prompt(
             "Use deterministic_management_math as arithmetic authority when complete; cite calculation_issues otherwise. "
             "Its initial_risk is the original intent-bound native fill/protection risk, not aggregate_giveback_to_stop_usd. "
             "Unknown original risk stays unknown. Size changes invalidate comparisons to original total risk. "
-            "Excursions are sampled, not tick-exact extrema: no observed MFE does not prove no between-snapshot excursion. "
-            "Chart history before entry is setup context, never post-entry price history. "
+            "Native P&L excursions are sampled; compare post_entry_bar_excursion for completed post-fill price extremes. "
+            "Bar-implied dollars are not executable profits; missing bars/entry minute are not imputed. "
+            "Pre-entry chart history is never post-entry MFE. "
             "Use price_basis.selected_current_price for economics; acknowledge disagreement with time-stamped analytics. "
             "Begin CURRENT_SETUP with HELD: or FAILED:. HELD means the original path has not failed, not that holding "
             "must beat exiting. A red mark, one adverse bar or lack of immediate follow-through alone is not failure. "
-            "Before material favorable excursion, let genuine invalidation work through ordinary noise. Exit early only "
-            "for named changed evidence, lost continuation value, an expired thesis or a binding time/risk constraint, "
-            "not discomfort with the accepted loss budget. After material favorable excursion, compare remaining capture "
-            "with giveback and current structure; HOLD must justify continuation. EXIT need not await original invalidation. "
-            "Use a supported protection level when available; inability to tighten safely does not rule out EXIT. "
-            "Compare EXIT at current native price after costs; receipts prove execution, not whether EXIT is selectable. If unchanged-"
-            "bracket HOLD value is negative, an intact thesis alone cannot justify HOLD: identify the current evidence "
-            "and supported managed alternative that outweigh EXIT, rather than relying on unspecified future rescue. "
+            "Use the same decision standard while green and red. Honor the chosen horizon and allowed pullback; "
+            "ordinary movement already budgeted by the entry is not new deterioration. Early EXIT needs changed "
+            "evidence affecting that path, expiry or binding risk; EXIT need not await original invalidation. "
+            "A probability estimate alone is not changed market evidence: explain the causal update against the "
+            "original wager, not just one-minute indicator direction or crossing an arithmetic hurdle. "
+            "If current evidence favors taking profit, do not wait for it to turn red or demand a minimum MFE. "
+            "Conversely, small sampled MFE is not material earned profit whose rollback alone invalidates the trade. "
+            "Compare continuation with capture/giveback using structure, noise and costs. Protect at supported levels; "
+            "inability to tighten safely does not rule out EXIT. Resolve contradictory HOLD_EV and action reasoning: "
+            "do not call HOLD inferior yet defend it only by HELD or small profit, then reverse that rule below entry. "
             "STRADDLES is uncertainty, not negative value or proof that EXIT wins. Do not reapply the fresh-entry "
-            "confidence hurdle each minute. Explain what changed from the entry plan; ordinary movement already "
-            "allowed by it is not new deterioration, and small sampled MFE is not material earned profit. "
+            "confidence hurdle each minute or rely on unspecified future rescue. "
             "Never widen a stop or move mechanically to breakeven. Extend a working target only when current evidence "
             "already supports the farther destination, before the old target fills, with a non-loosening supported stop "
             "in the same MOVE_TP update. "
