@@ -241,11 +241,12 @@ class Observer:
                     self.instruments = decode_cache(raw, time.time())
                 except (ValueError, TypeError, OverflowError):
                     error = "invalid_cache"
-                sources = {}
+                sources = dict(self.previous_sources)
                 for contract, item in self.instruments.items():
                     frame = item["frames"].get("1", {})
                     source = frame.get("reading_utc")
-                    sources[contract] = source
+                    if source:
+                        sources[contract] = source
                     previous = self.previous_sources.get(contract)
                     if source and previous and timestamp(source) < timestamp(previous):
                         item["issues"].append("source_time_regression")
@@ -254,6 +255,8 @@ class Observer:
                     if source and (not previous or timestamp(source) > timestamp(previous)):
                         self.history.append({"contract": contract, "source_utc": source,
                                              "price": frame.get("values", {}).get("CurrentPrice")})
+                if len(sources) > 128:
+                    raise ValueError("contract_history_limit")
                 self.store.append("observation", schema_version="glitch.fast_observation.v1",
                                   observation_id=self.latest_id, raw_hash=raw_hash,
                                   raw_cache_base64=base64.b64encode(raw).decode("ascii"),

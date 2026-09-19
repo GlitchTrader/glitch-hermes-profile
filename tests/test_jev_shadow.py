@@ -222,6 +222,24 @@ def test_provider_busy_rejects_a_second_inflight_request():
         slot.start("r", "o", "h", {}, {})
 
 
+def test_malformed_generation_does_not_erase_source_high_water(tmp_path):
+    args = arguments(tmp_path)
+    now = time.time()
+    args.cache.write_bytes(encoded(sample_cache(now)))
+    store = shadow.EvidenceStore(args.output, 4 * 1024 * 1024)
+    observer = shadow.Observer(args, store)
+    observer.capture()
+    args.cache.write_bytes(b'{"torn":')
+    observer.capture()
+    store.close()
+    store = shadow.EvidenceStore(args.output, 4 * 1024 * 1024)
+    observer = shadow.Observer(args, store)
+    args.cache.write_bytes(encoded(sample_cache(now - 5)))
+    observer.capture()
+    assert "source_time_regression" in observer.instruments[args.instrument]["issues"]
+    store.close()
+
+
 def test_no_trading_or_hermes_imports_and_no_scheduled_activation():
     allowed = {"argparse", "ast", "base64", "collections", "datetime", "hashlib", "json", "math", "multiprocessing",
                "os", "pathlib", "re", "sys", "time", "urllib", "uuid", "msvcrt", "fcntl", "__future__",
