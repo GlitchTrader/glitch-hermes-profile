@@ -46,6 +46,29 @@ def safe_path(path):
     return path.resolve()
 
 
+def open_cache(path):
+    """Allow the native writer to replace/delete its old generation while this handle reads it."""
+    if os.name != "nt":
+        return path.open("rb")
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel.CreateFileW(str(path), 0x80000000, 0x1 | 0x2 | 0x4, None, 3, 0x80, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except Exception:
+        kernel.CloseHandle(handle)
+        raise
+    return os.fdopen(descriptor, "rb")  # The file descriptor owns and closes the native handle.
+
+
 class EvidenceStore:
     """Append/fsync, rotate without pruning, recover complete records without repairing history."""
     def __init__(self, root, disk_bytes):
@@ -221,7 +244,7 @@ class Observer:
                 if fingerprint == self.fingerprint:
                     return
                 started = utc_now()
-                with path.open("rb") as stream:
+                with open_cache(path) as stream:
                     raw = stream.read(MAX_BYTES + 1)
                 after = path.stat()
                 if fingerprint != (after.st_mtime_ns, after.st_size):

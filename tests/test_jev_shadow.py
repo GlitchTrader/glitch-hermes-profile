@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import json
 import multiprocessing
+import os
 from pathlib import Path
 import time
 
@@ -27,6 +28,20 @@ def arguments(tmp_path, mode="RECORD_ONLY"):
 def records(root):
     return [json.loads(line) for path in sorted(root.glob("evidence-*.jsonl"))
             for line in path.read_text().splitlines() if line.endswith("}")]
+
+
+def native_replace(replacement, target):
+    if os.name != "nt":
+        return os.replace(replacement, target)
+    # GlitchStateStore calls .NET File.Replace (ReplaceFileW), not MoveFileEx/os.replace.
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.ReplaceFileW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                   wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID)
+    kernel.ReplaceFileW.restype = wintypes.BOOL
+    if not kernel.ReplaceFileW(str(target), str(replacement), None, 2, None, None):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 def test_off_is_zero_side_effect_default(tmp_path, monkeypatch):
@@ -240,8 +255,41 @@ def test_malformed_generation_does_not_erase_source_high_water(tmp_path):
     store.close()
 
 
+def test_cache_handle_allows_native_atomic_replacement_while_open(tmp_path):
+    target, replacement = tmp_path / "cache.json", tmp_path / "replacement.json"
+    target.write_bytes(b"old complete generation")
+    replacement.write_bytes(b"new complete generation")
+    with shadow.open_cache(target) as reader:
+        native_replace(replacement, target)
+        assert reader.read() == b"old complete generation"
+        assert target.read_bytes() == b"new complete generation"
+
+
+def test_capture_retries_atomic_replacement_without_recording_the_old_generation(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    args.cache.write_bytes(encoded(sample_cache(time.time() - 1)))
+    replacement = tmp_path / "replacement.json"
+    raw = encoded(sample_cache(time.time())) + b" "
+    replacement.write_bytes(raw)
+    original, calls = shadow.open_cache, []
+    def replacing_reader(path):
+        reader = original(path)
+        calls.append(path)
+        if len(calls) == 1:
+            native_replace(replacement, path)
+        return reader
+    monkeypatch.setattr(shadow, "open_cache", replacing_reader)
+    store = shadow.EvidenceStore(args.output, 4 * 1024 * 1024)
+    observer = shadow.Observer(args, store)
+    observer.capture()
+    store.close()
+    assert len(calls) == 2
+    rows = records(args.output)
+    assert len(rows) == 1 and rows[0]["raw_hash"] == digest(raw)
+
+
 def test_no_trading_or_hermes_imports_and_no_scheduled_activation():
-    allowed = {"argparse", "ast", "base64", "collections", "datetime", "hashlib", "json", "math", "multiprocessing",
+    allowed = {"argparse", "ast", "base64", "collections", "ctypes", "datetime", "hashlib", "json", "math", "multiprocessing",
                "os", "pathlib", "re", "sys", "time", "urllib", "uuid", "msvcrt", "fcntl", "__future__",
                "jev_observation", "jev_provider"}
     for filename in ("jev_observation.py", "jev_provider.py", "run-jev-shadow.py"):
