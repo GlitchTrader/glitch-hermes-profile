@@ -1,9 +1,35 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-18",
+  "updated": "2026-09-19",
   "roadmap_ref": "README.md",
   "items": [
+    {
+      "id": "GHP-005",
+      "title": "Record prospective market evidence and evaluate an isolated Level 0 Jev observer",
+      "status": "in_progress",
+      "priority": "P1",
+      "owner_role": "architect",
+      "acceptance": [
+        "Default OFF; RECORD_ONLY and SHADOW have no dependency or output edge to Hermes admission, cognition, learning, intents or native execution.",
+        "Exact bounded cache bytes, producer and contract identity, native freshness, partial/missing state, request provenance and typed responses remain attributable across restart and provider failure.",
+        "One in-flight process has a two-second eligibility deadline, latest-wins input, no retries, durable call reservations, disk and response limits, and an independent STOP control.",
+        "Focused and full profile tests pass, source/remote/installed hashes match, and prior AI, cron, learning and native state remain preserved.",
+        "A naturally active SIM session proves realized cache cadence and producer/native freshness before a frozen prospective shadow experiment; stale weekend data cannot satisfy this gate."
+      ],
+      "depends_on": ["GHP-003", "GHP-004"],
+      "evidence": [
+        "docs/jev-shadow-research.md",
+        "scripts/jev_observation.py",
+        "scripts/jev_provider.py",
+        "scripts/run-jev-shadow.py",
+        "tests/test_jev_observation.py",
+        "tests/test_jev_shadow.py",
+        "distribution.yaml version 0.0.2.93"
+      ],
+      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. GHP-001 remains deterministic perception; this separately owned probabilistic research observer is not a second trading decision layer. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change is selected. Forward active-session acceptance remains open.",
+      "stop_line": "No wake, decision-packet evidence, learned gate, entry, exit, reversal or automatic promotion. Later authority requires a separate evidence-backed architecture decision and operator resolution."
+    },
     {
       "id": "GHP-003",
       "title": "Restore intelligence-first cognition and remove encoded trading strategy from the hot path",
@@ -22,7 +48,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.92",
+        "distribution.yaml version 0.0.2.93",
         "docs/ledger/2026-09-18-management-path-evidence.md",
         "tests/test_management_path_evidence.py",
         "docs/ledger/2026-09-17-management-handoff.md",

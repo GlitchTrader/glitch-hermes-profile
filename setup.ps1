@@ -177,6 +177,9 @@ $requiredFiles = @(
     'scripts\launch-hermes-learning-cycle.py',
     'scripts\ensure-named-sessions.py',
     'scripts\evaluate-frozen-cognition.py',
+    'scripts\jev_observation.py',
+    'scripts\jev_provider.py',
+    'scripts\run-jev-shadow.py',
     'scripts\reset-hermes-trading-epoch.ps1',
     'plugins\glitch-control\plugin.yaml',
     'plugins\glitch-control\__init__.py'
@@ -254,9 +257,10 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.92'
+    distribution_version = '0.0.2.93'
     gateway_supervised = $true
     plugin_enabled = $true
+    jev_default_mode = 'OFF'
     jobs = @($directJob, $learningJob)
     fresh_install_jobs_paused = (-not $directJob.enabled -and -not $learningJob.enabled)
     activation = 'Use Glitch AI Auto or /trade.'
