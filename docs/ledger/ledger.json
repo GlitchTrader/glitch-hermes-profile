@@ -20,6 +20,7 @@
       "depends_on": ["GHP-003", "GHP-004"],
       "evidence": [
         "docs/jev-shadow-research.md",
+        "docs/ledger/2026-09-19-jev-shadow.md",
         "scripts/jev_observation.py",
         "scripts/jev_provider.py",
         "scripts/run-jev-shadow.py",
@@ -27,7 +28,7 @@
         "tests/test_jev_shadow.py",
         "distribution.yaml version 0.0.2.93"
       ],
-      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. GHP-001 remains deterministic perception; this separately owned probabilistic research observer is not a second trading decision layer. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change is selected. Forward active-session acceptance remains open.",
+      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. Implemented/published/installed v0.0.2.93: 724 tests, 33/33 owned hashes, protected-state preservation and installed RECORD_ONLY restart/byte-fidelity checks passed. GHP-001 remains deterministic perception; this separately owned probabilistic research observer is not a second trading decision layer. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change is selected. Forward active-session input acceptance and prospective inference remain open; stale weekend data and absent publisher identity do not satisfy them.",
       "stop_line": "No wake, decision-packet evidence, learned gate, entry, exit, reversal or automatic promotion. Later authority requires a separate evidence-backed architecture decision and operator resolution."
     },
     {
