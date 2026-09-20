@@ -21,6 +21,12 @@
       "evidence": [
         "docs/jev-shadow-research.md",
         "docs/ledger/2026-09-19-jev-shadow.md",
+        "docs/ledger/2026-09-19-jev-closed-market.md",
+        "research/jev/README.md",
+        "research/jev/score_observations.py",
+        "research/jev/score_recorder.py",
+        "tests/test_jev_offline_labels.py",
+        "tests/test_jev_offline_recorder.py",
         "scripts/jev_observation.py",
         "scripts/jev_provider.py",
         "scripts/run-jev-shadow.py",
@@ -28,7 +34,7 @@
         "tests/test_jev_shadow.py",
         "distribution.yaml version 0.0.2.93"
       ],
-      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. Implemented/published/installed v0.0.2.93: 724 tests, 33/33 owned hashes, protected-state preservation and installed RECORD_ONLY restart/byte-fidelity checks passed. GHP-001 remains deterministic perception; this separately owned probabilistic research observer is not a second trading decision layer. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change is selected. Forward active-session input acceptance and prospective inference remain open; stale weekend data and absent publisher identity do not satisfy them.",
+      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. Installed v0.0.2.93: 33/33 owned hashes and protected-state preservation verified; RECORD_ONLY restart/byte fidelity passed. Closed-market training-only study: 1,960 pinned calls; neither semantic representation improved the matched numerical model; giveback probe remains uncertain. Source-only offline scoring added; 754 profile tests pass. Publisher is present in source/disk DLL but absent from cache; loaded AddOn identity remains unproven. GHP-001 stays deterministic perception; GHP-005 has no trading authority. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change is selected. Forward active-session input acceptance and prospective inference remain open.",
       "stop_line": "No wake, decision-packet evidence, learned gate, entry, exit, reversal or automatic promotion. Later authority requires a separate evidence-backed architecture decision and operator resolution."
     },
     {
