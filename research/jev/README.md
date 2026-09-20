@@ -1,8 +1,48 @@
-# Offline Jev scoring
+# Offline Jev research
 
 This source-only research directory is outside `distribution_owned`. It is not
-installed into Hermes and has no API, admission, cognition, learner or native action
+installed into Hermes and has no admission, cognition, learner or native action
 connection. GHP-005 owns the experiment; GL-AI-10 remains native trade outcome truth.
+The scoring and learning modules are local only. The explicitly invoked batch runner
+can call a pinned research provider client against prepared jobs, subject to operator
+authorization for the external data transfer; it is never started by Hermes or setup.
+
+## Bounded feature development and thesis replay
+
+`learning.py` supplies expanding chronological folds, forward-window purging, fixed
+numerical comparators, candidate retention and development-only error feedback. Noul
+answers remain separate yes probabilities. The bounded experiment can propose four
+questions, test them on matched earlier/later folds, retain only measured improvement,
+then use those errors for one further four-question round. A final frozen bundle
+receives one later chronological confirmation; repeated development is never called
+an untouched holdout. No fitted model is exported to or loaded by runtime.
+
+`thesis.py` builds explicitly allowlisted state from native same-contract marks and
+the original authored entry reason/invalidation. It excludes future marks, terminal
+outcomes, current/later Hermes rationale, account and order identities. Paired arms
+differ only in whether authored text is present. Mixed embedded contracts are rejected;
+absent descriptive/flow data remains absent. The conditional exit probe waits for a
+source price after inference completion and before native closure. Missing publications
+or invalid results break the two-observation persistence probe. This is retrospective
+measurement, not executable subminute replay or a native action contract.
+
+`run_batch.mjs` verifies job/protocol/provider hashes before any request, locks a study
+directory, journals and flushes each reservation before dispatch, and never retries an
+uncertain ID. It limits concurrency to four, uses the research client's ten-second
+timeout, and stops at the declared call/cost cap or model mismatch. A process crash
+leaves `RUNNING.lock`; inspect the process and dispatch journal before explicitly
+clearing that research-only guard. Completed journal entries are preserved. Default
+invocation without explicit inputs performs no inference. The provider client's local
+credential handling and response validation remain pinned by its file hash.
+
+The current epoch's protocol, proposal, separate labels, data builders and evaluation
+driver are retained at `D:/ab/artifacts/glitch-jev-research/2026-09-19/learning-loop-v1`.
+Its scientific dependencies live in the pre-existing isolated `.research-libs` sibling
+directory; none is a Hermes dependency. The TypeSafe [feature-discovery cookbook](https://docs.typesafe.ai/cookbooks/autoresearch_feature_discovery)
+informs the propose/evaluate/retain loop; its random-fold example is not used for this
+time series. [Current source and evidence status](../../docs/ledger/2026-09-20-jev-learning-loop.md).
+
+## Prospective observation scoring
 
 From the canonical profile checkout:
 

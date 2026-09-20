@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-19",
+  "updated": "2026-09-20",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -15,16 +15,24 @@
         "Exact bounded cache bytes, producer and contract identity, native freshness, partial/missing state, request provenance and typed responses remain attributable across restart and provider failure.",
         "One in-flight process has a two-second eligibility deadline, latest-wins input, no retries, durable call reservations, disk and response limits, and an independent STOP control.",
         "Focused and full profile tests pass, source/remote/installed hashes match, and prior AI, cron, learning and native state remain preserved.",
-        "A naturally active SIM session proves realized cache cadence and producer/native freshness before a frozen prospective shadow experiment; stale weekend data cannot satisfy this gate."
+        "A naturally active SIM session proves realized cache cadence and producer/native freshness before a frozen prospective shadow experiment; stale weekend data cannot satisfy this gate.",
+        "Source-only question development uses bounded rounds, chronological forward-window purging, matched numerical controls and development-only feedback; authored-thesis replay excludes future evidence and grants no trading authority."
       ],
       "depends_on": ["GHP-003", "GHP-004"],
       "evidence": [
         "docs/jev-shadow-research.md",
         "docs/ledger/2026-09-19-jev-shadow.md",
         "docs/ledger/2026-09-19-jev-closed-market.md",
+        "docs/ledger/2026-09-20-jev-learning-loop.md",
         "research/jev/README.md",
         "research/jev/score_observations.py",
         "research/jev/score_recorder.py",
+        "research/jev/learning.py",
+        "research/jev/thesis.py",
+        "research/jev/run_batch.mjs",
+        "tests/test_jev_learning.py",
+        "tests/test_jev_thesis.py",
+        "tests/test_jev_research_batch.py",
         "tests/test_jev_offline_labels.py",
         "tests/test_jev_offline_recorder.py",
         "scripts/jev_observation.py",
@@ -34,7 +42,7 @@
         "tests/test_jev_shadow.py",
         "distribution.yaml version 0.0.2.93"
       ],
-      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. Installed v0.0.2.93: 33/33 owned hashes and protected-state preservation verified; RECORD_ONLY restart/byte fidelity passed. Closed-market training-only study: 1,960 pinned calls; neither semantic representation improved the matched numerical model; giveback probe remains uncertain. Source-only offline scoring added; 754 profile tests pass. Publisher is present in source/disk DLL but absent from cache; loaded AddOn identity remains unproven. GHP-001 stays deterministic perception; GHP-005 has no trading authority. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change is selected. Forward active-session input acceptance and prospective inference remain open.",
+      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. Installed v0.0.2.93: 33/33 owned hashes and protected-state preservation verified; RECORD_ONLY restart/byte fidelity passed. Closed-market study: 1,960 pinned calls; neither semantic representation improved the matched numerical model. Source-only bounded learning and causal thesis replay added on Sep20; 782 tests pass. Compact numerical development baseline improves 15/30m estimates; uncertainty remains. New 1,002-call question round and 2,522-call thesis batch await explicit external-data authorization after automatic review rejection; zero new calls dispatched. Two additional embedded M2K contract mismatches excluded. Publisher/source-loaded identity and forward active-session gates remain open. GHP-001 stays deterministic perception; GHP-005 has no trading authority. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change selected.",
       "stop_line": "No wake, decision-packet evidence, learned gate, entry, exit, reversal or automatic promotion. Later authority requires a separate evidence-backed architecture decision and operator resolution."
     },
     {
@@ -157,7 +165,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.92"
+        "distribution_version": "0.0.2.93"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",
