@@ -53,6 +53,13 @@ def parse_response(text):
     raise ValueError("batch_json_not_found")
 
 
+def decision_summary(batch):
+    decisions = batch.get("decisions", [])
+    return {"actions": [v.get("action") for v in decisions],
+            "jev_named_in_audit": ["jev" in json.dumps(v.get("decision_audit", {})).lower()
+                                   for v in decisions]}
+
+
 def run(args):
     root, home = args.root.resolve(), args.home.resolve()
     if not home.is_relative_to(root):
@@ -94,7 +101,7 @@ def run(args):
                     try:
                         batch = parse_response(completed.stdout)
                         (dest / "batch.json").write_text(json.dumps(batch, indent=2), encoding="utf-8")
-                        record.update(status="batch_json", actions=[v.get("action") for v in batch.get("intents", [])],
+                        record.update(status="batch_json", **decision_summary(batch),
                                       parsed_batch=True, native_contract_validation="not_performed")
                     except ValueError:
                         record["status"] = "invalid_batch_json"

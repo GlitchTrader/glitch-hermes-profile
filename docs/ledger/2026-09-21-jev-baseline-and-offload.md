@@ -89,3 +89,86 @@ baseline. The 24-hour test establishes operational and initial predictive eviden
 GHP-004's existing longer-sample release criteria remain in force.
 
 Official price/context reference: [Jev models](https://docs.typesafe.ai/models).
+
+## Installation and prospective activation proof
+
+Implementation commit `ad7af218b68fb4ee8f5adef127df010a824c15cd` passed 821 tests
+and was published to canonical main. Supported profile update/setup installed
+v0.0.2.95 with 35/35 matching owned hashes. Fourteen cognition files, including
+the direct worker, SOUL, all trading skills and the Jev state/questions/provider,
+remain byte-identical to the prior installation. The verified streaming checkpoint
+contains 121 files / 474,085,441 bytes. Configuration, authentication, epoch, policy,
+account groups/overrides and replication settings retained their original hashes;
+both original jobs and AI were restored enabled. NinjaTrader was not restarted.
+
+The new GHP-004 freeze is `jev-baseline-20260921`, created at 05:11:14 UTC, with
+cognition `direct-v28-jev-advisory-evidence-f45f1499f9ac` and manifest hash
+`915850b48a6211b66e05c08dd3d89a2d185b2ea77c810111976bc469e03f9b62`.
+Its four-tick evaluation cost policy remains an explicit assumption, not verified
+native commission evidence. The previous v70 freeze and pointers were preserved.
+
+The new observer started at 05:13:11 UTC, PID 29360, process epoch
+`2026-09-21T051311492468Z-4f55a9b708ec`. Its recorded cutoff is September 22 at
+05:13:10 UTC for inference and 06:13:10 UTC for recording. Health confirms the
+monetary/call caps are disabled by the operator. The fixed 15-second per-contract
+cadence, one provider process, two-second deadline, freshness, STOP and 3-GB total
+disk bound remain. At 05:22 UTC, 77 requests had produced 76 valid and one malformed
+response; 18 otherwise valid results were superseded. Metered input cost was
+$0.028890792, roughly $4.65/day at that initial realized rate versus $6.57/day at
+the configured maximum with the earlier mean payload. Neither is an invoice.
+
+Natural cycles `20260921T0519Z`, `20260921T0520Z` and `20260921T0521Z` consumed
+matching request/state hashes and returned model `jev-1.13.0`, then completed as
+NOTHING with successful native receipts. This proves installed consumption and
+fallback integrity, not entry or management benefit. At the resource check the
+observer used 26.8 MB working memory and NinjaTrader remained responsive at 954 MB.
+
+Operational evidence is under
+`D:/ab/artifacts/glitch-jev-research/2026-09-21/jev-baseline-24h`: launch protocol,
+checkpoint manifest, installed verification, restored runtime proof, preserved old
+freeze, natural-cycle artifacts and timestamped live checks. The task follow-up
+`review-frozen-jev-baseline` is scheduled after the recording tail; it may assess
+results but cannot renew inference, alter cognition or promote authority.
+
+## Completed offline development comparison
+
+The operator explicitly approved eight calls after automatic approval review
+requested confirmation of the saved-data transfer. Eight initial local credential
+failures made zero model calls and are preserved separately. The supported generic
+global-auth fallback did not work for this installed Codex route; only its existing
+OpenAI provider record was supplied to the isolated home. No other provider or
+broker credential was copied. All eight actual model calls then completed without
+retry. Their inputs were unchanged from the frozen variants. The temporary
+isolated provider credential was removed after the completed comparison.
+
+| Arm | Scheduled case seconds | Trigger case seconds | Mean seconds | Actions |
+| --- | ---: | ---: | ---: | --- |
+| Current | 58.703 | 37.141 | 47.922 | NOTHING / NOTHING |
+| Added interpretation guidance | 87.062 | 39.594 | 63.328 | NOTHING / NOTHING |
+| Compact briefing with Jev | 63.781 | 58.625 | 61.203 | NOTHING / NOTHING |
+| Compact briefing without Jev | 66.344 | 57.188 | 61.766 | NOTHING / NOTHING |
+
+All eight parsed and passed the worker's pure normalization/wire checks without a
+model repair. Every trigger arm retained the same non-blocking
+`selection_ev_numeric_invalid:0:trigger_review` diagnostic; it is not a difference
+introduced by the candidate. These checks do not establish native order eligibility
+and no offline result was delivered. The original chart attachment was unavailable
+in every arm. Model/provider latency and caching were uncontrolled across this tiny
+sample; the timing difference is descriptive, not a statistical performance claim.
+
+The compact-with-Jev arm explicitly reconciled Jev in both audits. It distinguished
+endpoint probability from target-first odds and identified MES advice as irrelevant
+to an M2K-specific trigger. Current did so in one audit; added guidance alone did
+not name it in either. Naming Jev is not proof of better cognition. All actions
+agreed, no position-management case was tested, and the candidate reduced total
+prompt characters by only 3.2% while taking longer here. Do not promote it.
+
+The first reporter read `intents` instead of the actual batch `decisions` field.
+The canonical report helper and a regression test correct this metadata defect;
+no inference changed or was rerun. Original output records remain intact, and
+`hermes-offload-v1/assessment.json` reconstructs authoritative actions from all eight
+saved responses with a hash-checked copy of the actual worker validation path.
+The correction passed seven focused research tests. The current live briefing and
+interpretation rules remain unchanged for the frozen baseline. A useful next
+candidate must reduce redundant interpretation work, not merely repeat fewer JSON
+keys; evaluate that separately after these prospective outcomes are available.

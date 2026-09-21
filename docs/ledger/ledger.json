@@ -26,7 +26,7 @@
         "tests/test_jev_hermes_briefing.py",
         "tests/test_jev_hermes_comparison.py"
       ],
-      "notes": "The first fully reversible representation reduces two saved prompts by about 3.2% including guidance. This is a development candidate, not an installed cognition replacement or evidence of a trading advantage.",
+      "notes": "Eight explicitly approved isolated model calls compared four frozen variants on two saved text-only development cases. All returned NOTHING and passed offline normalization/wire checks without a model repair. The reversible compact briefing reduced prompt characters by 3.2% and explicitly reconciled Jev in both audits, but took longer than the current briefing here. No promotion. The full live baseline remains frozen for prospective evidence. The initial action-report field error was corrected and passed seven focused research tests; no model output was changed or retried.",
       "stop_line": "Offline only: no native action, live prompt replacement, learned trading gate, automatic promotion or additional Jev authority."
     },
     {
@@ -57,7 +57,7 @@
         "distribution.yaml version 0.0.2.94",
         "docs/ledger/2026-09-21-jev-baseline-and-offload.md"
       ],
-      "notes": "Operator-authorized Level 2 SIM evidence implemented in 34f4960, published and installed as v0.0.2.94 with 35/35 matching hashes. Full suite: 809 passed; subsequent scorer metadata clarification: 31 label/scorer tests passed. A verified 119-file checkpoint preserves learner/epoch and prior installed evidence; auth/config/epoch/replication/policy hashes and original enabled jobs were restored. Scheduled cycle 20260921T0325Z consumed a journal-linked pinned Jev prediction, completed as NOTHING and received an accepted no-native-action receipt. A bounded 120-call/75-minute trial is collecting future labels; predictive and positioned-management benefit remain unproven. This explicitly reconciles the former Level 0 boundary outside GHP-001 deterministic perception. Native execution, cadence and price wakes remain unchanged. See the dated operational proof for exact identities, real provider exclusions and rollback.",
+      "notes": "Level 2 SIM evidence v0.0.2.94 proved natural consumption. The subsequent v0.0.2.95 baseline is published and installed with 35/35 owned hashes and 821 passing tests. A verified 121-file checkpoint preserves learner/epoch evidence; prior AI/jobs, policy and replication were restored. User-authorized uncapped inference runs until September 22 at 05:13:10 UTC, followed by an hour of recording, under freeze jev-baseline-20260921. Three completed new-bundle cycles consumed exact pinned Jev evidence and received successful NOTHING receipts. Native execution, cadence, price wakes and Hermes cognition text remain unchanged; predictive and positioned-management benefit await the frozen prospective evaluation.",
       "stop_line": "SIM advisory evidence only. No direct Jev entry, exit, reversal, wake, veto, bracket, sizing, real-capital activation or automatic promotion; later authority needs a separate operator-resolved architecture."
     },
     {
