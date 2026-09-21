@@ -12,7 +12,7 @@
       "owner_role": "architect",
       "claim": {"assignee": "AIbert", "claimed_at": "2026-09-21T05:10:00Z"},
       "acceptance": [
-        "Preserve the current cognition as a separately frozen 24-hour SIM baseline with operator-selected uncapped Jev inference and an additional hour of recording.",
+        "Preserve the current cognition in a bounded SIM test with an additional outcome-recording hour; record and evaluate operator cadence revisions as separate observer epochs.",
         "Compare fixed current, guided, compact-with-Jev and compact-without-Jev prompts on the same saved development cases using an isolated empty-toolset Hermes home.",
         "Keep native facts and output contracts auditable; report input size, latency, parsing failures and decision differences without treating development responses as edge evidence.",
         "Keep the candidate outside installed cognition until later frozen and naturally positioned evidence supports a separately resolved promotion."
@@ -20,6 +20,7 @@
       "depends_on": ["GHP-003", "GHP-004", "GHP-006"],
       "evidence": [
         "docs/ledger/2026-09-21-jev-baseline-and-offload.md",
+        "docs/ledger/2026-09-21-cost-disciplined-cognition.md",
         "research/jev/hermes_briefing.py",
         "research/jev/compare_hermes.py",
         "research/jev/skills/interpret-jev/SKILL.md",
@@ -57,7 +58,7 @@
         "distribution.yaml version 0.0.2.94",
         "docs/ledger/2026-09-21-jev-baseline-and-offload.md"
       ],
-      "notes": "Level 2 SIM evidence v0.0.2.94 proved natural consumption. The subsequent v0.0.2.95 baseline is published and installed with 35/35 owned hashes and 821 passing tests. A verified 121-file checkpoint preserves learner/epoch evidence; prior AI/jobs, policy and replication were restored. User-authorized uncapped inference runs until September 22 at 05:13:10 UTC, followed by an hour of recording, under freeze jev-baseline-20260921. Three completed new-bundle cycles consumed exact pinned Jev evidence and received successful NOTHING receipts. Native execution, cadence, price wakes and Hermes cognition text remain unchanged; predictive and positioned-management benefit await the frozen prospective evaluation.",
+      "notes": "Level 2 SIM evidence v0.0.2.94 proved natural consumption. The subsequent v0.0.2.95 baseline is published and installed with 35/35 owned hashes and 821 passing tests. A verified 121-file checkpoint preserves learner/epoch evidence; prior AI/jobs, policy and replication were restored. User-authorized uncapped inference runs until September 22 at 05:13:10 UTC, followed by an hour of recording, under freeze jev-baseline-20260921. Three completed new-bundle cycles consumed exact pinned Jev evidence and received successful NOTHING receipts. Native execution, cadence, price wakes and Hermes cognition text remain unchanged; predictive and positioned-management benefit await the frozen prospective evaluation. At the operator cost revision, the 15-second phase was ended early and replaced using the existing 60-second per-contract option, with the original cutoff, same frozen bundle and separate process-epoch evaluation. See docs/ledger/2026-09-21-cost-disciplined-cognition.md.",
       "stop_line": "SIM advisory evidence only. No direct Jev entry, exit, reversal, wake, veto, bracket, sizing, real-capital activation or automatic promotion; later authority needs a separate operator-resolved architecture."
     },
     {
