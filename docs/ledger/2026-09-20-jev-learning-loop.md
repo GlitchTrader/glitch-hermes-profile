@@ -1,5 +1,12 @@
 # GHP-005: bounded learning and authored-thesis research
 
+This is the pre-call implementation checkpoint. The operator subsequently approved
+the external transfer and the bounded epoch completed. See the
+[completed study and operational status](2026-09-21-jev-learning-results.md) for
+the 4,526 calls, final feature freeze, thesis results and separate NinjaTrader
+recovery. Approval-pending and zero-dispatch statements below describe this earlier
+checkpoint, not current status.
+
 The operator requested continuing improvement toward a coherent cognitive system.
 This source-only increment adds a bounded question-selection engine, audited offline
 API batch runner and causal thesis-replay primitives. It preserves the installed

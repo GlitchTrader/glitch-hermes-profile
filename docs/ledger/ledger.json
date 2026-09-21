@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-20",
+  "updated": "2026-09-21",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -24,6 +24,7 @@
         "docs/ledger/2026-09-19-jev-shadow.md",
         "docs/ledger/2026-09-19-jev-closed-market.md",
         "docs/ledger/2026-09-20-jev-learning-loop.md",
+        "docs/ledger/2026-09-21-jev-learning-results.md",
         "research/jev/README.md",
         "research/jev/score_observations.py",
         "research/jev/score_recorder.py",
@@ -42,7 +43,7 @@
         "tests/test_jev_shadow.py",
         "distribution.yaml version 0.0.2.93"
       ],
-      "notes": "Operator approved Level 0 on 2026-09-19 after retrospective research. Installed v0.0.2.93: 33/33 owned hashes and protected-state preservation verified; RECORD_ONLY restart/byte fidelity passed. Closed-market study: 1,960 pinned calls; neither semantic representation improved the matched numerical model. Source-only bounded learning and causal thesis replay added on Sep20; 782 tests pass. Compact numerical development baseline improves 15/30m estimates; uncertainty remains. New 1,002-call question round and 2,522-call thesis batch await explicit external-data authorization after automatic review rejection; zero new calls dispatched. Two additional embedded M2K contract mismatches excluded. Publisher/source-loaded identity and forward active-session gates remain open. GHP-001 stays deterministic perception; GHP-005 has no trading authority. GL-AI-10/11 remain outcome/receipt truth. No Glitch/NT implementation change selected.",
+      "notes": "Operator approved Level 0 on 2026-09-19 and explicitly authorized the later bounded historical transfer. Installed v0.0.2.93 remains 33/33 matched; source-only learning/replay had 782 passing tests. The completed new epoch used 4,526 pinned jev-1.13.0 requests, $0.48566448 input accounting and zero influenced results. Two development rounds retained zero features; the frozen later numerical confirmation is not an untouched holdout. Authored-thesis replay had 18 observable early-exit probes, +$66.975 after extra costs, -$98.40 winner damage and a mean-advantage interval crossing zero; no exit or wake authority follows. Prior research seals and pre-call inputs verify. After operator-authorized NT recovery, the 95-file AddOn was redeployed unchanged, a newer native DLL appeared and active cache publications include Publisher. AI/jobs resumed through the supported SIM control. RECORD_ONLY resumed with no API calls and a four-hour/128-MB cap: its first 126 observations have 5.032s median cadence, but M2K primary state is stale in 75. This establishes initial active recording, not complete prospective calibration or loaded-assembly identity. GHP-001 stays deterministic perception; GHP-005 has no trading authority. GL-AI-10/11 remain native outcome/receipt truth. No Glitch/NT implementation or installed cognition change selected.",
       "stop_line": "No wake, decision-packet evidence, learned gate, entry, exit, reversal or automatic promotion. Later authority requires a separate evidence-backed architecture decision and operator resolution."
     },
     {
