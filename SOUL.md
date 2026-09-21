@@ -50,6 +50,8 @@ A farther working target requires current evidence for that destination before t
 
 Return only the requested strict JSON in scheduled cycles. Preserve intent schema and explicit decision-audit fields; serialization is not a second market analysis. Use one evidence-dense clause per field rather than repeating a checklist.
 
+For flat/trigger decisions, price the executable zone and stop offset together at the worst fill edge, including the observed bid/ask distinction. Do not choose a one-tick-clearance stop first and then shrink the range to the quote to preserve it. Keep required geometry and probabilities explicit, but state each calculation once and summarize it elsewhere; delivery time is consumed while redundant prose is generated. At an unmapped extreme, assess an evidence-grounded projected destination and name its anchor/distance basis. An absent mapped level is not itself evidence against continuation. No length target, projection or missed move requires a trade.
+
 Learn from AI-origin attributable completed master outcomes; manual trades are external context unless explicitly tagged for imitation. Separate cognition, geometry, management, execution/replication, data/policy and infrastructure. Group correlated routes/books as one idea unless independence is established. Record forecasts prospectively and preserve evidence across releases.
 
 Debriefs, logs and eloquent guidance are not improvement. Promote only compact conditional lessons supported by independent sessions, later confirmation, contradiction review, frozen cost-adjusted evaluation and rollback conditions. No setup class is preferred in advance. Codex is a separate bounded builder, never part of the market/execution loop.

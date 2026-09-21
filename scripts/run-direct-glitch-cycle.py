@@ -56,7 +56,7 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v28-jev-advisory-evidence"
+DIRECT_PROMPT_REVISION = "direct-v29-delivery-aware-cognition"
 COGNITIVE_GATE_VERSION = "glitch.hermes.cognitive_gate.v2"
 COGNITIVE_OVERLAY_VERSION_MARKER = "+overlay-"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
@@ -4508,6 +4508,7 @@ def deterministic_geometry_context(instrument: dict[str, Any]) -> dict[str, Any]
     state = descriptive.get("descriptive_state") if isinstance(descriptive, dict) else None
     liquidity = state.get("liquidity") if isinstance(state, dict) else None
     spread: dict[str, Any] = {"status": "unavailable"}
+    quotes: dict[str, Any] = {"status": "unavailable"}
     if isinstance(liquidity, dict):
         try:
             spread_points = float(liquidity.get("spread_points"))
@@ -4515,6 +4516,15 @@ def deterministic_geometry_context(instrument: dict[str, Any]) -> dict[str, Any]
             spread_points = math.nan
         if math.isfinite(spread_points) and spread_points >= 0:
             spread = {"status": "available", **metrics(spread_points)}
+        bid, ask = liquidity.get("best_bid"), liquidity.get("best_ask")
+        if all(isinstance(p, (int, float)) and not isinstance(p, bool)
+               and math.isfinite(p) and p > 0 for p in (bid, ask)) and bid <= ask:
+            quotes = {
+                "status": "observed_in_packet_not_a_current_fill",
+                "sell_bid": bid, "buy_ask": ask,
+                "instrument_observed_utc": instrument.get("timestamp_utc"),
+                "quote_age_seconds_at_observation": liquidity.get("last_quote_age_seconds"),
+            }
 
     return {
         "schema_version": "glitch.hermes.geometry_context.v1",
@@ -4529,6 +4539,9 @@ def deterministic_geometry_context(instrument: dict[str, Any]) -> dict[str, Any]
             "decision_reference_price": instrument.get("current_price"),
             "native_stop": "actual_fill + authored_stop - decision_reference_price",
             "native_target": "actual_fill + authored_target - decision_reference_price",
+            "packet_quotes": quotes,
+            "long_worst_edge_stop": "authored_stop + entry_range_high - decision_reference_price < chosen_failure_boundary",
+            "short_worst_edge_stop": "authored_stop + entry_range_low - decision_reference_price > chosen_failure_boundary",
             "meaning": "Initial risk/reward distances are preserved, not absolute chart levels. "
                        "Evaluate the shifted bracket throughout the authored entry range; "
                        "market slippage can exceed that range. Native receipts own actual prices.",
@@ -6968,7 +6981,11 @@ def build_prompt(
         + instructions
         + "Use required_output_template for batch and audit shape; include the required action-specific entry or protection fields specified above, and omit fields inapplicable to the selected action. The runtime deterministically supplies schema, intent ID, time, route, account, snapshot hash, model version, and prompt version. Preserve instrument and every strict decision_audit key; final_choice must equal action. "
         + wake_instruction
-        + "Keep the entire response under 9000 characters. Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
+        + ("Keep the entire response under 9000 characters. " if positioned_only else
+           "Aim for "
+           + ("4000" if trigger_review_only else "6000")
+           + " chars; retain all required facts. ")
+        + "Return one strict glitch.intent.batch.v1 JSON object only, with no Markdown or trailing prose.\\nCURRENT_CYCLE="
         + json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
         + "\nOUTPUT_CLOSURE: "
         + ("Write decision_audit FIRST, then the final executable fields. Apply any geometry/range correction "

@@ -1,4 +1,6 @@
-# Glitch Hermes Profile v0.0.2.95
+# Glitch Hermes Profile v0.0.2.96
+
+v0.0.2.96 addresses observed entry-delivery failures with concise flat/trigger records, explicit packet bid/ask provenance and joint construction of the fill zone and stop offset. At unmapped extremes Hermes must assess a supported projected destination rather than treating an absent mapped level as proof of no room. Every comparison field, native price/range check, configured limit and management contract remains. This starts a separate cognition version; it does not establish more fills or profitability. See [the entry-delivery investigation](docs/ledger/2026-09-21-entry-delivery-cognition.md).
 
 v0.0.2.95 supports an explicitly authorized Jev baseline without monetary or call-count shutoffs, while preserving its absolute inference cutoff, single worker, cadence, deadlines, disk bound and STOP control. Freeze-time evidence reads now stream large ledgers. Hermes instructions and Jev questions remain unchanged. The alternative briefing and interpretation guidance stay research-only; see [the frozen baseline and offline comparison](docs/ledger/2026-09-21-jev-baseline-and-offload.md).
 
