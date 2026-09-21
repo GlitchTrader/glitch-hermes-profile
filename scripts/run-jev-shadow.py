@@ -364,7 +364,13 @@ class Observer:
             return
         if not self.raw or (not self.advisory and self.latest_id == self.last_attempt_id):
             return
-        if self.store.calls >= self.args.max_calls or (self.store.calls + 1) * RESERVED_USD_PER_CALL > self.args.max_usd:
+        if self.args.inference_until_utc and time.time() >= timestamp(self.args.inference_until_utc):
+            self.last_error = "inference_window_complete"
+            return  # The final observation tail still records future labels.
+        if not self.args.unlimited_inference and (
+            self.store.calls >= self.args.max_calls
+            or (self.store.calls + 1) * RESERVED_USD_PER_CALL > self.args.max_usd
+        ):
             self.last_error = "inference_budget_exhausted"
             return  # Recording continues, but no calls can be started.
         try:
@@ -420,6 +426,8 @@ class Observer:
             "authority": "hermes_evidence_sim" if self.advisory else "shadow_only",
             "question_version": self.question_version, "question_hash": digest(self.questions),
             "requests_total": self.store.calls, "reserved_usd_total": self.store.calls * RESERVED_USD_PER_CALL,
+            "financial_and_call_caps": "disabled_by_operator" if self.args.unlimited_inference else "bounded",
+            "reserve_is_billing": False, "inference_until_utc": self.args.inference_until_utc,
             "evidence_bytes": self.store.total, "duplicate_reads": self.duplicates, "read_errors": self.read_errors,
             "last_error": self.last_error, "last_provider_status": self.last_result,
             "input_issues": {key: item["issues"] for key, item in self.instruments.items()},
@@ -442,11 +450,23 @@ def parse_args(argv=None):
     parser.add_argument("--max-disk-mb", type=int, default=512)
     parser.add_argument("--max-calls", type=int, default=500)
     parser.add_argument("--max-usd", type=float, default=1)
+    parser.add_argument("--unlimited-inference", action="store_true",
+                        help="Explicit EVIDENCE opt-in: disable call/USD shutoffs; retain duration, disk, cadence, deadline and STOP")
+    parser.add_argument("--inference-until-utc", help="Absolute UTC end of EVIDENCE inference; recording continues to duration limit")
     args = parser.parse_args(argv)
     if not 4 <= args.max_disk_mb <= 4096 or not 0 <= args.duration_seconds <= 7 * 86400:
         parser.error("disk budget must be 4..4096 MB; duration must be 0..7 days")
     if not 0 <= args.max_calls <= 10000 or not 0 <= args.max_usd <= 10:
         parser.error("call budget must be 0..10000 and USD reserve 0..10")
+    if args.unlimited_inference and (args.mode != "EVIDENCE" or args.duration_seconds <= 0
+                                    or not args.inference_until_utc):
+        parser.error("unlimited inference requires explicit EVIDENCE mode, bounded duration and an absolute inference deadline")
+    if args.inference_until_utc and (
+        args.mode != "EVIDENCE" or args.duration_seconds <= 0
+        or not args.inference_until_utc.endswith("Z") or timestamp(args.inference_until_utc) is None
+        or timestamp(args.inference_until_utc) > time.time() + args.duration_seconds
+    ):
+        parser.error("inference deadline must be UTC and no later than the bounded recording duration")
     if args.mode == "SHADOW" and not args.instrument:
         parser.error("SHADOW requires --instrument with the exact contract")
     if args.mode == "EVIDENCE" and (
@@ -480,6 +500,11 @@ def main(argv=None):
                      questions=observer.questions, question_version=observer.question_version, question_hash=digest(observer.questions),
                      requested_model=MODEL, provider=PROVIDER,
                      state_schema_version=advisory.STATE_VERSION if observer.advisory else STATE_VERSION,
+                     run_limits={"duration_seconds": args.duration_seconds, "max_disk_mb": args.max_disk_mb,
+                                 "unlimited_inference": args.unlimited_inference,
+                                 "inference_until_utc": args.inference_until_utc,
+                                 "max_calls": None if args.unlimited_inference else args.max_calls,
+                                 "max_usd": None if args.unlimited_inference else args.max_usd},
                      prior_observation_id=observer.latest_id, torn_tails=store.torn_tails,
                      interrupted_request_ids=sorted(store.unfinished),
                      source_hashes={p.name: digest(p.read_bytes()) for p in

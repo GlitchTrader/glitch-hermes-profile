@@ -5,6 +5,31 @@
   "roadmap_ref": "README.md",
   "items": [
     {
+      "id": "GHP-007",
+      "title": "Compare Jev interpretation guidance and compact Hermes briefings offline",
+      "status": "in_progress",
+      "priority": "P1",
+      "owner_role": "architect",
+      "claim": {"assignee": "AIbert", "claimed_at": "2026-09-21T05:10:00Z"},
+      "acceptance": [
+        "Preserve the current cognition as a separately frozen 24-hour SIM baseline with operator-selected uncapped Jev inference and an additional hour of recording.",
+        "Compare fixed current, guided, compact-with-Jev and compact-without-Jev prompts on the same saved development cases using an isolated empty-toolset Hermes home.",
+        "Keep native facts and output contracts auditable; report input size, latency, parsing failures and decision differences without treating development responses as edge evidence.",
+        "Keep the candidate outside installed cognition until later frozen and naturally positioned evidence supports a separately resolved promotion."
+      ],
+      "depends_on": ["GHP-003", "GHP-004", "GHP-006"],
+      "evidence": [
+        "docs/ledger/2026-09-21-jev-baseline-and-offload.md",
+        "research/jev/hermes_briefing.py",
+        "research/jev/compare_hermes.py",
+        "research/jev/skills/interpret-jev/SKILL.md",
+        "tests/test_jev_hermes_briefing.py",
+        "tests/test_jev_hermes_comparison.py"
+      ],
+      "notes": "The first fully reversible representation reduces two saved prompts by about 3.2% including guidance. This is a development candidate, not an installed cognition replacement or evidence of a trading advantage.",
+      "stop_line": "Offline only: no native action, live prompt replacement, learned trading gate, automatic promotion or additional Jev authority."
+    },
+    {
       "id": "GHP-006",
       "title": "Supply explicit Jev probabilistic evidence to existing Hermes SIM reviews",
       "status": "in_progress",
@@ -29,7 +54,8 @@
         "tests/test_jev_evidence.py",
         "research/jev/score_recorder.py",
         "docs/ledger/2026-09-21-jev-hermes-evidence.md",
-        "distribution.yaml version 0.0.2.94"
+        "distribution.yaml version 0.0.2.94",
+        "docs/ledger/2026-09-21-jev-baseline-and-offload.md"
       ],
       "notes": "Operator-authorized Level 2 SIM evidence implemented in 34f4960, published and installed as v0.0.2.94 with 35/35 matching hashes. Full suite: 809 passed; subsequent scorer metadata clarification: 31 label/scorer tests passed. A verified 119-file checkpoint preserves learner/epoch and prior installed evidence; auth/config/epoch/replication/policy hashes and original enabled jobs were restored. Scheduled cycle 20260921T0325Z consumed a journal-linked pinned Jev prediction, completed as NOTHING and received an accepted no-native-action receipt. A bounded 120-call/75-minute trial is collecting future labels; predictive and positioned-management benefit remain unproven. This explicitly reconciles the former Level 0 boundary outside GHP-001 deterministic perception. Native execution, cadence and price wakes remain unchanged. See the dated operational proof for exact identities, real provider exclusions and rollback.",
       "stop_line": "SIM advisory evidence only. No direct Jev entry, exit, reversal, wake, veto, bracket, sizing, real-capital activation or automatic promotion; later authority needs a separate operator-resolved architecture."
@@ -95,7 +121,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.94",
+        "distribution.yaml version 0.0.2.95",
         "docs/ledger/2026-09-18-management-path-evidence.md",
         "tests/test_management_path_evidence.py",
         "docs/ledger/2026-09-17-management-handoff.md",
@@ -198,7 +224,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.94"
+        "distribution_version": "0.0.2.95"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

@@ -215,3 +215,36 @@ def test_observer_publication_is_consumable_with_exact_journal_identity(tmp_path
     assert result["predictions"][0]["state_hash"] == journal[-1]["state_hash"]
     assert journal[-1]["influenced"] is None  # Consumption and final-choice attribution remain separate.
     store.close()
+
+
+def test_unlimited_inference_keeps_deadline_and_recording_tail(tmp_path, monkeypatch):
+    now = time.time()
+    args = shadow.parse_args(["--mode", "EVIDENCE", "--cache", str(tmp_path / "cache.json"),
+        "--output", str(tmp_path / "jev-shadow"), "--contracts", "MNQ 12-26", "--account", "Sim101",
+        "--duration-seconds", "3600", "--max-calls", "0", "--max-usd", "0", "--unlimited-inference",
+        "--inference-until-utc", iso(now + 1800)])
+    args.cache.write_bytes(encoded(sample_cache(now)))
+    store = shadow.EvidenceStore(args.output, 4 * 1024 * 1024)
+    observer = shadow.Observer(args, store, {"TYPESAFE_API_KEY": "unused"})
+    calls = []
+    monkeypatch.setattr(observer.slot, "start", lambda *a: calls.append(a))
+    observer.step()
+    assert len(calls) == 1 and store.calls == 1
+    args.inference_until_utc = iso(now - 1)
+    observer.next_call = 0
+    observer.step()
+    observer.health()
+    assert len(calls) == 1 and observer.last_error == "inference_window_complete"
+    health = json.loads((args.output / "health.json").read_text())
+    assert health["financial_and_call_caps"] == "disabled_by_operator" and health["status"] == "running"
+    assert health["reserve_is_billing"] is False
+    assert any(row["kind"] == "observation" for row in records(args.output))
+    store.close()
+
+
+@pytest.mark.parametrize("extra", [[], ["--mode", "SHADOW", "--instrument", "MNQ 12-26"],
+    ["--mode", "EVIDENCE", "--duration-seconds", "60"],
+    ["--mode", "EVIDENCE", "--duration-seconds", "60", "--inference-until-utc", "badZ"]])
+def test_unlimited_requires_explicit_scope_and_bounded_time(extra):
+    with pytest.raises(SystemExit):
+        shadow.parse_args(["--unlimited-inference", *extra])

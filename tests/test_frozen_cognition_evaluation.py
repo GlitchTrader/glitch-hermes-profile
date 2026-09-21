@@ -17,6 +17,17 @@ SPEC.loader.exec_module(EVALUATOR)
 DIRECT = EVALUATOR.load_direct_module(ROOT)
 
 
+def test_freeze_jsonl_iterator_is_lazy_and_keeps_strict_line_errors(tmp_path, monkeypatch):
+    path = tmp_path / "evidence.jsonl"
+    path.write_text('\ufeff{"id":1}\n\n{broken}\n', encoding="utf-8")
+    monkeypatch.setattr(Path, "read_text", lambda *a, **k: pytest.fail("whole-ledger text read"))
+    rows = EVALUATOR.iter_jsonl(path, strict=True)
+    assert next(rows) == {"id": 1}
+    with pytest.raises(ValueError, match="invalid_jsonl:evidence.jsonl:3"):
+        next(rows)
+    assert EVALUATOR.read_jsonl(path) == [{"id": 1}]
+
+
 def trade_episode(episode_id: str, prompt_version: str) -> dict:
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     return {

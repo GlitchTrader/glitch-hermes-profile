@@ -15,7 +15,8 @@ contracts. One provider process at a time serves an explicit list of full native
 contracts in deterministic rotation, no more than once per contract per 15 seconds.
 No request runs inside Hermes, market publication, execution or reconciliation.
 The two-second deadline, latest-input supersession, durable reservations, no retry,
-model pin, disk/call/time limits and independent STOP remain in force.
+model pin, disk/time limits and independent STOP remain in force. Call/USD limits
+remain the default; v0.0.2.95 adds the explicit operator opt-in described below.
 
 The new frozen question bundle asks independent Choice questions over compact
 hybrid state: current regime, 15/30/60-minute UP/DOWN/FLAT endpoints, 15-minute
@@ -114,6 +115,23 @@ bound. Stop the observer immediately if publication or consumer contracts fail;
 Hermes continues its existing admitted reviews without the evidence. Extend the
 trial only as a separately recorded frozen run, not by changing this evaluation
 interval or tuning probabilities against its outcomes.
+
+## Authorized 24-hour baseline
+
+The September 21 operator instruction removes Jev monetary/call shutoffs for the
+next separately frozen SIM baseline. Select `--unlimited-inference` together with
+an absolute `--inference-until-utc` cutoff 24 hours after launch, a 90000-second
+recording duration, and `--max-disk-mb 3072`. Retain the same contracts, account and
+15-second cadence after verifying native scope. Record the exact UTC cutoff and
+source/question identities before launch. The additional recording hour supplies
+future observations for the final 60-minute forecasts. No requests start after the
+cutoff; bounded in-flight work may finish. A restart does not renew that cutoff.
+
+The explicit option ignores call/USD admission limits only in EVIDENCE mode. It
+does not change questions, model, Hermes instructions, authority, freshness,
+concurrency, deadlines, STOP or disk protection. Health and epoch records show
+whether the financial/call caps are disabled; reserved USD is not provider billing.
+Source-only briefing experiments cannot modify this running baseline.
 
 Official references: [Choice semantics](https://docs.typesafe.ai/primitives/choice),
 [shared state and independent questions](https://docs.typesafe.ai/concepts/state),

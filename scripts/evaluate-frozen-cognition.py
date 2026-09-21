@@ -105,24 +105,25 @@ def read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def read_jsonl(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
+def iter_jsonl(path: Path, *, strict: bool = False):
     if not path.is_file():
-        return []
-    values: list[dict[str, Any]] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8-sig", errors="replace").splitlines(), start=1
-    ):
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
-            if strict:
-                raise ValueError(f"invalid_jsonl:{path.name}:{line_number}:{error.msg}") from error
-            continue
-        if isinstance(value, dict):
-            values.append(value)
-    return values
+        return
+    with path.open(encoding="utf-8-sig", errors="replace") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                if strict:
+                    raise ValueError(f"invalid_jsonl:{path.name}:{line_number}:{error.msg}") from error
+                continue
+            if isinstance(value, dict):
+                yield value
+
+
+def read_jsonl(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
+    return list(iter_jsonl(path, strict=strict))
 
 
 def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -350,7 +351,7 @@ def freeze_experiment(
         baseline_ids = {
             evidence_id(row)
             for name in ("decision-episodes.jsonl", "trade-episodes.jsonl")
-            for row in read_jsonl(supervisor / name, strict=True)
+            for row in iter_jsonl(supervisor / name, strict=True)
             if evidence_id(row)
         }
         anchor = "verified_paused_evidence_checkpoint"
@@ -380,7 +381,8 @@ def freeze_experiment(
             if not source.is_file():
                 continue
             if source.suffix == ".jsonl":
-                read_jsonl(source, strict=True)
+                for _ in iter_jsonl(source, strict=True):
+                    pass
             else:
                 try:
                     parsed = json.loads(source.read_text(encoding="utf-8-sig"))
