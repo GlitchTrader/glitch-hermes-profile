@@ -1,8 +1,8 @@
-# Glitch Hermes Profile v0.0.2.93
+# Glitch Hermes Profile v0.0.2.94
 
 This repository distributes the cognition, skills, deterministic workers, and control plugin used by the **Experimental** Glitch AI edition.
 
-v0.0.2.93 adds an independent, default-OFF Jev research recorder and shadow observer. It reads the existing analytics cache, retains exact input evidence, and optionally records pinned TypeSafe forecasts. It has no connection to Hermes admission, decisions, learning, orders or native execution. Setup installs the files without scheduling or starting the observer. See [the Level 0 contract and operating procedure](docs/jev-shadow-research.md).
+v0.0.2.94 adds explicitly enabled Jev advisory evidence to existing Hermes SIM reviews. An independent, bounded observer classifies market conditions and forecasts directional horizons; Hermes receives fresh, versioned probability distributions and retains all decision authority. It never waits for Jev. Setup installs the files without starting the observer. See [the SIM evidence architecture](docs/jev-hermes-evidence.md). Existing OFF, RECORD_ONLY and SHADOW modes retain [the Level 0 contract](docs/jev-shadow-research.md).
 
 v0.0.2.92 uses one management standard while green and red, adds causal completed-bar excursion alongside sampled native P&L, and supplies a bounded original-bracket post-exit review. A normal debrief waits for its 30-minute observation window; the schedule and model-call admission remain unchanged. No execution, risk, replication, entry gate or epoch change. See [the management evidence correction](docs/ledger/2026-09-18-management-path-evidence.md).
 

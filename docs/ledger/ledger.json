@@ -5,11 +5,41 @@
   "roadmap_ref": "README.md",
   "items": [
     {
+      "id": "GHP-006",
+      "title": "Supply explicit Jev probabilistic evidence to existing Hermes SIM reviews",
+      "status": "in_progress",
+      "priority": "P1",
+      "owner_role": "architect",
+      "claim": {"assignee": "AIbert", "claimed_at": "2026-09-21T03:08:30Z"},
+      "acceptance": [
+        "The operator-selected EVIDENCE mode supplies regime, directional horizons, continuation/reversal, maturity, flow acceptance and attributable thesis judgments as separate experimental distributions.",
+        "One bounded provider process serves explicit native contracts; no synchronous inference, wake, order, rank, gate, sizing or bracket authority enters Hermes or native execution.",
+        "The consumer verifies native SIM scope, contract and position identity, source age, process health, model and question version; unavailable evidence never waits or blocks normal reviews.",
+        "Each included prediction is captured in a per-cycle context and linked from the model attempt without treating prompt inclusion as proof of final-choice causality.",
+        "Focused and full profile tests pass; supported installation preserves native state, learner evidence and prior AI/jobs, and verifies source/remote/installed hashes.",
+        "A naturally admitted SIM review receives fresh evidence from a bounded single-worker trial; predictive/economic effectiveness remains a separate frozen prospective evaluation."
+      ],
+      "depends_on": ["GHP-001", "GHP-003", "GHP-004", "GHP-005"],
+      "evidence": [
+        "docs/jev-hermes-evidence.md",
+        "scripts/jev_evidence.py",
+        "scripts/jev_provider.py",
+        "scripts/run-jev-shadow.py",
+        "scripts/run-direct-glitch-cycle.py",
+        "tests/test_jev_evidence.py",
+        "research/jev/score_recorder.py",
+        "distribution.yaml version 0.0.2.94"
+      ],
+      "notes": "Explicitly authorized on Sep21 after the operator reviewed the completed historical studies and requested implementation of Jev evidence for Hermes. This reconciles the former Level 0 stop line deliberately; it does not assert predictive benefit or promote a fitted classifier. GHP-001 remains deterministic. Native execution contracts, flat/positioned cadence and price wakes remain unchanged.",
+      "stop_line": "SIM advisory evidence only. No direct Jev entry, exit, reversal, wake, veto, bracket, sizing, real-capital activation or automatic promotion; later authority needs a separate operator-resolved architecture."
+    },
+    {
       "id": "GHP-005",
       "title": "Record prospective market evidence and evaluate an isolated Level 0 Jev observer",
       "status": "in_progress",
       "priority": "P1",
       "owner_role": "architect",
+      "claim": {"assignee": "AIbert", "claimed_at": "2026-09-21T03:08:30Z"},
       "acceptance": [
         "Default OFF; RECORD_ONLY and SHADOW have no dependency or output edge to Hermes admission, cognition, learning, intents or native execution.",
         "Exact bounded cache bytes, producer and contract identity, native freshness, partial/missing state, request provenance and typed responses remain attributable across restart and provider failure.",
@@ -44,7 +74,7 @@
         "distribution.yaml version 0.0.2.93"
       ],
       "notes": "Operator approved Level 0 on 2026-09-19 and explicitly authorized the later bounded historical transfer. Installed v0.0.2.93 remains 33/33 matched; source-only learning/replay had 782 passing tests. The completed new epoch used 4,526 pinned jev-1.13.0 requests, $0.48566448 input accounting and zero influenced results. Two development rounds retained zero features; the frozen later numerical confirmation is not an untouched holdout. Authored-thesis replay had 18 observable early-exit probes, +$66.975 after extra costs, -$98.40 winner damage and a mean-advantage interval crossing zero; no exit or wake authority follows. Prior research seals and pre-call inputs verify. After operator-authorized NT recovery, the 95-file AddOn was redeployed unchanged, a newer native DLL appeared and active cache publications include Publisher. AI/jobs resumed through the supported SIM control. RECORD_ONLY resumed with no API calls and a four-hour/128-MB cap: its first 126 observations have 5.032s median cadence, but M2K primary state is stale in 75. This establishes initial active recording, not complete prospective calibration or loaded-assembly identity. GHP-001 stays deterministic perception; GHP-005 has no trading authority. GL-AI-10/11 remain native outcome/receipt truth. No Glitch/NT implementation or installed cognition change selected.",
-      "stop_line": "No wake, decision-packet evidence, learned gate, entry, exit, reversal or automatic promotion. Later authority requires a separate evidence-backed architecture decision and operator resolution."
+      "stop_line": "OFF, RECORD_ONLY and SHADOW remain Level 0 without trading influence. The separately authorized GHP-006 EVIDENCE contract is the only current SIM advisory exception. No wake, learned gate, direct entry, exit, reversal or automatic promotion."
     },
     {
       "id": "GHP-003",
@@ -64,7 +94,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.93",
+        "distribution.yaml version 0.0.2.94",
         "docs/ledger/2026-09-18-management-path-evidence.md",
         "tests/test_management_path_evidence.py",
         "docs/ledger/2026-09-17-management-handoff.md",
@@ -118,6 +148,7 @@
       "status": "in_progress",
       "priority": "P0",
       "owner_role": "architect",
+      "claim": {"assignee": "AIbert", "claimed_at": "2026-09-21T03:08:30Z"},
       "acceptance": [
         "An instrument-neutral, causally correct rolling ledger turns existing native MES, MNQ, and M2K facts into bounded price-sequence, structure, level, auction-state, VWAP, order-flow-response, geometry, and evidence-quality measurements.",
         "A standardized chart rendered from the same native facts is attached to the same admitted Hermes call; numerical packet facts remain authoritative and rendering failure is neutral and fail-open.",
@@ -135,7 +166,7 @@
         "distribution.yaml version 0.0.2.76"
       ],
       "notes": "This supersedes the unwired v0.0.2.18 MNQ-specific observation design. Do not restore that implementation unchanged. The 80% daily-capture ambition is an evaluation target, never a gate or guarantee.",
-      "stop_line": "Perception may organize measurements only; it must never become a deterministic trading strategy, action gate, outcome bias, or second LLM decision layer."
+      "stop_line": "Perception may organize measurements only; it must never become a deterministic trading strategy, action gate, outcome bias, or second LLM decision layer. The operator-authorized GHP-006 probabilistic advisory is a separate contract outside deterministic market perception."
     },
     {
       "id": "PROFILE-BETA-01",
@@ -166,7 +197,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.93"
+        "distribution_version": "0.0.2.94"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

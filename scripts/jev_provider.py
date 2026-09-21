@@ -79,14 +79,15 @@ def scrub(raw, secrets):
     return text
 
 
-def validate_response(value):
+def validate_response(value, questions=None):
+    questions = QUESTIONS if questions is None else questions
     if not isinstance(value, dict) or value.get("model") != MODEL:
         raise ValueError("model_identity")
     answers = value.get("answers")
-    if not isinstance(answers, dict) or set(answers) != set(QUESTIONS):
+    if not isinstance(answers, dict) or set(answers) != set(questions):
         raise ValueError("answer_set")
     normalized, notes = {}, []
-    for key, question in QUESTIONS.items():
+    for key, question in questions.items():
         answer = answers[key]
         if not isinstance(answer, dict) or answer.get("type") != "choice":
             raise ValueError("answer_type")
@@ -102,8 +103,10 @@ def validate_response(value):
             if any(abs(v * 100 - round(v * 100)) > 1e-8 for v in cells.values()):
                 raise ValueError("unexplained_probability_sum")
             notes.append(key + ":rounded_probability_sum")
-        if answer.get("choice") not in cells or cells[answer["choice"]] < max(cells.values()):
+        if answer.get("choice") not in cells or max(cells.values()) - cells[answer["choice"]] > 1e-12:
             raise ValueError("named_choice_discrepancy")
+        if cells[answer["choice"]] < max(cells.values()):
+            notes.append(key + ":floating_point_argmax_tie")
         confidence = answer.get("confidence")
         if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
             raise ValueError("confidence_range")
@@ -116,8 +119,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(state, keys):
-    body = encoded({"model": MODEL, "state": state, "questions": QUESTIONS})
+def request(state, keys, questions=None):
+    questions = QUESTIONS if questions is None else questions
+    body = encoded({"model": MODEL, "state": state, "questions": questions})
     if len(body) > MAX_REQUEST_BYTES:
         return {"status": "request_size_limit"}
     req = urllib.request.Request(ENDPOINT, data=body, headers={
@@ -136,7 +140,7 @@ def request(state, keys):
     try:
         value = strict_json(result["raw_response"].encode(), MAX_RESPONSE_BYTES)
         result["returned_model"] = value.get("model") if isinstance(value, dict) else None
-        normalized, notes = validate_response(value)
+        normalized, notes = validate_response(value, questions)
         result.update(status="ok", probabilities_for_scoring=normalized, notes=notes, usage=value.get("usage"))
         tokens = (value.get("usage") or {}).get("input_tokens")
         if type(tokens) is int and tokens >= 0:
@@ -147,10 +151,10 @@ def request(state, keys):
     return result
 
 
-def request_process(connection, state, keys):
+def request_process(connection, state, keys, questions=None):
     """Only worker target; its parent can terminate it at the absolute deadline."""
     try:
-        connection.send(request(state, keys))
+        connection.send(request(state, keys, questions))
     except Exception:
         connection.send({"status": "provider_worker_error"})
     finally:

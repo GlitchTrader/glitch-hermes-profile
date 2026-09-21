@@ -1,4 +1,4 @@
-"""Independent Level 0 cache recorder. OFF by default; never invokes Hermes or Glitch."""
+"""Independent cache recorder and opt-in SIM advisory publisher; never invokes Hermes or Glitch."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ from collections import deque
 import json
 import multiprocessing
 import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -16,6 +17,7 @@ from jev_observation import (MAX_BYTES, INPUT_EPOCH, STATE_VERSION, age, build_s
                              digest, encoded, strict_json, timestamp, utc_now)
 from jev_provider import (MODEL, PROVIDER, QUESTIONS, QUESTION_VERSION, RESERVED_USD_PER_CALL,
                           credentials, request_process)
+import jev_evidence as advisory
 
 DEFAULT_DATA = Path.home() / "Documents" / "NinjaTrader 8" / "GlitchData"
 DEADLINE_SECONDS = 2
@@ -33,7 +35,14 @@ def atomic_json(path, value):
         stream.write(encoded(value) + b"\n")
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    for attempt in range(3):
+        try:
+            os.replace(temporary, path)
+            break
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(.025)  # A short-lived Windows reader can overlap atomic replacement.
 
 
 def safe_path(path):
@@ -136,7 +145,8 @@ class EvidenceStore:
             raise
 
     def append(self, kind, **fields):
-        row = dict(fields, kind=kind, process_epoch=self.epoch, recorded_utc=utc_now(), influenced=False)
+        influenced = fields.pop("influenced", False)
+        row = dict(fields, kind=kind, process_epoch=self.epoch, recorded_utc=utc_now(), influenced=influenced)
         line = encoded(row) + b"\n"
         if len(line) > MAX_RECORD_BYTES:
             raise ValueError("record_size_limit")
@@ -170,12 +180,12 @@ class ProviderSlot:
     def __init__(self):
         self.active = None
 
-    def start(self, request_id, observation_id, raw_hash, state, keys):
+    def start(self, request_id, observation_id, raw_hash, state, keys, questions=None):
         if self.active:
             raise ValueError("provider_busy")
         context = multiprocessing.get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)
-        process = context.Process(target=request_process, args=(sender, state, keys), daemon=True)
+        process = context.Process(target=request_process, args=(sender, state, keys, questions), daemon=True)
         started = time.monotonic()
         try:
             process.start()
@@ -187,7 +197,8 @@ class ProviderSlot:
         self.active = {"process": process, "receiver": receiver, "started": started,
                        "started_utc": utc_now(), "request_id": request_id,
                        "observation_id": observation_id, "raw_hash": raw_hash,
-                       "state_hash": digest(state)}
+                       "state_hash": digest(state), "state_schema_version": state.get("schema_version", STATE_VERSION),
+                       "input_epoch": state.get("input_epoch", INPUT_EPOCH)}
 
     def finish(self, latest_id, forced=None):
         if not self.active:
@@ -216,7 +227,8 @@ class ProviderSlot:
         self.active = None
         return dict(result, request_id=active["request_id"], observation_id=active["observation_id"],
                     observation_hash=active["raw_hash"], start_utc=active["started_utc"], end_utc=utc_now(),
-                    state_hash=active["state_hash"], state_schema_version=STATE_VERSION, input_epoch=INPUT_EPOCH,
+                    state_hash=active["state_hash"], state_schema_version=active.get("state_schema_version", STATE_VERSION),
+                    input_epoch=active.get("input_epoch", INPUT_EPOCH),
                     latency_ms=round(elapsed * 1000, 3), superseded=active["observation_id"] != latest_id,
                     expired=elapsed >= DEADLINE_SECONDS, downstream_ids=None, retry_count=0)
 
@@ -233,6 +245,25 @@ class Observer:
         self.duplicates, self.read_errors, self.last_error = 0, 0, None
         self.next_call, self.next_health, self.next_capture, self.last_attempt_id = 0, 0, 0, None
         self.last_result = None
+        self.advisory = args.mode == "EVIDENCE"
+        self.contracts = args.contracts if self.advisory else [args.instrument]
+        self.questions = advisory.QUESTIONS if self.advisory else QUESTIONS
+        self.question_version = advisory.QUESTION_VERSION if self.advisory else QUESTION_VERSION
+        self.sent, self.rotation, self.offered, self.pending_evidence = {}, 0, {}, None
+
+    def publish_evidence(self):
+        if self.advisory:
+            atomic_json(self.store.root / "hermes-evidence.json", {
+                "schema_version": advisory.SCHEMA, "mode": "EVIDENCE", "account": self.args.account,
+                "process_epoch": self.store.epoch, "updated_utc": utc_now(), "predictions": self.offered,
+                "effect": "advisory_only", "consumption_truth": "Hermes model attempts and per-cycle jev-context"})
+
+    def current_position(self, contract):
+        try:
+            value = advisory.read_bounded(self.args.cache.parent / "hermes/exchange/hermes/supervisor/active-trades.json")
+            return advisory.position_context(value, contract, self.args.account, time.time())
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return {"status": "unavailable", "reason": "position_context_unavailable"}, None
 
     def capture(self):
         """At most three short reads; record bytes, not a fabricated sample per poll."""
@@ -303,7 +334,8 @@ class Observer:
                 result.setdefault(field, None)
             try:
                 current = decode_cache(self.raw, time.time()) if self.raw else {}
-                result["input_stale_or_invalid"] = not current.get(self.args.instrument, {}).get("eligible", False)
+                contract = self.pending_evidence["contract"] if self.advisory and self.pending_evidence else self.args.instrument
+                result["input_stale_or_invalid"] = not current.get(contract, {}).get("eligible", False)
             except (ValueError, TypeError):
                 result["input_stale_or_invalid"] = True
             result["eligible_for_research_scoring"] = (result["status"] == "ok" and not result["superseded"]
@@ -311,45 +343,82 @@ class Observer:
             self.last_result = result["status"]
             self.store.append("prediction", schema_version="glitch.jev.prediction.v1",
                               provider=PROVIDER, requested_model=MODEL,
-                              question_version=QUESTION_VERSION, question_hash=digest(QUESTIONS), **result)
+                              question_version=self.question_version, question_hash=digest(self.questions),
+                              authority="hermes_evidence_sim" if self.advisory else "shadow_only",
+                              influenced=None if self.advisory else False, **result)
+            if self.advisory and self.pending_evidence:
+                pending = self.pending_evidence
+                self.offered.pop(pending["contract"], None)
+                value = advisory.evidence_record(result, pending["state"], pending["position_key"])
+                if value is not None:
+                    self.offered[pending["contract"]] = value
+                self.publish_evidence()
+                self.pending_evidence = None
 
     def step(self):
         if time.monotonic() >= self.next_capture:
             self.next_capture = time.monotonic() + 1
             self.capture()
         self.prediction(self.slot.finish(self.latest_id))
-        if self.args.mode != "SHADOW" or self.slot.active or time.monotonic() < self.next_call:
+        if self.args.mode not in ("SHADOW", "EVIDENCE") or self.slot.active or time.monotonic() < self.next_call:
             return
-        if not self.raw or self.latest_id == self.last_attempt_id:
+        if not self.raw or (not self.advisory and self.latest_id == self.last_attempt_id):
             return
         if self.store.calls >= self.args.max_calls or (self.store.calls + 1) * RESERVED_USD_PER_CALL > self.args.max_usd:
             self.last_error = "inference_budget_exhausted"
             return  # Recording continues, but no calls can be started.
         try:
             current = decode_cache(self.raw, time.time())  # Reassess age at admission, not at file read.
-            original = self.instruments.get(self.args.instrument, {})
+            contract = self.args.instrument
+            if self.advisory:
+                contract = None
+                for offset in range(len(self.contracts)):
+                    index = (self.rotation + offset) % len(self.contracts)
+                    candidate = self.contracts[index]
+                    sent = self.sent.get(candidate, {})
+                    if (time.monotonic() >= sent.get("next_call", 0)
+                            and sent.get("observation_id") != self.latest_id
+                            and current.get(candidate, {}).get("eligible")
+                            and "source_time_regression" not in self.instruments.get(candidate, {}).get("issues", [])):
+                        contract, self.rotation = candidate, (index + 1) % len(self.contracts)
+                        break
+                if contract is None:
+                    return
+            original = self.instruments.get(contract, {})
             if "source_time_regression" in original.get("issues", []):
                 return
-            state = build_state(current, self.args.instrument, self.latest_id, self.raw_hash, self.history)
+            if self.advisory:
+                position, key = self.current_position(contract)
+                state = advisory.build_advisory_state(current, contract, self.latest_id, self.raw_hash, self.history, position)
+                self.pending_evidence = {"state": state, "position_key": key, "contract": contract}
+            else:
+                state = build_state(current, contract, self.latest_id, self.raw_hash, self.history)
         except (ValueError, TypeError):
             return
         request_id = uuid.uuid4().hex
         self.store.append("request", request_id=request_id, observation_id=self.latest_id,
                           observation_hash=self.raw_hash, provider=PROVIDER, requested_model=MODEL,
-                          question_version=QUESTION_VERSION, question_hash=digest(QUESTIONS),
-                          state_schema_version=STATE_VERSION, state_hash=digest(state), state=state,
-                          reserved_usd=RESERVED_USD_PER_CALL, downstream_ids=None)
+                          question_version=self.question_version, question_hash=digest(self.questions),
+                          state_schema_version=state["schema_version"], state_hash=digest(state), state=state,
+                          reserved_usd=RESERVED_USD_PER_CALL, downstream_ids=None,
+                          authority="hermes_evidence_sim" if self.advisory else "shadow_only",
+                          position_key=self.pending_evidence["position_key"] if self.advisory else None,
+                          influenced=None if self.advisory else False)
         self.store.calls += 1  # Reservation is durable before the side effect; never refund unknown calls.
         self.last_attempt_id = self.latest_id
-        self.next_call = time.monotonic() + 60
-        self.slot.start(request_id, self.latest_id, self.raw_hash, state, self.keys)
+        cadence = self.args.cadence_seconds if self.advisory else 60
+        self.next_call = time.monotonic() + (cadence / len(self.contracts) if self.advisory else cadence)
+        self.sent[contract] = {"observation_id": self.latest_id, "next_call": time.monotonic() + cadence}
+        self.slot.start(request_id, self.latest_id, self.raw_hash, state, self.keys, self.questions)
 
     def health(self, status="running"):
         atomic_json(self.store.root / "health.json", {
             "schema_version": "glitch.jev.health.v1", "updated_utc": utc_now(), "pid": os.getpid(),
             "process_epoch": self.store.epoch, "mode": self.args.mode, "status": status,
-            "input_epoch": INPUT_EPOCH, "latest_observation_id": self.latest_id,
-            "influenced": False, "provider_in_flight": bool(self.slot.active),
+            "input_epoch": advisory.INPUT_EPOCH if self.advisory else INPUT_EPOCH, "latest_observation_id": self.latest_id,
+            "influenced": None if self.advisory else False, "provider_in_flight": bool(self.slot.active),
+            "authority": "hermes_evidence_sim" if self.advisory else "shadow_only",
+            "question_version": self.question_version, "question_hash": digest(self.questions),
             "requests_total": self.store.calls, "reserved_usd_total": self.store.calls * RESERVED_USD_PER_CALL,
             "evidence_bytes": self.store.total, "duplicate_reads": self.duplicates, "read_errors": self.read_errors,
             "last_error": self.last_error, "last_provider_status": self.last_result,
@@ -361,10 +430,13 @@ class Observer:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("OFF", "RECORD_ONLY", "SHADOW"), default="OFF")
+    parser.add_argument("--mode", choices=("OFF", "RECORD_ONLY", "SHADOW", "EVIDENCE"), default="OFF")
     parser.add_argument("--cache", type=Path, default=DEFAULT_DATA / "AnalyticsBridgeCache.json")
     parser.add_argument("--output", type=Path, default=DEFAULT_DATA / "jev-shadow")
     parser.add_argument("--instrument", help="Exact native contract required for SHADOW; no automatic selection")
+    parser.add_argument("--contracts", nargs="+", help="One to three exact native contracts for EVIDENCE")
+    parser.add_argument("--account", help="Explicit SIM master for the EVIDENCE trial")
+    parser.add_argument("--cadence-seconds", type=float, default=15, help="EVIDENCE cadence per contract, 15..300 seconds")
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--duration-seconds", type=float, default=0, help="0 runs until STOP or interrupt")
     parser.add_argument("--max-disk-mb", type=int, default=512)
@@ -377,6 +449,13 @@ def parse_args(argv=None):
         parser.error("call budget must be 0..10000 and USD reserve 0..10")
     if args.mode == "SHADOW" and not args.instrument:
         parser.error("SHADOW requires --instrument with the exact contract")
+    if args.mode == "EVIDENCE" and (
+        not args.contracts or not 1 <= len(args.contracts) <= 3 or len(set(args.contracts)) != len(args.contracts)
+        or any(not re.fullmatch(r"(?:MNQ|MES|M2K) \d{2}-\d{2}", value) for value in args.contracts)
+        or not re.fullmatch(r"Sim\d+", args.account or "") or args.duration_seconds <= 0
+        or not 15 <= args.cadence_seconds <= 300
+    ):
+        parser.error("EVIDENCE requires 1..3 exact contracts, a SIM account, bounded duration and cadence 15..300s")
     return args
 
 
@@ -394,16 +473,18 @@ def main(argv=None):
         store = EvidenceStore(args.output, args.max_disk_mb * 1024 * 1024)
         if (store.root / "STOP").exists():
             raise ValueError("stop_file_present")
-        keys = credentials(args.env_file) if args.mode == "SHADOW" else None
+        keys = credentials(args.env_file) if args.mode in ("SHADOW", "EVIDENCE") else None
         observer = Observer(args, store, keys)
-        store.append("epoch_start", mode=args.mode, input_epoch=INPUT_EPOCH, questions=QUESTIONS,
-                     question_version=QUESTION_VERSION, question_hash=digest(QUESTIONS),
-                     requested_model=MODEL, provider=PROVIDER, state_schema_version=STATE_VERSION,
+        observer.publish_evidence()  # New process starts with no reusable offered predictions.
+        store.append("epoch_start", mode=args.mode, input_epoch=advisory.INPUT_EPOCH if observer.advisory else INPUT_EPOCH,
+                     questions=observer.questions, question_version=observer.question_version, question_hash=digest(observer.questions),
+                     requested_model=MODEL, provider=PROVIDER,
+                     state_schema_version=advisory.STATE_VERSION if observer.advisory else STATE_VERSION,
                      prior_observation_id=observer.latest_id, torn_tails=store.torn_tails,
                      interrupted_request_ids=sorted(store.unfinished),
                      source_hashes={p.name: digest(p.read_bytes()) for p in
                                     (Path(__file__), Path(__file__).with_name("jev_observation.py"),
-                                     Path(__file__).with_name("jev_provider.py"))})
+                                     Path(__file__).with_name("jev_provider.py"), Path(__file__).with_name("jev_evidence.py"))})
         started = time.monotonic()
         while not (store.root / "STOP").exists():
             tick = time.monotonic()

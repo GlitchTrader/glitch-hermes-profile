@@ -35,7 +35,10 @@ def collect(root, as_of):
                 published = timestamp(row.get("recorded_utc"))
                 if published is None or published > as_of:
                     continue
-                if row.get("influenced") is not False:
+                if row.get("influenced") is not False and not (
+                    row.get("influenced") is None and row.get("authority") == "hermes_evidence_sim"
+                    and row.get("kind") in ("request", "prediction")
+                ):
                     raise ValueError("unexpected_influenced_record")
                 kind = row.get("kind");counts[kind] += 1
                 if kind == "observation":
@@ -127,12 +130,15 @@ def evaluate(root, as_of):
                   "tick": frame["values"]["InstrumentTickSize"], "atr15": ref["atr15"],
                   "point_value": frame["values"]["InstrumentPointValueUsd"]}
         for horizon in HORIZONS:
+            if f"endpoint_{horizon}m" not in pred.get("probabilities_for_scoring", {}):
+                continue  # Different frozen bundles need not ask every legacy horizon.
             label = label_path(anchor, timeline, horizon, as_of)
             result = {"observation_id": req["observation_id"], "request_id": req["request_id"],
                       "provider": pred["provider"], "requested_model": pred["requested_model"],
                       "returned_model": pred["returned_model"], "question_hash": pred["question_hash"],
                       "state_hash": req["state_hash"], "input_epoch": req["state"]["input_epoch"],
-                      "label": label, "influenced": False}
+                      "label": label, "influenced": pred.get("influenced"),
+                      "authority": pred.get("authority", "shadow_only")}
             if label["status"] == "OK":
                 p = pred["probabilities_for_scoring"][f"endpoint_{horizon}m"]
                 row = {"label": label["label"], "probabilities": p}

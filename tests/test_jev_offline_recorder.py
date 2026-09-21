@@ -51,6 +51,21 @@ def test_complete_join_scores_one_ready_horizon_and_keeps_others_pending(tmp_pat
     assert outcomes[0]["economic_probes"]["1"]["entry_source_time"] == NOW + 60
 
 
+def test_advisory_epoch_keeps_inclusion_unknown_and_only_scores_asked_horizons(tmp_path):
+    rows = fixture_rows()
+    for row in rows[1:3]:
+        row.update(authority="hermes_evidence_sim", influenced=None, question_hash="advisory-frozen")
+    rows[1]["state"]["input_epoch"] = "live-hybrid-advisory-v1"
+    rows[1]["state_hash"] = obs.digest(rows[1]["state"])
+    rows[2]["state_hash"] = rows[1]["state_hash"]
+    rows[2]["probabilities_for_scoring"].pop("endpoint_5m")
+    write_evidence(tmp_path, rows)
+    report, outcomes = scorer.evaluate(tmp_path, NOW + 361)
+    assert report["outcome_status"] == {"PENDING": 3}
+    assert all(x["influenced"] is None and x["authority"] == "hermes_evidence_sim" for x in outcomes)
+    assert all(x["input_epoch"] == "live-hybrid-advisory-v1" for x in outcomes)
+
+
 def test_next_bar_timestamp_does_not_shift_completed_ohlc_forward(tmp_path):
     write_evidence(tmp_path, fixture_rows())
     _, _, _, timeline, _, _, _ = scorer.collect(tmp_path, NOW + 301)

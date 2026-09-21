@@ -1,5 +1,11 @@
 # Level 0 Jev research observer — GHP-005
 
+This document governs OFF, RECORD_ONLY and SHADOW. Version 0.0.2.94 separately adds
+operator-selected EVIDENCE mode under [GHP-006](jev-hermes-evidence.md), the explicit
+SIM advisory architecture. Level 0 records remain isolated; AI Auto and setup do
+not activate either mode automatically. The former blanket statement that no
+Hermes connection exists applies only to the Level 0 modes, not EVIDENCE.
+
 Version 0.0.2.93 adds a separate recorder and optional typed forecasting process. **Default OFF. No effect on trading.** It neither imports nor invokes Hermes, a learner, an intent sender, or a native action. There is no activation in setup, cron, SOUL or the control plugin. Turning AI Auto on does not start this observer; pausing AI does not stop an independently started recorder. Its own STOP file controls it.
 
 The operator approved this scope on September 19, 2026 after the research at `D:/ab/artifacts/glitch-jev-research/2026-09-19/ARCHITECTURE-DECISION.md`. That local directory retains the native trade reconstruction, both original frozen question bundles, provider comparison, raw predictions, chronological splits, numerical baselines and fitted research artifacts. Those model artifacts are not packaged or loaded here.

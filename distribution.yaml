@@ -1,5 +1,5 @@
 name: glitch
-version: 0.0.2.93
+version: 0.0.2.94
 description: "Experimental Glitch AI operator profile for NinjaTrader 8"
 hermes_requires: ">=0.18.2"
 author: "GlitchTrader"
@@ -20,6 +20,7 @@ distribution_owned:
   - plugins
   - scripts
   - docs/jev-shadow-research.md
+  - docs/jev-hermes-evidence.md
   - setup.ps1
   - README.md
   - .gitattributes

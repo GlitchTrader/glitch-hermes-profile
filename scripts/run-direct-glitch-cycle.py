@@ -34,6 +34,7 @@ from win_subprocess import (
     provider_usage_hold_reason, record_provider_usage_failure,
 )
 from native_risk import initial_native_risk
+from jev_evidence import load_for_hermes
 
 
 ACTIONS = {"ENTER_LONG", "ENTER_SHORT", "HOLD", "MOVE_STOP", "MOVE_TP", "EXIT", "NOTHING"}
@@ -55,13 +56,17 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v27-immediate-result-continuity"
+DIRECT_PROMPT_REVISION = "direct-v28-jev-advisory-evidence"
 COGNITIVE_GATE_VERSION = "glitch.hermes.cognitive_gate.v2"
 COGNITIVE_OVERLAY_VERSION_MARKER = "+overlay-"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
     "scripts/run-direct-glitch-cycle.py",
     "scripts/market_structure.py",
     "scripts/native_risk.py",
+    "scripts/jev_evidence.py",
+    "scripts/jev_observation.py",
+    "scripts/jev_provider.py",
+    "scripts/run-jev-shadow.py",
     "SOUL.md",
     "skills/glitch-market-scan/SKILL.md",
     "skills/glitch-setup-state/SKILL.md",
@@ -1849,6 +1854,9 @@ def active_trade_state(
         )
         trades.append({
             "master_account": master,
+            "account_status": account.get("account_status"),
+            "instrument_full_name": position.get("instrument"),
+            "native_observed_utc": (portfolio or {}).get("created_utc") or latest.get("created_utc"),
             "route_id": book.get("route_id"),
             "instrument": trade_instrument,
             "side": side,
@@ -6672,6 +6680,7 @@ def build_prompt(
     invocation_context: dict[str, Any] | None = None,
     prior_cognition: dict[str, Any] | None = None,
     market_perception: dict[str, Any] | None = None,
+    jev_evidence: dict[str, Any] | None = None,
 ) -> str:
     positioned_only = all_scoped_books_positioned(scenario)
     trigger_review_only = (
@@ -6747,6 +6756,8 @@ def build_prompt(
         "operator_advisory": directive,
         "required_output_template": output_template,
     }
+    if jev_evidence is not None:
+        envelope["jev_evidence"] = jev_evidence
     if positioned_only:
         envelope["management_payload_contract"] = management_payload_contract(scenario)
     common = (
@@ -6770,6 +6781,21 @@ def build_prompt(
         "This pass has no tools: use the supplied evidence and preloaded skills, return the decision directly; "
         "the runtime canonicalizes payoff arithmetic from your levels and probability without a calculator call. "
     )
+    if jev_evidence is not None:
+        common += (
+            "jev_evidence is an explicitly authorized experimental probabilistic advisory, separate from deterministic "
+            "market_perception. Its source time/price anchor may be newer than the minute packet. Native facts, current "
+            "position and protection remain authoritative. When available, reconcile regime, directional endpoints, "
+            "continuation/reversal, maturity, flow and attributable thesis judgments with the actual evidence; explain "
+            "material agreement or disagreement briefly in existing audit fields. These are correlated judgments of "
+            "shared data, not independent votes to multiply or average. They have not demonstrated trading calibration. "
+            "Confidence measures concentration, not empirical accuracy. UP/DOWN/FLAT uses its explicit neutral band; "
+            "endpoint direction is not original-target-before-stop probability or a preferred holding duration. "
+            "Continuation/reversal is relative to the stated past-movement reference, not a mandatory trend. "
+            "A thesis-state answer is evidence for your reassessment, never an EXIT/HOLD command. No Jev threshold "
+            "is an entry permission, rank, sizing rule, bracket, veto or reason to widen a range. Unavailable evidence "
+            "is neutral and does not require waiting. Use the existing decision process and configured review cadence. "
+        )
     if positioned_only:
         instructions = (
             "This is a fast position-management pass. Do not rescan flat instruments or propose new exposure. "
@@ -7738,6 +7764,18 @@ def run_once(
         decision_mode,
     )
     perception_audit = market_perception_audit(market_perception, market_image_path)
+    jev_context = load_for_hermes(glitch_data, packet, scenario, trade_state, time.time())
+    if jev_context.get("included_request_ids"):
+        try:
+            write_json_atomic(exchange / "hermes" / "jev-context" / f"{packet_id}.json", {
+                "cycle_id": packet_id, "captured_utc": utc_now(), "evidence": jev_context})
+        except OSError:
+            jev_context.update(status="unavailable", reason="advisory_audit_write_failed",
+                               predictions=[], included_request_ids=[])
+    jev_audit = {key: jev_context.get(key) for key in (
+        "status", "reason", "included_request_ids", "process_epoch", "effect", "calibration")}
+    jev_audit.update(included_in_prompt=bool(jev_context.get("included_request_ids")),
+                     influence_on_final_choice="not_attributed_by_prompt_inclusion")
     prompt_version = effective_prompt_version(journals.get("active_cognitive_overlay"))
     prompt = build_prompt(
         packet,
@@ -7748,6 +7786,7 @@ def run_once(
         invocation_context=invocation_context,
         prior_cognition=prior_cognition,
         market_perception=market_perception,
+        jev_evidence=jev_context,
     )
     write_json_atomic(attempt_path, {
         "schema_version": "glitch.hermes.model_attempt.v1",
@@ -7765,6 +7804,7 @@ def run_once(
         "hermes_session_source": TRADING_SOURCE,
         "hermes_session_mode": "isolated",
         "market_perception": perception_audit,
+        "jev_evidence": jev_audit,
     })
 
     def current_model_call_admission() -> str | None:
@@ -7857,6 +7897,7 @@ def run_once(
                 "issues": admission_observations,
             },
             "market_perception": perception_audit,
+            "jev_evidence": jev_audit,
             "invocation_reason": reason,
         })
     except ModelCallDeferred as deferred:

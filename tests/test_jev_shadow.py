@@ -291,14 +291,17 @@ def test_capture_retries_atomic_replacement_without_recording_the_old_generation
 def test_no_trading_or_hermes_imports_and_no_scheduled_activation():
     allowed = {"argparse", "ast", "base64", "collections", "ctypes", "datetime", "hashlib", "json", "math", "multiprocessing",
                "os", "pathlib", "re", "sys", "time", "urllib", "uuid", "msvcrt", "fcntl", "__future__",
-               "jev_observation", "jev_provider"}
-    for filename in ("jev_observation.py", "jev_provider.py", "run-jev-shadow.py"):
+               "jev_observation", "jev_provider", "jev_evidence"}
+    for filename in ("jev_observation.py", "jev_provider.py", "jev_evidence.py", "run-jev-shadow.py"):
         tree = ast.parse((ROOT / "scripts" / filename).read_text())
         for node in ast.walk(tree):
             modules = ([node.module] if isinstance(node, ast.ImportFrom) else
                        [entry.name for entry in node.names] if isinstance(node, ast.Import) else [])
             assert all(module.split(".")[0] in allowed for module in modules)
-    for filename in ("run-direct-glitch-cycle.py", "run-hermes-learning-cycle.py", "market_structure.py"):
+    for filename in ("run-hermes-learning-cycle.py", "market_structure.py"):
         assert "jev_" not in (ROOT / "scripts" / filename).read_text()
+    direct = (ROOT / "scripts/run-direct-glitch-cycle.py").read_text()
+    assert "from jev_evidence import load_for_hermes" in direct
+    assert "request_process(" not in direct and "advisory.QUESTIONS" not in direct
     setup = (ROOT / "setup.ps1").read_text()
     assert "-Name 'glitch-jev" not in setup
