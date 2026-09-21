@@ -28,9 +28,10 @@
         "scripts/run-direct-glitch-cycle.py",
         "tests/test_jev_evidence.py",
         "research/jev/score_recorder.py",
+        "docs/ledger/2026-09-21-jev-hermes-evidence.md",
         "distribution.yaml version 0.0.2.94"
       ],
-      "notes": "Explicitly authorized on Sep21 after the operator reviewed the completed historical studies and requested implementation of Jev evidence for Hermes. This reconciles the former Level 0 stop line deliberately; it does not assert predictive benefit or promote a fitted classifier. GHP-001 remains deterministic. Native execution contracts, flat/positioned cadence and price wakes remain unchanged.",
+      "notes": "Operator-authorized Level 2 SIM evidence implemented in 34f4960, published and installed as v0.0.2.94 with 35/35 matching hashes. Full suite: 809 passed; subsequent scorer metadata clarification: 31 label/scorer tests passed. A verified 119-file checkpoint preserves learner/epoch and prior installed evidence; auth/config/epoch/replication/policy hashes and original enabled jobs were restored. Scheduled cycle 20260921T0325Z consumed a journal-linked pinned Jev prediction, completed as NOTHING and received an accepted no-native-action receipt. A bounded 120-call/75-minute trial is collecting future labels; predictive and positioned-management benefit remain unproven. This explicitly reconciles the former Level 0 boundary outside GHP-001 deterministic perception. Native execution, cadence and price wakes remain unchanged. See the dated operational proof for exact identities, real provider exclusions and rollback.",
       "stop_line": "SIM advisory evidence only. No direct Jev entry, exit, reversal, wake, veto, bracket, sizing, real-capital activation or automatic promotion; later authority needs a separate operator-resolved architecture."
     },
     {
