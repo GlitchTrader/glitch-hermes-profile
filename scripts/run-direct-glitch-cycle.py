@@ -7760,6 +7760,33 @@ def run_once(
     attempt_path = model_attempt_path(exchange, packet_id)
     if attempt_path.is_file():
         return 0
+    provider_hold = provider_usage_hold_reason(args.profile)
+    if provider_hold:
+        # Pending native delivery/reconciliation above remains available. A held
+        # model must not consume a wake it never reviewed or build a paid-call
+        # briefing/chart. Keep the deferral visible without inventing a decision.
+        recorded = utc_now()
+        write_json_atomic(attempt_path, {
+            "schema_version": "glitch.hermes.model_attempt.v1",
+            "cycle_id": packet_id,
+            "started_utc": recorded,
+            "completed_utc": recorded,
+            "status": "deferred",
+            "reason": provider_hold,
+            "model": CORE_MODEL,
+            "provider": CORE_PROVIDER,
+            "model_call_attempted": False,
+            "decision_mode": decision_mode,
+            "invocation_reason": reason,
+        })
+        append_event(events_path, {
+            "schema_version": "glitch.hermes.cycle_event.v1",
+            "event": "llm_skipped",
+            "reason": provider_hold,
+            "recorded_utc": recorded,
+            "cycle_id": packet_id,
+        })
+        return 0
     if not args.dry_run:
         if decision_mode == "trigger_review":
             consume_fired_wake_triggers(

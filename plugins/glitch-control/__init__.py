@@ -54,7 +54,10 @@ def _mark_learning_waiting_after_resume() -> None:
         recorded = datetime.fromisoformat(
             str(current.get("recorded_utc", "")).replace("Z", "+00:00")
         ).astimezone(timezone.utc)
-        if datetime.now(timezone.utc) - recorded <= timedelta(minutes=45):
+        if (datetime.now(timezone.utc) - recorded <= timedelta(minutes=45)
+                and current.get("reason") not in {
+                    "provider_usage_limit_requires_explicit_resume", "provider_usage_hold_unreadable",
+                }):
             return
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
@@ -184,10 +187,12 @@ def _status_text() -> str:
     replication = "on" if state.get("replication_enabled", False) else "off"
     policy = "valid" if state.get("policy_valid", False) else "invalid"
     mismatch = "" if on or (not enabled and job_state != "running") else "; state mismatch: run /trade or /pause_trading"
-    usage = "; model calls held after provider usage exhaustion: explicit /trade resumes" if (
+    held = (
         PROFILE_ROOT / "runtime" / "provider-usage-hold.json"
-    ).exists() else ""
-    return f"Glitch trading: {'ON' if on else 'OFF'}; jobs: {job_state}; policy: {policy}; replication: {replication}; gateway: {gateway}{mismatch}{usage}."
+    ).exists()
+    usage = "; model calls held: check provider usage, then /trade to resume" if held else ""
+    state_label = "HELD" if on and held else "ON" if on else "OFF"
+    return f"Glitch trading: {state_label}; jobs: {job_state}; policy: {policy}; replication: {replication}; gateway: {gateway}{mismatch}{usage}."
 
 
 def _route_account_bindings() -> dict[str, str]:

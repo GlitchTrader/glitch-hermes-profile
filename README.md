@@ -1,4 +1,6 @@
-# Glitch Hermes Profile v0.0.2.96
+# Glitch Hermes Profile v0.0.2.97
+
+v0.0.2.97 keeps provider quota holds explicit: blocked cognition preserves wake triggers and skips briefing/chart construction, status reports HELD, and an operator resume clears the learner's obsolete quota warning. Pending native delivery and deterministic reconciliation remain available. The paired AddOn health display identifies quota holds and offers the existing explicit resume action from an amber header button. No automatic quota retry, new model, changed trading rule or Jev test extension. See [the quota-hold investigation](docs/ledger/2026-09-22-provider-hold-recovery.md).
 
 v0.0.2.96 addresses observed entry-delivery failures with concise flat/trigger records, explicit packet bid/ask provenance and joint construction of the fill zone and stop offset. At unmapped extremes Hermes must assess a supported projected destination rather than treating an absent mapped level as proof of no room. Every comparison field, native price/range check, configured limit and management contract remains. This starts a separate cognition version; it does not establish more fills or profitability. See [the entry-delivery investigation](docs/ledger/2026-09-21-entry-delivery-cognition.md).
 

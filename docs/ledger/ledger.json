@@ -1,9 +1,28 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-21",
+  "updated": "2026-09-22",
   "roadmap_ref": "README.md",
   "items": [
+    {
+      "id": "GHP-009",
+      "title": "Expose provider holds and preserve cognition work until explicit recovery",
+      "status": "in_progress",
+      "priority": "P1",
+      "owner_role": "architect",
+      "claim": {"assignee": "AIbert", "claimed_at": "2026-09-22T17:41:59Z"},
+      "acceptance": [
+        "Attribute the quiet interval to actual attempts, receipts and native state; never count a quota deferral as NOTHING.",
+        "Keep existing explicit operator quota recovery; held calls must not consume wake triggers or build model briefings, while existing native delivery and reconciliation remain available.",
+        "Report blocked trading and learning in health; expose the supported explicit resume on the AddOn header and clear obsolete learner warnings after resume.",
+        "Test, publish and install only the scoped profile and AddOn changes; preserve native protection, replication, accounts, model, schedules and Jev cutoff.",
+        "Verify a fresh model result and native execution evidence after recovery; distinguish source copy, native assembly loading and runtime proof."
+      ],
+      "depends_on": ["GHP-003", "GHP-004", "GHP-008"],
+      "evidence": ["docs/ledger/2026-09-22-provider-hold-recovery.md", "tests/test_provider_hold_recovery.py", "D:/ab/artifacts/glitch-recovery/2026-09-22/diagnosis.json"],
+      "notes": "Operator explicitly requested root-cause investigation, implementation, deployment and push. The 24-hour interval had no market decisions because a provider hold persisted; this is runtime recovery and observability, not a strategy change.",
+      "stop_line": "No forced trade, automatic quota retry, threshold change, broker/protection/replication change, account reset, Jev test renewal or NinjaTrader restart. Preserve unrelated native worktree edits."
+    },
     {
       "id": "GHP-008",
       "title": "Repair delivery-aware entry cognition without changing native validation",
@@ -145,7 +164,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.96",
+        "distribution.yaml version 0.0.2.97",
         "docs/ledger/2026-09-18-management-path-evidence.md",
         "tests/test_management_path_evidence.py",
         "docs/ledger/2026-09-17-management-handoff.md",
@@ -248,7 +267,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.96"
+        "distribution_version": "0.0.2.97"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",
