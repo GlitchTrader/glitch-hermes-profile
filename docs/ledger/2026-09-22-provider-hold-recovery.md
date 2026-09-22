@@ -89,3 +89,54 @@ comparison. The quiet 24 hours cannot evaluate that change or Jev's effect on
 trading because Hermes made no decisions. Do not weaken entry revalidation or
 invent profitability from chart hindsight. Preserve the old frozen run as an
 interrupted/unavailable interval, not a completed clean cognition experiment.
+
+## Completed rollout and runtime proof
+
+Published runtime commits: profile `568c73e24f3c71cf2c4ea4ce58c0e49f7e114348`
+and Glitch `3df4e59c38aab0ff2448b06cc54b67d2283bcbc1`. Both canonical remote
+main refs were independently verified. The 100 unrelated native worktree changes
+remain untouched. Subsequent commits append this rollout evidence only.
+
+After the naturally managed position closed and every native account was flat
+and order-free, AI and both jobs were paused for installation. The verified
+checkpoint contains 219 files / 487,730,739 bytes, including learner/intents,
+configuration, prior frozen evidence, the installed profile and the complete
+prior AddOn. Supported profile update and setup installed v0.0.2.97. All 35
+managed profile files and all 95 copied AddOn files match canonical source.
+No indicators changed. No native account or learner epoch was reset.
+
+NinjaTrader compiled automatically after the supported full AddOn copy:
+NinjaTrader.Custom.dll changed at 19:11:39 UTC. At 19:11:51 UTC, fresh native
+health included the newly added learning-worker `deferral_reason` field, proving
+the new evaluator loaded. The NinjaTrader process was not restarted. This is
+assembly/runtime proof; visual appearance of the held button was not exercised
+by artificially exhausting quota or injecting a live hold.
+
+The new runner is frozen separately under `provider-recovery-20260922`.
+AI, both original job definitions/enabled states, and replication were restored.
+At 19:23:39 UTC, fresh installed cycles 1913, 1915, 1917, 1918, 1920 and 1922
+had completed with matching new provenance and receipts. All six were actual
+NOTHING decisions, rather than deferred calls. Native health reported `on` and
+policy validation passed. These outcomes prove resumed processing, not decision
+quality. The first installed result retained two nonblocking cognitive audit
+warnings; this operational repair does not claim to solve those cognition issues.
+
+Seven protected files remain byte-identical, including profile credentials,
+model configuration, account groups/overrides, runtime policy, epoch and prior
+freeze. The eighth, Configuration.v1.tsv, differs only in the encrypted license
+row. The existing serializer generates a new encryption IV on save. Verification
+through the production decoder under the signed-in Windows identity confirmed
+identical decoded license values and every other row unchanged. No secret value
+was emitted or added to evidence.
+
+The recovered M2K trade was authored by the prior v96 profile before installing
+this repair. Master Sim101 bought one at 2913.1 and a natural Hermes EXIT sold at
+2918.4 at 18:28:03 UTC, with follower fills reconciled. Price PnL was +$26.50 on
+the master and +$209.50 across the replication group. Commissions/external costs
+are unverified, so this is not verified all-in net profit. This is one replicated
+idea, not three independent observations, and establishes no profitability.
+
+Local proof artifacts are under `D:/ab/artifacts/glitch-recovery/2026-09-22/`:
+`diagnosis.json`, `checkpoint-manifest.json`, `deployment-installed.json`,
+`native-installed.json`, `deployment-restored.json`,
+`configuration-preservation.json` and `final-proof.json`.

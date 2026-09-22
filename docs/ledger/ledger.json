@@ -7,7 +7,7 @@
     {
       "id": "GHP-009",
       "title": "Expose provider holds and preserve cognition work until explicit recovery",
-      "status": "in_progress",
+      "status": "done",
       "priority": "P1",
       "owner_role": "architect",
       "claim": {"assignee": "AIbert", "claimed_at": "2026-09-22T17:41:59Z"},
@@ -19,8 +19,8 @@
         "Verify a fresh model result and native execution evidence after recovery; distinguish source copy, native assembly loading and runtime proof."
       ],
       "depends_on": ["GHP-003", "GHP-004", "GHP-008"],
-      "evidence": ["docs/ledger/2026-09-22-provider-hold-recovery.md", "tests/test_provider_hold_recovery.py", "D:/ab/artifacts/glitch-recovery/2026-09-22/diagnosis.json"],
-      "notes": "Operator explicitly requested root-cause investigation, implementation, deployment and push. The 24-hour interval had no market decisions because a provider hold persisted; this is runtime recovery and observability, not a strategy change.",
+      "evidence": ["docs/ledger/2026-09-22-provider-hold-recovery.md", "tests/test_provider_hold_recovery.py", "D:/ab/artifacts/glitch-recovery/2026-09-22/diagnosis.json", "D:/ab/artifacts/glitch-recovery/2026-09-22/final-proof.json", "D:/ab/artifacts/glitch-recovery/2026-09-22/configuration-preservation.json"],
+      "notes": "Completed 2026-09-22: scoped source published, v0.0.2.97 installed, 35 profile and 95 AddOn files verified, new native assembly loaded without restart, six fresh installed decisions and receipts confirmed. Supported recovery also produced a protected, replicated, completed SIM trade before installation. Runtime pause state, configuration, credentials and epoch preserved; only randomized license ciphertext changed. This is runtime recovery and observability, not a strategy change or profitability result.",
       "stop_line": "No forced trade, automatic quota retry, threshold change, broker/protection/replication change, account reset, Jev test renewal or NinjaTrader restart. Preserve unrelated native worktree edits."
     },
     {
