@@ -100,3 +100,49 @@ defect completes with one model response and unchanged execution values.
 `git diff --check` passed. No native source or installed code was changed during
 the investigation. Installation and forward runtime evidence are recorded below
 only after independent verification.
+
+## Publication, installation and forward proof
+
+Commit `7c8912c4baf8cbb2662433c135388903e4e71042` was independently verified
+on `origin/main`. The unrelated bounded Jev review and its ledger hunks remain
+outside this commit. The native worktree's 100 pre-existing changes were untouched.
+
+After all accounts were natively flat with no working orders, the prior AI and
+two job states were recorded and paused. A verified 219-file, 507,044,227-byte
+checkpoint preceded the supported `hermes profile update glitch --yes` and
+installed setup. Source and installed hashes match for all 35 owned files.
+Eight protected hashes, including credentials/configuration, account groups,
+policy, epoch and prior freeze, are unchanged. All 95 checkpointed native AddOn
+files are unchanged. NinjaTrader was neither restarted nor redeployed.
+
+The new `entry-contract-20260923` freeze began at 08:48:29 UTC with manifest
+`a041266013236cf5f98f378f7da6179d98df1614803e5ce445e44535f7608310` and prompt
+`direct-v29-delivery-aware-cognition-b4675cdc2a2c`. This records provenance without
+resetting the trading epoch. AI, replication and the exact previous job definitions
+are restored and health reports ON. Jev remains at its completed trial cutoff.
+
+Natural cycle `20260923T0850Z` used the installed prompt, completed in 31.44 seconds
+with no repair, and received a successful native-grounded HOLD receipt. A pending
+v97 MES short from `20260923T0846Z` was revalidated against the fresh 08:49 packet
+after resume and filled under the existing delivery contract. That entry retains
+its v97 attribution; v98's subsequent management is separate evidence. Native
+protection is present on the master and both followers. This first live cycle
+proves installation and ongoing management; the repaired entry shapes are proven
+by the offline saved-response replay, not yet by a fresh matching live occurrence.
+
+A later v97 MNQ short, entered at 08:36:59 and closed at 08:38:34, hit its native
+target for +$34.50 master price PnL (+$33.40 after recorded commission). It occurred
+after the frozen diagnosis cutoff and before installation. Including it, the
+three closed v97 master ideas total +$14.80 after recorded commissions. This
+small, changing sample establishes neither profitability nor a patch effect.
+
+Remaining bottleneck: uncorrected entry decisions still took a median 61.71
+seconds in the diagnostic window. Removing redundant corrections addresses only
+part of delivery delay; no claim is made that expired entries would have filled
+profitably. The next evaluation must retain version attribution and measure
+repair frequency, decision-to-native delay, expiries, executable geometry and
+costed native outcomes together.
+
+Local audit artifacts: `D:/ab/artifacts/glitch-cognition/2026-09-23/`, including
+`repair-replay.json`, `trade-paths.json`, `profile-tests.txt`, checkpoint and
+deployment manifests, and `live-verification.json`.
