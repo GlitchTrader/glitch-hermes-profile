@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "project": "glitch-hermes-profile",
-  "updated": "2026-09-22",
+  "updated": "2026-09-23",
   "roadmap_ref": "README.md",
   "items": [
     {
@@ -40,10 +40,11 @@
       "depends_on": ["GHP-003", "GHP-004", "GHP-006"],
       "evidence": [
         "docs/ledger/2026-09-21-entry-delivery-cognition.md",
+        "docs/ledger/2026-09-23-entry-contract-delivery.md",
         "tests/test_entry_delivery_cognition.py",
         "D:/ab/artifacts/glitch-entry-delivery/2026-09-21/diagnosis.json"
       ],
-      "notes": "Operator explicitly requested investigation, improvement and deployment after observing a flat SIM book during directional movement. This is a bounded entry-cognition repair, not promotion of the GHP-007 briefing candidate or the proposed probability engine.",
+      "notes": "Operator explicitly requested investigation, improvement and deployment after observing a flat SIM book during directional movement. This is a bounded entry-cognition repair, not promotion of the GHP-007 briefing candidate or the proposed probability engine. September 23 v98 recovers explicit delivery-risk language and uniquely owned misplaced entry fields without changing authored trading values or native checks. Saved-response replay avoids 12 of 22 observed repair calls (472.149 seconds spent in those repairs), with no model call or simulated fill. See docs/ledger/2026-09-23-entry-contract-delivery.md; economic improvement remains unproven.",
       "stop_line": "No forced trade, probability/stop/range threshold, native execution relaxation, extra model calls, cadence change, Jev authority change, real-capital activation or NT restart. No claim that expired entries would have won."
     },
     {
@@ -164,7 +165,7 @@
         "skills/glitch-market-structure/SKILL.md",
         "skills/glitch-build-intent/SKILL.md",
         "tests/test_intelligence_first_contract.py",
-        "distribution.yaml version 0.0.2.97",
+        "distribution.yaml version 0.0.2.98",
         "docs/ledger/2026-09-18-management-path-evidence.md",
         "tests/test_management_path_evidence.py",
         "docs/ledger/2026-09-17-management-handoff.md",
@@ -267,7 +268,7 @@
         "path": "D:/ab/worktrees/glitch-hermes-profile",
         "branch": "main",
         "authority_ref": "refs/heads/main",
-        "distribution_version": "0.0.2.97"
+        "distribution_version": "0.0.2.98"
       },
       "glitch_main": {
         "path": "D:/ab/worktrees/glitch-nt-rebuild",

@@ -1,4 +1,6 @@
-# Glitch Hermes Profile v0.0.2.97
+# Glitch Hermes Profile v0.0.2.98
+
+v0.0.2.98 removes unnecessary entry contract repair calls. Explicit delivery/transport uncertainty satisfies the existing latency evidence requirement; uniquely owned, misplaced entry fields are relocated without changing authored values. Conflicts and all native quantity, price, range and protection checks remain enforced. The output instructions now state the nesting boundary explicitly and use the current comparison fields. Saved-response replay eliminates 12 of 22 observed repair calls without model calls or simulated fills; this is delivery evidence, not a profitability result. See [the trading and delivery investigation](docs/ledger/2026-09-23-entry-contract-delivery.md).
 
 v0.0.2.97 keeps provider quota holds explicit: blocked cognition preserves wake triggers and skips briefing/chart construction, status reports HELD, and an operator resume clears the learner's obsolete quota warning. Pending native delivery and deterministic reconciliation remain available. The paired AddOn health display identifies quota holds and offers the existing explicit resume action from an amber header button. No automatic quota retry, new model, changed trading rule or Jev test extension. See [the quota-hold investigation](docs/ledger/2026-09-22-provider-hold-recovery.md).
 

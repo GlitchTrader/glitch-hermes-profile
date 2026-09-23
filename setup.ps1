@@ -257,7 +257,7 @@ finally {
 [ordered]@{
     schema_version = 'glitch.hermes.setup.v1'
     profile = $Profile
-    distribution_version = '0.0.2.97'
+    distribution_version = '0.0.2.98'
     gateway_supervised = $true
     plugin_enabled = $true
     jev_default_mode = 'OFF'

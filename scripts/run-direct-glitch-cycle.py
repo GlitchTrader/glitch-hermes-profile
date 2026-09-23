@@ -3238,7 +3238,10 @@ def validate_entry_geometry_evidence(value: str, index: int, source: str) -> Non
                 and bool(numeric_atr_pair or written_atr_pair or coordinated_atr_pair)
             )
         ),
-        "latency": "latency" in lowered or "delay" in lowered,
+        "latency": "latency" in lowered or "delay" in lowered or bool(re.search(
+            r"\b(?:delivery|transport)\b[^\r\n;.]{0,80}\b(?:uncertainty|risk|drift)\b",
+            normalized,
+        )),
     }
     missing = [name for name, present in dimensions.items() if not present]
     if missing:
@@ -3971,6 +3974,27 @@ def normalize_batch(
         batch["decisions"] = decisions
     if not isinstance(decisions, list):
         return batch
+    if len(decisions) == 1 and isinstance(decisions[0], dict):
+        sole = decisions[0]
+        if (batch.get("decision_level_wake_triggers") == []
+                and batch.get("wake_triggers", []) == []
+                and sole.get("wake_triggers", []) == []):
+            # Observed empty alias carries no trigger information. Nonempty
+            # or conflicting aliases remain invalid; never infer ownership.
+            batch.pop("decision_level_wake_triggers")
+            sole.setdefault("wake_triggers", [])
+        misplaced_entry = (ENTRY_FIELDS | ENTRY_RANGE_FIELDS | {"forecast", "instrument"}) & batch.keys()
+        audit = sole.get("decision_audit")
+        if (misplaced_entry and sole.get("action") in {"ENTER_LONG", "ENTER_SHORT"}
+                and isinstance(audit, dict) and audit.get("final_choice") == sole["action"]
+                and isinstance(sole.get("instrument"), str) and sole["instrument"].strip()
+                and all(key not in sole or json.dumps(sole[key], sort_keys=True)
+                        == json.dumps(batch[key], sort_keys=True) for key in misplaced_entry)):
+            # One explicit entry owns these exact authored values. Move all
+            # together or none on conflict, including nested/type conflicts.
+            # The unchanged quantity, forecast, tick and geometry checks follow.
+            for key in misplaced_entry:
+                sole[key] = batch.pop(key)
     if (
         len(decisions) == 1
         and isinstance(decisions[0], dict)
@@ -6992,6 +7016,10 @@ def build_prompt(
            "from that audit to the numeric fields before emitting them; prose cannot amend an order and "
            "latest-price revalidation cannot repair an invalid range edge. " if not positioned_only else "")
         + "Close decision_audit before decision-level wake_triggers and action-specific fields. "
+        + ("The batch has only schema_version, cycle_id, next_review_seconds and decisions. "
+           "Keep instrument, quantity, order_type, stop_loss, take_profit_1, entry_range_low, "
+           "entry_range_high and forecast inside the chosen decision, never beside decisions. "
+           "The field is wake_triggers, never decision_level_wake_triggers. " if not positioned_only else "")
         + "Keep protection_updates inside its decision, not beside decisions at batch level. Close each decision "
         + "only after all its fields, then close the decisions array and the batch object."
     )
