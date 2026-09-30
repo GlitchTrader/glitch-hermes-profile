@@ -4,4 +4,4 @@ description: Compatibility entry point for the instrument-neutral multi-market t
 ---
 # Compatibility Notice
 
-This skill name is retained for installed-profile compatibility. It no longer defines an MNQ-only strategy. Apply glitch-market-scan, glitch-setup-state, glitch-order-flow, and glitch-position-management to every eligible instrument supplied by Glitch. Instrument economics, quantity, protection, and scope come from the packet; never assume MNQ.
+This skill name is retained for installed-profile compatibility. It no longer defines an MNQ-only strategy. Apply glitch-market-scan, glitch-setup-state, glitch-order-flow, glitch-volume-profile (when volume_profile_facts are supplied), and glitch-position-management to every eligible instrument supplied by Glitch. Instrument economics, quantity, protection, and scope come from the packet; never assume MNQ.
