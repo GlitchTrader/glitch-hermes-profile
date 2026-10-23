@@ -1,0 +1,1083 @@
+{
+  "generated_utc": "2026-10-23T18:55:23.536992+00:00",
+  "decisions_with_geometry": 2048,
+  "coverage": {
+    "MNQ": 6349,
+    "MES": 6159,
+    "M2K": 5282
+  },
+  "horizons": {
+    "5": {
+      "scored": 1492,
+      "NOTHING": {
+        "all": {
+          "n": 1268,
+          "clusters": 780,
+          "p_target": 0.266,
+          "p_stop": 0.27,
+          "p_neither": 0.465,
+          "p_ambiguous": 0.008,
+          "placebo_p_target": 0.246,
+          "placebo_p_stop": 0.283,
+          "placebo_p_neither": 0.471,
+          "mean_declared_p": 0.395,
+          "net_R_pess": -0.001,
+          "net_R_opt": 0.024,
+          "placebo_net_R_pess": -0.073,
+          "placebo_net_R_opt": -0.05,
+          "edge_R_pess": 0.072,
+          "edge_R_pess_ci90": [
+            0.022,
+            0.123
+          ],
+          "edge_R_opt": 0.073,
+          "edge_usd_pess": 1.92,
+          "edge_usd_pess_ci90": [
+            0.48,
+            3.34
+          ],
+          "mean_risk_usd": 31.69,
+          "cond_hit_actual": 0.496
+        },
+        "RR[0,1)": {
+          "n": 523,
+          "clusters": 364,
+          "p_target": 0.482,
+          "p_stop": 0.161,
+          "p_neither": 0.358,
+          "p_ambiguous": 0.01,
+          "placebo_p_target": 0.43,
+          "placebo_p_stop": 0.17,
+          "placebo_p_neither": 0.4,
+          "mean_declared_p": 0.399,
+          "net_R_pess": -0.024,
+          "net_R_opt": -0.009,
+          "placebo_net_R_pess": -0.052,
+          "placebo_net_R_opt": -0.03,
+          "edge_R_pess": 0.029,
+          "edge_R_pess_ci90": [
+            -0.021,
+            0.075
+          ],
+          "edge_R_opt": 0.021,
+          "edge_usd_pess": 0.21,
+          "edge_usd_pess_ci90": [
+            -1.7,
+            2.23
+          ],
+          "mean_risk_usd": 40.57,
+          "cond_hit_actual": 0.75
+        },
+        "RR[1,1.5)": {
+          "n": 253,
+          "clusters": 223,
+          "p_target": 0.206,
+          "p_stop": 0.237,
+          "p_neither": 0.557,
+          "p_ambiguous": 0.004,
+          "placebo_p_target": 0.182,
+          "placebo_p_stop": 0.26,
+          "placebo_p_neither": 0.558,
+          "mean_declared_p": 0.432,
+          "net_R_pess": -0.006,
+          "net_R_opt": 0.004,
+          "placebo_net_R_pess": -0.067,
+          "placebo_net_R_opt": -0.044,
+          "edge_R_pess": 0.061,
+          "edge_R_pess_ci90": [
+            -0.025,
+            0.15
+          ],
+          "edge_R_opt": 0.047,
+          "edge_usd_pess": 1.83,
+          "edge_usd_pess_ci90": [
+            -0.87,
+            4.65
+          ],
+          "mean_risk_usd": 28.72,
+          "cond_hit_actual": 0.464
+        },
+        "RR[1.5,2.5)": {
+          "n": 239,
+          "clusters": 203,
+          "p_target": 0.071,
+          "p_stop": 0.326,
+          "p_neither": 0.603,
+          "p_ambiguous": 0.008,
+          "placebo_p_target": 0.116,
+          "placebo_p_stop": 0.325,
+          "placebo_p_neither": 0.558,
+          "mean_declared_p": 0.39,
+          "net_R_pess": -0.048,
+          "net_R_opt": -0.023,
+          "placebo_net_R_pess": -0.066,
+          "placebo_net_R_opt": -0.048,
+          "edge_R_pess": 0.018,
+          "edge_R_pess_ci90": [
+            -0.083,
+            0.125
+          ],
+          "edge_R_opt": 0.024,
+          "edge_usd_pess": 2.83,
+          "edge_usd_pess_ci90": [
+            -0.16,
+            6.21
+          ],
+          "mean_risk_usd": 28.61,
+          "cond_hit_actual": 0.179
+        },
+        "RR[2.5,99)": {
+          "n": 253,
+          "clusters": 206,
+          "p_target": 0.063,
+          "p_stop": 0.474,
+          "p_neither": 0.462,
+          "p_ambiguous": 0.008,
+          "placebo_p_target": 0.054,
+          "placebo_p_stop": 0.499,
+          "placebo_p_neither": 0.447,
+          "mean_declared_p": 0.352,
+          "net_R_pess": 0.096,
+          "net_R_opt": 0.156,
+          "placebo_net_R_pess": -0.125,
+          "placebo_net_R_opt": -0.099,
+          "edge_R_pess": 0.222,
+          "edge_R_pess_ci90": [
+            0.049,
+            0.416
+          ],
+          "edge_R_opt": 0.255,
+          "edge_usd_pess": 4.69,
+          "edge_usd_pess_ci90": [
+            1.61,
+            7.94
+          ],
+          "mean_risk_usd": 19.22,
+          "cond_hit_actual": 0.118
+        }
+      },
+      "ENTER": {
+        "all": {
+          "n": 224,
+          "clusters": 185,
+          "p_target": 0.089,
+          "p_stop": 0.335,
+          "p_neither": 0.576,
+          "p_ambiguous": 0.004,
+          "placebo_p_target": 0.094,
+          "placebo_p_stop": 0.322,
+          "placebo_p_neither": 0.584,
+          "mean_declared_p": 0.515,
+          "net_R_pess": 0.009,
+          "net_R_opt": 0.02,
+          "placebo_net_R_pess": -0.056,
+          "placebo_net_R_opt": -0.042,
+          "edge_R_pess": 0.065,
+          "edge_R_pess_ci90": [
+            -0.055,
+            0.185
+          ],
+          "edge_R_opt": 0.062,
+          "edge_usd_pess": 0.81,
+          "edge_usd_pess_ci90": [
+            -2.07,
+            3.75
+          ],
+          "mean_risk_usd": 25.4,
+          "cond_hit_actual": 0.211
+        },
+        "RR[1,1.5)": {
+          "n": 45,
+          "clusters": 42,
+          "p_target": 0.089,
+          "p_stop": 0.244,
+          "p_neither": 0.667,
+          "p_ambiguous": 0.022,
+          "placebo_p_target": 0.148,
+          "placebo_p_stop": 0.233,
+          "placebo_p_neither": 0.619,
+          "mean_declared_p": 0.54,
+          "net_R_pess": -0.111,
+          "net_R_opt": -0.059,
+          "placebo_net_R_pess": -0.044,
+          "placebo_net_R_opt": -0.021,
+          "edge_R_pess": -0.066,
+          "edge_R_pess_ci90": [
+            -0.268,
+            0.134
+          ],
+          "edge_R_opt": -0.038,
+          "edge_usd_pess": -0.13,
+          "edge_usd_pess_ci90": [
+            -5.71,
+            5.52
+          ],
+          "mean_risk_usd": 26.66,
+          "cond_hit_actual": 0.267
+        },
+        "RR[1.5,2.5)": {
+          "n": 103,
+          "clusters": 96,
+          "p_target": 0.107,
+          "p_stop": 0.33,
+          "p_neither": 0.563,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.098,
+          "placebo_p_stop": 0.307,
+          "placebo_p_neither": 0.595,
+          "mean_declared_p": 0.52,
+          "net_R_pess": -0.028,
+          "net_R_opt": -0.028,
+          "placebo_net_R_pess": -0.051,
+          "placebo_net_R_opt": -0.041,
+          "edge_R_pess": 0.023,
+          "edge_R_pess_ci90": [
+            -0.131,
+            0.178
+          ],
+          "edge_R_opt": 0.012,
+          "edge_usd_pess": -0.69,
+          "edge_usd_pess_ci90": [
+            -5.07,
+            3.59
+          ],
+          "mean_risk_usd": 26.89,
+          "cond_hit_actual": 0.244
+        },
+        "RR[2.5,99)": {
+          "n": 70,
+          "clusters": 63,
+          "p_target": 0.043,
+          "p_stop": 0.429,
+          "p_neither": 0.529,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.047,
+          "placebo_p_stop": 0.421,
+          "placebo_p_neither": 0.531,
+          "mean_declared_p": 0.485,
+          "net_R_pess": 0.104,
+          "net_R_opt": 0.104,
+          "placebo_net_R_pess": -0.072,
+          "placebo_net_R_opt": -0.059,
+          "edge_R_pess": 0.176,
+          "edge_R_pess_ci90": [
+            -0.088,
+            0.455
+          ],
+          "edge_R_opt": 0.163,
+          "edge_usd_pess": 2.41,
+          "edge_usd_pess_ci90": [
+            -2.67,
+            7.57
+          ],
+          "mean_risk_usd": 22.23,
+          "cond_hit_actual": 0.091
+        }
+      }
+    },
+    "15": {
+      "scored": 1088,
+      "NOTHING": {
+        "all": {
+          "n": 924,
+          "clusters": 555,
+          "p_target": 0.425,
+          "p_stop": 0.384,
+          "p_neither": 0.19,
+          "p_ambiguous": 0.008,
+          "placebo_p_target": 0.351,
+          "placebo_p_stop": 0.429,
+          "placebo_p_neither": 0.22,
+          "mean_declared_p": 0.391,
+          "net_R_pess": 0.068,
+          "net_R_opt": 0.095,
+          "placebo_net_R_pess": -0.079,
+          "placebo_net_R_opt": -0.052,
+          "edge_R_pess": 0.146,
+          "edge_R_pess_ci90": [
+            0.067,
+            0.232
+          ],
+          "edge_R_opt": 0.147,
+          "edge_usd_pess": 4.77,
+          "edge_usd_pess_ci90": [
+            2.48,
+            7.27
+          ],
+          "mean_risk_usd": 33.41,
+          "cond_hit_actual": 0.525
+        },
+        "RR[0,1)": {
+          "n": 369,
+          "clusters": 256,
+          "p_target": 0.669,
+          "p_stop": 0.209,
+          "p_neither": 0.122,
+          "p_ambiguous": 0.008,
+          "placebo_p_target": 0.562,
+          "placebo_p_stop": 0.273,
+          "placebo_p_neither": 0.165,
+          "mean_declared_p": 0.395,
+          "net_R_pess": 0.047,
+          "net_R_opt": 0.059,
+          "placebo_net_R_pess": -0.068,
+          "placebo_net_R_opt": -0.042,
+          "edge_R_pess": 0.115,
+          "edge_R_pess_ci90": [
+            0.059,
+            0.179
+          ],
+          "edge_R_opt": 0.101,
+          "edge_usd_pess": 3.91,
+          "edge_usd_pess_ci90": [
+            1.42,
+            6.72
+          ],
+          "mean_risk_usd": 43.66,
+          "cond_hit_actual": 0.762
+        },
+        "RR[1,1.5)": {
+          "n": 178,
+          "clusters": 156,
+          "p_target": 0.382,
+          "p_stop": 0.382,
+          "p_neither": 0.236,
+          "p_ambiguous": 0.006,
+          "placebo_p_target": 0.311,
+          "placebo_p_stop": 0.413,
+          "placebo_p_neither": 0.277,
+          "mean_declared_p": 0.429,
+          "net_R_pess": 0.053,
+          "net_R_opt": 0.066,
+          "placebo_net_R_pess": -0.064,
+          "placebo_net_R_opt": -0.044,
+          "edge_R_pess": 0.117,
+          "edge_R_pess_ci90": [
+            -0.021,
+            0.265
+          ],
+          "edge_R_opt": 0.111,
+          "edge_usd_pess": 3.1,
+          "edge_usd_pess_ci90": [
+            -2.0,
+            8.14
+          ],
+          "mean_risk_usd": 31.47,
+          "cond_hit_actual": 0.5
+        },
+        "RR[1.5,2.5)": {
+          "n": 179,
+          "clusters": 151,
+          "p_target": 0.257,
+          "p_stop": 0.486,
+          "p_neither": 0.257,
+          "p_ambiguous": 0.006,
+          "placebo_p_target": 0.221,
+          "placebo_p_stop": 0.5,
+          "placebo_p_neither": 0.279,
+          "mean_declared_p": 0.388,
+          "net_R_pess": 0.022,
+          "net_R_opt": 0.039,
+          "placebo_net_R_pess": -0.071,
+          "placebo_net_R_opt": -0.048,
+          "edge_R_pess": 0.094,
+          "edge_R_pess_ci90": [
+            -0.073,
+            0.268
+          ],
+          "edge_R_opt": 0.088,
+          "edge_usd_pess": 5.54,
+          "edge_usd_pess_ci90": [
+            -0.11,
+            11.36
+          ],
+          "mean_risk_usd": 29.22,
+          "cond_hit_actual": 0.346
+        },
+        "RR[2.5,99)": {
+          "n": 198,
+          "clusters": 156,
+          "p_target": 0.162,
+          "p_stop": 0.621,
+          "p_neither": 0.217,
+          "p_ambiguous": 0.01,
+          "placebo_p_target": 0.11,
+          "placebo_p_stop": 0.672,
+          "placebo_p_neither": 0.218,
+          "mean_declared_p": 0.349,
+          "net_R_pess": 0.162,
+          "net_R_opt": 0.238,
+          "placebo_net_R_pess": -0.118,
+          "placebo_net_R_opt": -0.082,
+          "edge_R_pess": 0.279,
+          "edge_R_pess_ci90": [
+            0.022,
+            0.56
+          ],
+          "edge_R_opt": 0.319,
+          "edge_usd_pess": 7.16,
+          "edge_usd_pess_ci90": [
+            1.95,
+            12.72
+          ],
+          "mean_risk_usd": 19.84,
+          "cond_hit_actual": 0.206
+        }
+      },
+      "ENTER": {
+        "all": {
+          "n": 164,
+          "clusters": 137,
+          "p_target": 0.22,
+          "p_stop": 0.512,
+          "p_neither": 0.268,
+          "p_ambiguous": 0.006,
+          "placebo_p_target": 0.201,
+          "placebo_p_stop": 0.509,
+          "placebo_p_neither": 0.29,
+          "mean_declared_p": 0.514,
+          "net_R_pess": 0.074,
+          "net_R_opt": 0.088,
+          "placebo_net_R_pess": -0.059,
+          "placebo_net_R_opt": -0.042,
+          "edge_R_pess": 0.133,
+          "edge_R_pess_ci90": [
+            -0.061,
+            0.33
+          ],
+          "edge_R_opt": 0.13,
+          "edge_usd_pess": 1.33,
+          "edge_usd_pess_ci90": [
+            -3.7,
+            6.41
+          ],
+          "mean_risk_usd": 26.48,
+          "cond_hit_actual": 0.3
+        },
+        "RR[1,1.5)": {
+          "n": 34,
+          "clusters": 32,
+          "p_target": 0.235,
+          "p_stop": 0.5,
+          "p_neither": 0.265,
+          "p_ambiguous": 0.029,
+          "placebo_p_target": 0.311,
+          "placebo_p_stop": 0.414,
+          "placebo_p_neither": 0.274,
+          "mean_declared_p": 0.542,
+          "net_R_pess": -0.247,
+          "net_R_opt": -0.179,
+          "placebo_net_R_pess": -0.034,
+          "placebo_net_R_opt": -0.004,
+          "edge_R_pess": -0.213,
+          "edge_R_pess_ci90": [
+            -0.48,
+            0.068
+          ],
+          "edge_R_opt": -0.175,
+          "edge_usd_pess": -3.46,
+          "edge_usd_pess_ci90": [
+            -11.27,
+            4.98
+          ],
+          "mean_risk_usd": 26.15,
+          "cond_hit_actual": 0.32
+        },
+        "RR[1.5,2.5)": {
+          "n": 74,
+          "clusters": 69,
+          "p_target": 0.243,
+          "p_stop": 0.514,
+          "p_neither": 0.243,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.206,
+          "placebo_p_stop": 0.493,
+          "placebo_p_neither": 0.301,
+          "mean_declared_p": 0.516,
+          "net_R_pess": 0.057,
+          "net_R_opt": 0.057,
+          "placebo_net_R_pess": -0.064,
+          "placebo_net_R_opt": -0.051,
+          "edge_R_pess": 0.12,
+          "edge_R_pess_ci90": [
+            -0.116,
+            0.38
+          ],
+          "edge_R_opt": 0.108,
+          "edge_usd_pess": 1.4,
+          "edge_usd_pess_ci90": [
+            -5.9,
+            9.25
+          ],
+          "mean_risk_usd": 29.17,
+          "cond_hit_actual": 0.321
+        },
+        "RR[2.5,99)": {
+          "n": 53,
+          "clusters": 47,
+          "p_target": 0.132,
+          "p_stop": 0.547,
+          "p_neither": 0.321,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.116,
+          "placebo_p_stop": 0.607,
+          "placebo_p_neither": 0.277,
+          "mean_declared_p": 0.488,
+          "net_R_pess": 0.261,
+          "net_R_opt": 0.261,
+          "placebo_net_R_pess": -0.071,
+          "placebo_net_R_opt": -0.054,
+          "edge_R_pess": 0.331,
+          "edge_R_pess_ci90": [
+            -0.069,
+            0.765
+          ],
+          "edge_R_opt": 0.315,
+          "edge_usd_pess": 2.99,
+          "edge_usd_pess_ci90": [
+            -5.89,
+            12.3
+          ],
+          "mean_risk_usd": 22.85,
+          "cond_hit_actual": 0.194
+        }
+      }
+    },
+    "30": {
+      "scored": 807,
+      "NOTHING": {
+        "all": {
+          "n": 688,
+          "clusters": 405,
+          "p_target": 0.458,
+          "p_stop": 0.472,
+          "p_neither": 0.07,
+          "p_ambiguous": 0.009,
+          "placebo_p_target": 0.409,
+          "placebo_p_stop": 0.488,
+          "placebo_p_neither": 0.103,
+          "mean_declared_p": 0.389,
+          "net_R_pess": 0.004,
+          "net_R_opt": 0.037,
+          "placebo_net_R_pess": -0.073,
+          "placebo_net_R_opt": -0.047,
+          "edge_R_pess": 0.077,
+          "edge_R_pess_ci90": [
+            -0.015,
+            0.172
+          ],
+          "edge_R_opt": 0.084,
+          "edge_usd_pess": 3.53,
+          "edge_usd_pess_ci90": [
+            0.82,
+            6.35
+          ],
+          "mean_risk_usd": 34.65,
+          "cond_hit_actual": 0.492
+        },
+        "RR[0,1)": {
+          "n": 273,
+          "clusters": 184,
+          "p_target": 0.685,
+          "p_stop": 0.286,
+          "p_neither": 0.029,
+          "p_ambiguous": 0.011,
+          "placebo_p_target": 0.626,
+          "placebo_p_stop": 0.305,
+          "placebo_p_neither": 0.068,
+          "mean_declared_p": 0.395,
+          "net_R_pess": 0.005,
+          "net_R_opt": 0.022,
+          "placebo_net_R_pess": -0.057,
+          "placebo_net_R_opt": -0.033,
+          "edge_R_pess": 0.062,
+          "edge_R_pess_ci90": [
+            -0.012,
+            0.136
+          ],
+          "edge_R_opt": 0.056,
+          "edge_usd_pess": 3.05,
+          "edge_usd_pess_ci90": [
+            -0.39,
+            6.39
+          ],
+          "mean_risk_usd": 46.2,
+          "cond_hit_actual": 0.706
+        },
+        "RR[1,1.5)": {
+          "n": 122,
+          "clusters": 110,
+          "p_target": 0.451,
+          "p_stop": 0.451,
+          "p_neither": 0.098,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.395,
+          "placebo_p_stop": 0.486,
+          "placebo_p_neither": 0.12,
+          "mean_declared_p": 0.431,
+          "net_R_pess": 0.055,
+          "net_R_opt": 0.055,
+          "placebo_net_R_pess": -0.052,
+          "placebo_net_R_opt": -0.028,
+          "edge_R_pess": 0.107,
+          "edge_R_pess_ci90": [
+            -0.058,
+            0.275
+          ],
+          "edge_R_opt": 0.083,
+          "edge_usd_pess": 4.18,
+          "edge_usd_pess_ci90": [
+            -1.82,
+            10.29
+          ],
+          "mean_risk_usd": 32.54,
+          "cond_hit_actual": 0.5
+        },
+        "RR[1.5,2.5)": {
+          "n": 143,
+          "clusters": 120,
+          "p_target": 0.301,
+          "p_stop": 0.601,
+          "p_neither": 0.098,
+          "p_ambiguous": 0.007,
+          "placebo_p_target": 0.276,
+          "placebo_p_stop": 0.569,
+          "placebo_p_neither": 0.156,
+          "mean_declared_p": 0.387,
+          "net_R_pess": -0.069,
+          "net_R_opt": -0.047,
+          "placebo_net_R_pess": -0.066,
+          "placebo_net_R_opt": -0.041,
+          "edge_R_pess": -0.002,
+          "edge_R_pess_ci90": [
+            -0.224,
+            0.211
+          ],
+          "edge_R_opt": -0.006,
+          "edge_usd_pess": 2.64,
+          "edge_usd_pess_ci90": [
+            -4.35,
+            9.67
+          ],
+          "mean_risk_usd": 30.19,
+          "cond_hit_actual": 0.333
+        },
+        "RR[2.5,99)": {
+          "n": 150,
+          "clusters": 114,
+          "p_target": 0.2,
+          "p_stop": 0.707,
+          "p_neither": 0.093,
+          "p_ambiguous": 0.013,
+          "placebo_p_target": 0.154,
+          "placebo_p_stop": 0.743,
+          "placebo_p_neither": 0.102,
+          "mean_declared_p": 0.347,
+          "net_R_pess": 0.029,
+          "net_R_opt": 0.129,
+          "placebo_net_R_pess": -0.124,
+          "placebo_net_R_opt": -0.092,
+          "edge_R_pess": 0.153,
+          "edge_R_pess_ci90": [
+            -0.151,
+            0.486
+          ],
+          "edge_R_opt": 0.221,
+          "edge_usd_pess": 4.71,
+          "edge_usd_pess_ci90": [
+            -1.96,
+            11.76
+          ],
+          "mean_risk_usd": 19.61,
+          "cond_hit_actual": 0.221
+        }
+      },
+      "ENTER": {
+        "all": {
+          "n": 119,
+          "clusters": 98,
+          "p_target": 0.286,
+          "p_stop": 0.622,
+          "p_neither": 0.092,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.254,
+          "placebo_p_stop": 0.611,
+          "placebo_p_neither": 0.134,
+          "mean_declared_p": 0.511,
+          "net_R_pess": 0.069,
+          "net_R_opt": 0.069,
+          "placebo_net_R_pess": -0.073,
+          "placebo_net_R_opt": -0.062,
+          "edge_R_pess": 0.142,
+          "edge_R_pess_ci90": [
+            -0.144,
+            0.451
+          ],
+          "edge_R_opt": 0.131,
+          "edge_usd_pess": -1.19,
+          "edge_usd_pess_ci90": [
+            -8.92,
+            6.99
+          ],
+          "mean_risk_usd": 26.21,
+          "cond_hit_actual": 0.315
+        },
+        "RR[1,1.5)": {
+          "n": 22,
+          "clusters": 20,
+          "p_target": 0.136,
+          "p_stop": 0.818,
+          "p_neither": 0.045,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.388,
+          "placebo_p_stop": 0.477,
+          "placebo_p_neither": 0.136,
+          "mean_declared_p": 0.541,
+          "net_R_pess": -0.738,
+          "net_R_opt": -0.738,
+          "placebo_net_R_pess": -0.009,
+          "placebo_net_R_opt": -0.007,
+          "edge_R_pess": -0.729,
+          "edge_R_pess_ci90": [
+            -0.959,
+            -0.444
+          ],
+          "edge_R_opt": -0.731,
+          "edge_usd_pess": -19.91,
+          "edge_usd_pess_ci90": [
+            -27.74,
+            -11.24
+          ],
+          "mean_risk_usd": 27.45,
+          "cond_hit_actual": 0.143
+        },
+        "RR[1.5,2.5)": {
+          "n": 51,
+          "clusters": 47,
+          "p_target": 0.333,
+          "p_stop": 0.627,
+          "p_neither": 0.039,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.265,
+          "placebo_p_stop": 0.59,
+          "placebo_p_neither": 0.145,
+          "mean_declared_p": 0.518,
+          "net_R_pess": -0.026,
+          "net_R_opt": -0.026,
+          "placebo_net_R_pess": -0.07,
+          "placebo_net_R_opt": -0.062,
+          "edge_R_pess": 0.045,
+          "edge_R_pess_ci90": [
+            -0.288,
+            0.378
+          ],
+          "edge_R_opt": 0.036,
+          "edge_usd_pess": -3.08,
+          "edge_usd_pess_ci90": [
+            -14.8,
+            9.37
+          ],
+          "mean_risk_usd": 29.63,
+          "cond_hit_actual": 0.347
+        },
+        "RR[2.5,99)": {
+          "n": 44,
+          "clusters": 39,
+          "p_target": 0.273,
+          "p_stop": 0.545,
+          "p_neither": 0.182,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.167,
+          "placebo_p_stop": 0.709,
+          "placebo_p_neither": 0.124,
+          "mean_declared_p": 0.483,
+          "net_R_pess": 0.547,
+          "net_R_opt": 0.547,
+          "placebo_net_R_pess": -0.105,
+          "placebo_net_R_opt": -0.088,
+          "edge_R_pess": 0.652,
+          "edge_R_pess_ci90": [
+            0.045,
+            1.323
+          ],
+          "edge_R_opt": 0.635,
+          "edge_usd_pess": 9.27,
+          "edge_usd_pess_ci90": [
+            -4.27,
+            23.19
+          ],
+          "mean_risk_usd": 21.73,
+          "cond_hit_actual": 0.333
+        }
+      }
+    },
+    "60": {
+      "scored": 455,
+      "NOTHING": {
+        "all": {
+          "n": 382,
+          "clusters": 223,
+          "p_target": 0.448,
+          "p_stop": 0.521,
+          "p_neither": 0.031,
+          "p_ambiguous": 0.008,
+          "placebo_p_target": 0.435,
+          "placebo_p_stop": 0.525,
+          "placebo_p_neither": 0.039,
+          "mean_declared_p": 0.389,
+          "net_R_pess": -0.088,
+          "net_R_opt": -0.067,
+          "placebo_net_R_pess": -0.079,
+          "placebo_net_R_opt": -0.059,
+          "edge_R_pess": -0.009,
+          "edge_R_pess_ci90": [
+            -0.138,
+            0.131
+          ],
+          "edge_R_opt": -0.008,
+          "edge_usd_pess": 1.16,
+          "edge_usd_pess_ci90": [
+            -2.75,
+            4.77
+          ],
+          "mean_risk_usd": 37.44,
+          "cond_hit_actual": 0.462
+        },
+        "RR[0,1)": {
+          "n": 156,
+          "clusters": 101,
+          "p_target": 0.673,
+          "p_stop": 0.321,
+          "p_neither": 0.006,
+          "p_ambiguous": 0.013,
+          "placebo_p_target": 0.661,
+          "placebo_p_stop": 0.317,
+          "placebo_p_neither": 0.022,
+          "mean_declared_p": 0.401,
+          "net_R_pess": -0.043,
+          "net_R_opt": -0.024,
+          "placebo_net_R_pess": -0.042,
+          "placebo_net_R_opt": -0.028,
+          "edge_R_pess": -0.001,
+          "edge_R_pess_ci90": [
+            -0.102,
+            0.088
+          ],
+          "edge_R_opt": 0.004,
+          "edge_usd_pess": 3.05,
+          "edge_usd_pess_ci90": [
+            -1.5,
+            7.61
+          ],
+          "mean_risk_usd": 50.95,
+          "cond_hit_actual": 0.677
+        },
+        "RR[1,1.5)": {
+          "n": 63,
+          "clusters": 55,
+          "p_target": 0.508,
+          "p_stop": 0.46,
+          "p_neither": 0.032,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.432,
+          "placebo_p_stop": 0.507,
+          "placebo_p_neither": 0.06,
+          "mean_declared_p": 0.428,
+          "net_R_pess": 0.105,
+          "net_R_opt": 0.105,
+          "placebo_net_R_pess": -0.03,
+          "placebo_net_R_opt": -0.006,
+          "edge_R_pess": 0.135,
+          "edge_R_pess_ci90": [
+            -0.109,
+            0.394
+          ],
+          "edge_R_opt": 0.111,
+          "edge_usd_pess": 4.42,
+          "edge_usd_pess_ci90": [
+            -4.4,
+            13.76
+          ],
+          "mean_risk_usd": 34.83,
+          "cond_hit_actual": 0.525
+        },
+        "RR[1.5,2.5)": {
+          "n": 69,
+          "clusters": 59,
+          "p_target": 0.232,
+          "p_stop": 0.667,
+          "p_neither": 0.101,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.288,
+          "placebo_p_stop": 0.65,
+          "placebo_p_neither": 0.062,
+          "mean_declared_p": 0.386,
+          "net_R_pess": -0.265,
+          "net_R_opt": -0.265,
+          "placebo_net_R_pess": -0.141,
+          "placebo_net_R_opt": -0.11,
+          "edge_R_pess": -0.124,
+          "edge_R_pess_ci90": [
+            -0.393,
+            0.133
+          ],
+          "edge_R_opt": -0.155,
+          "edge_usd_pess": -1.79,
+          "edge_usd_pess_ci90": [
+            -10.65,
+            6.26
+          ],
+          "mean_risk_usd": 33.3,
+          "cond_hit_actual": 0.258
+        },
+        "RR[2.5,99)": {
+          "n": 94,
+          "clusters": 71,
+          "p_target": 0.191,
+          "p_stop": 0.787,
+          "p_neither": 0.021,
+          "p_ambiguous": 0.011,
+          "placebo_p_target": 0.17,
+          "placebo_p_stop": 0.793,
+          "placebo_p_neither": 0.037,
+          "mean_declared_p": 0.346,
+          "net_R_pess": -0.161,
+          "net_R_opt": -0.11,
+          "placebo_net_R_pess": -0.126,
+          "placebo_net_R_opt": -0.109,
+          "edge_R_pess": -0.035,
+          "edge_R_pess_ci90": [
+            -0.413,
+            0.389
+          ],
+          "edge_R_opt": -0.001,
+          "edge_usd_pess": -1.99,
+          "edge_usd_pess_ci90": [
+            -9.23,
+            5.67
+          ],
+          "mean_risk_usd": 19.82,
+          "cond_hit_actual": 0.196
+        }
+      },
+      "ENTER": {
+        "all": {
+          "n": 73,
+          "clusters": 59,
+          "p_target": 0.288,
+          "p_stop": 0.712,
+          "p_neither": 0.0,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.292,
+          "placebo_p_stop": 0.656,
+          "placebo_p_neither": 0.052,
+          "mean_declared_p": 0.509,
+          "net_R_pess": -0.103,
+          "net_R_opt": -0.103,
+          "placebo_net_R_pess": -0.088,
+          "placebo_net_R_opt": -0.079,
+          "edge_R_pess": -0.016,
+          "edge_R_pess_ci90": [
+            -0.349,
+            0.333
+          ],
+          "edge_R_opt": -0.024,
+          "edge_usd_pess": -4.43,
+          "edge_usd_pess_ci90": [
+            -13.5,
+            4.66
+          ],
+          "mean_risk_usd": 27.26,
+          "cond_hit_actual": 0.288
+        },
+        "RR[1,1.5)": {
+          "n": 13,
+          "clusters": 11,
+          "p_target": 0.077,
+          "p_stop": 0.923,
+          "p_neither": 0.0,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.437,
+          "placebo_p_stop": 0.543,
+          "placebo_p_neither": 0.02,
+          "mean_declared_p": 0.542,
+          "net_R_pess": -0.891,
+          "net_R_opt": -0.891,
+          "placebo_net_R_pess": -0.028,
+          "placebo_net_R_opt": -0.024,
+          "edge_R_pess": -0.863,
+          "edge_R_pess_ci90": [
+            -1.131,
+            -0.578
+          ],
+          "edge_R_opt": -0.867,
+          "edge_usd_pess": -20.44,
+          "edge_usd_pess_ci90": [
+            -30.0,
+            -10.06
+          ],
+          "mean_risk_usd": 27.15,
+          "cond_hit_actual": 0.077
+        },
+        "RR[1.5,2.5)": {
+          "n": 35,
+          "clusters": 32,
+          "p_target": 0.371,
+          "p_stop": 0.629,
+          "p_neither": 0.0,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.302,
+          "placebo_p_stop": 0.633,
+          "placebo_p_neither": 0.065,
+          "mean_declared_p": 0.514,
+          "net_R_pess": 0.05,
+          "net_R_opt": 0.05,
+          "placebo_net_R_pess": -0.063,
+          "placebo_net_R_opt": -0.054,
+          "edge_R_pess": 0.113,
+          "edge_R_pess_ci90": [
+            -0.294,
+            0.543
+          ],
+          "edge_R_opt": 0.104,
+          "edge_usd_pess": -1.06,
+          "edge_usd_pess_ci90": [
+            -16.24,
+            14.64
+          ],
+          "mean_risk_usd": 31.03,
+          "cond_hit_actual": 0.371
+        },
+        "RR[2.5,99)": {
+          "n": 24,
+          "clusters": 23,
+          "p_target": 0.25,
+          "p_stop": 0.75,
+          "p_neither": 0.0,
+          "p_ambiguous": 0.0,
+          "placebo_p_target": 0.182,
+          "placebo_p_stop": 0.767,
+          "placebo_p_neither": 0.051,
+          "mean_declared_p": 0.481,
+          "net_R_pess": 0.062,
+          "net_R_opt": 0.062,
+          "placebo_net_R_pess": -0.173,
+          "placebo_net_R_opt": -0.163,
+          "edge_R_pess": 0.235,
+          "edge_R_pess_ci90": [
+            -0.468,
+            1.002
+          ],
+          "edge_R_opt": 0.225,
+          "edge_usd_pess": -1.35,
+          "edge_usd_pess_ci90": [
+            -15.14,
+            12.04
+          ],
+          "mean_risk_usd": 21.9,
+          "cond_hit_actual": 0.25
+        }
+      }
+    }
+  }
+}

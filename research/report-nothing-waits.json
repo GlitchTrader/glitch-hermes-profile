@@ -1,0 +1,126 @@
+{
+  "schema_version": "glitch.hermes.research.nothing_waits.v1",
+  "generated_utc": "2026-10-23T18:10:50.471466Z",
+  "codes": {
+    "nothing": 2753,
+    "no_authored_geometry": 992,
+    "authored_geometry": 1761
+  },
+  "n_scored": 1761,
+  "n_resolved_now_geometry": 852,
+  "chronology": {
+    "stop_before_target": 466,
+    "neither_reached": 899,
+    "target_before_stop": 386,
+    "ambiguous_same_bar": 10
+  },
+  "observed_target_first_among_resolved": 0.4531,
+  "missed_good_n": 386,
+  "missed_good_share_of_resolved": 0.4531,
+  "correct_abstention_n": 466,
+  "correct_abstention_share_of_resolved": 0.5469,
+  "wait": {
+    "with_distant_parsed_levels": 1704,
+    "no_distant_level_n": 57,
+    "touch_rate": 0.7447,
+    "wait_before_stop_n": 1069,
+    "stop_before_wait_n": 62,
+    "claimed_improved_n": 329,
+    "claimed_improved_touch_rate": 0.7538,
+    "wait_vs_stop": {
+      "ambiguous_same_bar": 183,
+      "wait_before_stop": 1069,
+      "neither": 390,
+      "stop_before_wait": 62
+    },
+    "missed_good_and_wait_missed_n": 75,
+    "missed_good_and_wait_filled_n": 304
+  },
+  "calibration_buckets": {
+    "p_0.40_0.50": {
+      "n": 398,
+      "observed_target_first": 0.4271,
+      "mean_declared_p": 0.4377
+    },
+    "p_0.50_0.60": {
+      "n": 31,
+      "observed_target_first": 0.7742,
+      "mean_declared_p": 0.5213
+    },
+    "p_ge_0.60": {
+      "n": 3,
+      "observed_target_first": 1.0,
+      "mean_declared_p": 0.615
+    },
+    "p_lt_0.40": {
+      "n": 413,
+      "observed_target_first": 0.4552,
+      "mean_declared_p": 0.326
+    },
+    "unknown_p": {
+      "n": 7,
+      "observed_target_first": 0.1429,
+      "mean_declared_p": null
+    }
+  },
+  "auditor_ev_proxy": {
+    "declared_positive_now_ev_n": 753,
+    "declared_positive_now_resolved_n": 320,
+    "observed_target_first_when_declared_positive_now": 0.1594,
+    "wait_fail_among_declared_positive_now_n": 179,
+    "wait_fail_share_among_declared_positive_now": 0.2377,
+    "note": "Levels within 1.0 of entry dropped. Positive NOW EV uses declared p and authored R:R only; wait_fail means distant wait_price never printed."
+  },
+  "by_instrument": {
+    "M2K": {
+      "n": 452,
+      "resolved": 150,
+      "chronology": {
+        "neither_reached": 301,
+        "target_before_stop": 69,
+        "stop_before_target": 81,
+        "ambiguous_same_bar": 1
+      },
+      "wait_touch": {
+        "not_touched": 239,
+        "touched": 162,
+        "no_distant_level": 51
+      }
+    },
+    "MES": {
+      "n": 386,
+      "resolved": 134,
+      "chronology": {
+        "neither_reached": 251,
+        "stop_before_target": 81,
+        "target_before_stop": 53,
+        "ambiguous_same_bar": 1
+      },
+      "wait_touch": {
+        "touched": 259,
+        "not_touched": 121,
+        "no_distant_level": 6
+      }
+    },
+    "MNQ": {
+      "n": 923,
+      "resolved": 568,
+      "chronology": {
+        "stop_before_target": 304,
+        "target_before_stop": 264,
+        "neither_reached": 347,
+        "ambiguous_same_bar": 8
+      },
+      "wait_touch": {
+        "touched": 848,
+        "not_touched": 75
+      }
+    }
+  },
+  "interpretation": {
+    "if_correct_abstention_dominates": "NOTHING protecting EV; prompt assertiveness secondary",
+    "if_missed_good_dominates": "habitual abstention / WAIT overweighted vs NOW",
+    "if_wait_touch_low": "WAIT fill probability too low for claimed IMPROVED EV",
+    "if_declared_p_miscalibrated": "probability process, not only timing choice"
+  }
+}

@@ -257,6 +257,10 @@ def ingest_frame(state: dict[str, Any], frame: dict[str, Any], contracts: dict[s
             slot["samples"].append(sample)
         slot["latest_partial"] = sample.get("partial") if sample else None
         slot["latest_frame_id"] = frame_id
+        profile = instrument.get("volume_profile")
+        if isinstance(profile, dict):
+            # Latest native session/bar volume-at-price only; never invent rows.
+            slot["volume_profile"] = profile
         slot["bars"] = sorted(
             (item for item in slot.get("bars", []) if isinstance(item, dict)),
             key=lambda item: (str(item.get("native_utc") or ""), str(item.get("id") or "")),
@@ -790,10 +794,27 @@ def _vwap_path(samples: list[dict[str, Any]], tick: float | None) -> dict[str, A
 
 def _order_flow_response(samples: list[dict[str, Any]], atr: float | None) -> dict[str, Any]:
     window = samples[-15:]
-    valid = [sample for sample in window if _finite(sample.get("delta_change")) is not None]
+    # Cumulative delta alone is enough evidence that the OF runtime is live
+    # (some minutes publish cum delta with a zero/null delta_change).
+    valid = [
+        sample for sample in window
+        if _finite(sample.get("delta_change")) is not None
+        or _finite(sample.get("cumulative_delta")) is not None
+    ]
     if not valid:
         return {"status": "unavailable", "reason": "native_order_flow_missing", "coverage": f"0/{len(window)}"}
-    deltas = [float(sample["delta_change"]) for sample in valid]
+    deltas: list[float] = []
+    for index, sample in enumerate(valid):
+        explicit = _finite(sample.get("delta_change"))
+        if explicit is not None:
+            deltas.append(float(explicit))
+            continue
+        previous = _finite(valid[index - 1].get("cumulative_delta")) if index else None
+        current = _finite(sample.get("cumulative_delta"))
+        if previous is not None and current is not None:
+            deltas.append(float(current - previous))
+        else:
+            deltas.append(0.0)
     prices = [float(sample["current_price"]) for sample in valid if _finite(sample.get("current_price")) is not None]
     price_change = prices[-1] - prices[0] if len(prices) >= 2 else 0.0
     signed_effort = sum(deltas)
@@ -809,6 +830,56 @@ def _order_flow_response(samples: list[dict[str, Any]], atr: float | None) -> di
         "latest_aggression_balance": _round(valid[-1].get("aggression_balance"), 6),
         "latest_reliability": _round(valid[-1].get("order_flow_reliability"), 6),
         "latest_classification_coverage": _round(valid[-1].get("classification_coverage"), 6),
+    }
+
+
+def _evidence_quality(
+    *,
+    session: dict[str, Any],
+    context_bars: list[Any],
+    bars: list[Any],
+    samples: list[Any],
+    tick: float | None,
+    point_value: float | None,
+    atr: float | None,
+    vwap_path: dict[str, Any],
+    flow_response: dict[str, Any],
+    latest_frame_id: Any,
+) -> dict[str, Any]:
+    """Ready only when contiguous history and session extremes are actually usable."""
+    contiguous = len(bars)
+    context = len(context_bars)
+    previous_incomplete = (
+        session.get("previous_high") is None
+        or session.get("previous_low") is None
+        or str(session.get("extremes_status") or "") == "partial_no_previous"
+    )
+    contiguous_incomplete = contiguous < 60 <= context
+    missing = [
+        name for name, absent in (
+            ("native_economics", tick is None or point_value is None),
+            ("atr", atr is None),
+            ("vwap", vwap_path.get("status") == "unavailable"),
+            ("order_flow", flow_response.get("status") == "unavailable"),
+            ("previous_session_extremes", previous_incomplete),
+            ("contiguous_bar_history", contiguous_incomplete),
+        ) if absent
+    ]
+    # Soft fields (vwap/flow/atr) stay in missing[]; status hard-gates on history
+    # integrity so a truncated reload cannot advertise ready session room.
+    if contiguous >= 60 and not previous_incomplete and not contiguous_incomplete:
+        status = "ready"
+    elif context >= 60 or contiguous >= 20:
+        status = "partial"
+    else:
+        status = "warming"
+    return {
+        "status": status,
+        "completed_bar_count": context,
+        "sample_count": len(samples),
+        "contiguous_completed_bar_count": contiguous,
+        "latest_source_frame_id": latest_frame_id,
+        "missing": missing,
     }
 
 
@@ -861,20 +932,18 @@ def instrument_perception(root: str, slot: dict[str, Any]) -> dict[str, Any]:
     return {
         "instrument": root, "instrument_full_name": slot.get("instrument_full_name"),
         "current_price": _round(current), "economics": economics,
-        "evidence_quality": {
-            "status": "ready" if len(context_bars) >= 60 else "warming",
-            "completed_bar_count": len(context_bars), "sample_count": len(samples),
-            "contiguous_completed_bar_count": len(bars),
-            "latest_source_frame_id": slot.get("latest_frame_id"),
-            "missing": [
-                name for name, missing in (
-                    ("native_economics", tick is None or point_value is None),
-                    ("atr", atr is None),
-                    ("vwap", vwap_path["status"] == "unavailable"),
-                    ("order_flow", flow_response["status"] == "unavailable"),
-                ) if missing
-            ],
-        },
+        "evidence_quality": _evidence_quality(
+            session=session if isinstance(session, dict) else {},
+            context_bars=context_bars,
+            bars=bars,
+            samples=samples,
+            tick=tick,
+            point_value=point_value,
+            atr=atr,
+            vwap_path=vwap_path,
+            flow_response=flow_response,
+            latest_frame_id=slot.get("latest_frame_id"),
+        ),
         "measurement_tolerance": tolerance,
         "price_sequence": {
             "windows": windows, "confirmed_swings": visible_swings,
@@ -925,6 +994,215 @@ def _line(draw: Any, points: list[tuple[float, float]], fill: str, width: int = 
         draw.line(points, fill=fill, width=width)
 
 
+def _opening_range(bars: list[dict[str, Any]], minutes: int = 30) -> dict[str, Any] | None:
+    """First N minutes of the contiguous segment that ends at the latest bar."""
+    if len(bars) < 5 or minutes < 5:
+        return None
+    start = 0
+    for index in range(len(bars) - 1, 0, -1):
+        previous = _minute_stamp(bars[index - 1], "native_utc")
+        current = _minute_stamp(bars[index], "native_utc")
+        if previous is None or current is None or current - previous != timedelta(minutes=1):
+            start = index
+            break
+    window = bars[start:start + minutes]
+    if len(window) < 5:
+        return None
+    high = max(float(bar["h"]) for bar in window)
+    low = min(float(bar["l"]) for bar in window)
+    return {
+        "bars": len(window),
+        "high": round(high, 8),
+        "low": round(low, 8),
+        "mid": round((high + low) / 2, 8),
+        "source": f"or{len(window)}_contiguous_open",
+    }
+
+
+def _value_area_from_totals(
+    totals: dict[float, float], value_fraction: float = 0.7,
+) -> tuple[float, float, float] | None:
+    positive = {price: volume for price, volume in totals.items() if volume > 0}
+    if not positive:
+        return None
+    session_total = sum(positive.values())
+    if session_total <= 0:
+        return None
+    poc = max(positive.items(), key=lambda item: (item[1], -abs(item[0]), -item[0]))[0]
+    ordered = sorted(positive)
+    lo = hi = ordered.index(poc)
+    included = positive[poc]
+    target = session_total * value_fraction
+    while included < target and (lo > 0 or hi < len(ordered) - 1):
+        below = positive[ordered[lo - 1]] if lo > 0 else -1.0
+        above = positive[ordered[hi + 1]] if hi < len(ordered) - 1 else -1.0
+        if above > below:
+            hi += 1
+            included += positive[ordered[hi]]
+        elif below > above:
+            lo -= 1
+            included += positive[ordered[lo]]
+        elif hi < len(ordered) - 1:
+            hi += 1
+            included += positive[ordered[hi]]
+        else:
+            lo -= 1
+            included += positive[ordered[lo]]
+    return poc, ordered[lo], ordered[hi]
+
+
+def _volume_profile_overlay(slot: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any]:
+    """Native volume-at-price when ready; otherwise a bar-distributed session profile."""
+    tick = _finite(_nested(slot, "economics", "tick_size"))
+    profile = slot.get("volume_profile") if isinstance(slot.get("volume_profile"), dict) else {}
+    if profile.get("status") == "ready":
+        # Reject profiles whose newest 1m footprint is older than the chart window
+        # (seen on MES when a stale prior-session blob remains on the instrument).
+        bar_start = _minute_stamp(bars[0], "native_utc") if bars else None
+        newest_fp = None
+        for item in profile.get("bars_1m") or []:
+            if not isinstance(item, dict):
+                continue
+            stamp = _minute_stamp({"native_utc": item.get("utc_time") or item.get("utc")}, "native_utc")
+            if stamp is not None and (newest_fp is None or stamp > newest_fp):
+                newest_fp = stamp
+        if bar_start is not None and newest_fp is not None and newest_fp < bar_start - timedelta(minutes=30):
+            profile = {}
+    if profile.get("status") == "ready":
+        full_map = profile.get("full_map") if isinstance(profile.get("full_map"), dict) else {}
+        rows = profile.get("session_rows") if isinstance(profile.get("session_rows"), list) else []
+        histogram: dict[float, dict[str, float]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            price = _finite(row.get("p") if "p" in row else row.get("price"))
+            if price is None:
+                continue
+            bid, ask = _row_bid_ask(row)
+            total = bid + ask
+            if total <= 0 and (volume := _finite(row.get("v") or row.get("volume"))) is not None:
+                total = max(0.0, volume)
+                bid = ask = total * 0.5
+            if total <= 0:
+                continue
+            bucket = histogram.setdefault(price, {"bid": 0.0, "ask": 0.0, "total": 0.0})
+            bucket["bid"] += bid
+            bucket["ask"] += ask
+            bucket["total"] += total
+        poc = _finite(full_map.get("poc"))
+        vah = _finite(full_map.get("vah"))
+        val = _finite(full_map.get("val"))
+        if poc is None or vah is None or val is None:
+            derived = _value_area_from_totals({price: row["total"] for price, row in histogram.items()})
+            if derived is not None:
+                poc, val, vah = derived
+        footprint = [bar for bar in (profile.get("bars_1m") or []) if isinstance(bar, dict)]
+        return {
+            "status": "native" if histogram or poc is not None else "unavailable",
+            "source": "volume_at_price",
+            "poc": poc, "vah": vah, "val": val,
+            "histogram": histogram,
+            "footprint_bars": footprint[-24:],
+            "classification": profile.get("classification"),
+        }
+    if len(bars) < 10 or tick is None or tick <= 0:
+        return {"status": "unavailable", "reason": "native_profile_and_bars_insufficient"}
+    totals: dict[float, float] = {}
+    for bar in bars:
+        low, high = float(bar["l"]), float(bar["h"])
+        volume = max(0.0, float(bar.get("v") or 0.0))
+        if volume <= 0 or high < low:
+            continue
+        start = math.floor(low / tick) * tick
+        levels = []
+        price = start
+        while price <= high + tick * 0.5:
+            levels.append(round(price, 8))
+            price = round(price + tick, 10)
+        if not levels:
+            continue
+        share = volume / len(levels)
+        for price in levels:
+            totals[price] = totals.get(price, 0.0) + share
+    derived = _value_area_from_totals(totals)
+    if derived is None:
+        return {"status": "unavailable", "reason": "empty_distributed_profile"}
+    poc, val, vah = derived
+    return {
+        "status": "approximated_from_1m_ohlcv",
+        "source": "completed_1m_volume_distribution",
+        "poc": poc, "vah": vah, "val": val,
+        "histogram": {
+            price: {"bid": volume * 0.5, "ask": volume * 0.5, "total": volume}
+            for price, volume in totals.items()
+        },
+        "footprint_bars": [],
+    }
+
+
+def _sample_flow_by_minute(samples: list[dict[str, Any]]) -> dict[datetime, dict[str, float]]:
+    by_minute: dict[datetime, dict[str, float]] = {}
+    for sample in samples:
+        stamp = _minute_stamp(sample, "frame_id")
+        if stamp is None:
+            continue
+        row = by_minute.setdefault(stamp, {})
+        for key in ("delta_change", "aggression_balance", "cumulative_delta", "vwap", "vwap_deviation", "current_price"):
+            if (value := _finite(sample.get(key))) is not None:
+                row[key] = value
+    return by_minute
+
+
+def _flow_for_bar(
+    bar: dict[str, Any], flow_by_minute: dict[datetime, dict[str, float]],
+) -> dict[str, float]:
+    """Completed bars are sealed on the next frame; try native, +1m, and first_observed."""
+    stamp = _minute_stamp(bar, "native_utc")
+    if stamp is not None:
+        if stamp in flow_by_minute:
+            return flow_by_minute[stamp]
+        nxt = stamp + timedelta(minutes=1)
+        if nxt in flow_by_minute:
+            return flow_by_minute[nxt]
+    frame_id = bar.get("first_observed_frame_id")
+    if frame_id:
+        observed = _minute_stamp({"frame_id": frame_id}, "frame_id")
+        if observed is not None and observed in flow_by_minute:
+            return flow_by_minute[observed]
+    return {}
+
+
+def _row_bid_ask(row: dict[str, Any]) -> tuple[float, float]:
+    """Native volume-at-price rows use b/a; keep bid/ask aliases for tests/fixtures."""
+    bid = _finite(row.get("b") if "b" in row else row.get("bid")) or 0.0
+    ask = _finite(row.get("a") if "a" in row else row.get("ask")) or 0.0
+    return max(0.0, bid), max(0.0, ask)
+
+
+def _footprint_by_bar_utc(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Index native 1m footprint rows by completed-bar utc_time."""
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    for bar in profile.get("footprint_bars") or []:
+        if not isinstance(bar, dict):
+            continue
+        stamp = str(bar.get("utc_time") or bar.get("utc") or "")
+        rows = bar.get("rows") if isinstance(bar.get("rows"), list) else []
+        clean = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            price = _finite(row.get("p") if "p" in row else row.get("price"))
+            if price is None:
+                continue
+            bid, ask = _row_bid_ask(row)
+            if bid <= 0 and ask <= 0:
+                continue
+            clean.append({"p": price, "bid": bid, "ask": ask})
+        if stamp and clean:
+            indexed[stamp] = clean
+    return indexed
+
+
 def _overlay_values(active_trade_state: dict[str, Any] | None, root: str) -> list[tuple[str, float, str]]:
     overlays: list[tuple[str, float, str]] = []
     trades = active_trade_state.get("trades", []) if isinstance(active_trade_state, dict) else []
@@ -964,20 +1242,50 @@ def _draw_panel(
     from PIL import ImageDraw
     draw = ImageDraw.Draw(image)
     left, top, right, bottom = bounds
-    bars = _context_minutes(slot, "bars", "native_utc")[-360:]
-    samples = _context_minutes(slot, "samples", "frame_id")[-360:]
+    # Full retained horizon (up to MAX_BARS), not a shorter visual crop.
+    bars = _context_minutes(slot, "bars", "native_utc")
+    samples = _context_minutes(slot, "samples", "frame_id")
     overlays = _overlay_values(active_trade_state, root)
+    opening = _opening_range(bars, 30)
+    profile = _volume_profile_overlay(slot, bars)
+    flow_by_minute = _sample_flow_by_minute(samples)
     draw.rectangle(bounds, fill="#11161d", outline="#36404a")
-    draw.text((left + 10, top + 7), f"{root}  completed 1m + distinct live partial", fill="#e8eef5", font=_font(16))
+    hours = max(1, int(round(len(bars) / 60))) if bars else 0
+    draw.text(
+        (left + 10, top + 7),
+        f"{root}  {len(bars)}x1m (~{hours}h) + live partial",
+        fill="#e8eef5", font=_font(15),
+    )
     if not bars:
         draw.text((left + 10, top + 36), "warming: no native completed bars", fill="#8d99a6", font=_font(13))
         return
-    chart_left, chart_right = left + 52, right - 68
-    chart_top, chart_bottom = top + 30, bottom - 98
-    volume_top, volume_bottom = chart_bottom + 8, bottom - 48
-    rsi_top, rsi_bottom = bottom - 42, bottom - 8
+    profile_width = 88
+    chart_left, chart_right = left + 52, right - (68 + profile_width)
+    # RSI strip removed: reclaim vertical space for price action / footprint.
+    chart_top, chart_bottom = top + 30, bottom - 58
+    volume_top, volume_bottom = chart_bottom + 6, bottom - 8
+    footprint_by_utc = _footprint_by_bar_utc(profile)
+    max_footprint_bars = 18
     price_values = [float(value) for bar in bars for value in (bar["h"], bar["l"])]
     price_values.extend(value for _, value, _ in overlays)
+    for key in ("poc", "vah", "val"):
+        if (price := _finite(profile.get(key))) is not None:
+            price_values.append(price)
+    if opening:
+        price_values.extend([float(opening["high"]), float(opening["low"])])
+    session = slot.get("session") if isinstance(slot.get("session"), dict) else {}
+    for key in ("high", "low", "previous_high", "previous_low"):
+        if (price := _finite(session.get(key))) is not None:
+            price_values.append(price)
+    for sample in samples:
+        if (vwap := _finite(sample.get("vwap"))) is not None:
+            price_values.append(vwap)
+            price = _finite(sample.get("current_price"))
+            deviation = _finite(sample.get("vwap_deviation"))
+            if price is not None and deviation is not None and abs(deviation) >= 0.05:
+                sigma = abs((price - vwap) / deviation)
+                if math.isfinite(sigma):
+                    price_values.extend([vwap + offset * sigma for offset in (-2, -1, 1, 2)])
     partial = slot.get("latest_partial") if isinstance(slot.get("latest_partial"), dict) else None
     if partial:
         price_values.extend(float(partial[key]) for key in ("h", "l") if _finite(partial.get(key)) is not None)
@@ -986,14 +1294,37 @@ def _draw_panel(
     low, high = low - padding, high + padding
     span = max(high - low, 1e-9)
     first_time = _minute_stamp(bars[0], "native_utc")
-    minute_offsets = [(_minute_stamp(bar, "native_utc") - first_time).total_seconds() / 60 for bar in bars]
+    minute_offsets = [
+        ((_minute_stamp(bar, "native_utc") - first_time).total_seconds() / 60) if first_time else float(index)
+        for index, bar in enumerate(bars)
+    ]
     x_count = minute_offsets[-1] + 1 + (1 if partial else 0)
     x_step = max(1.0, (chart_right - chart_left) / max(1, x_count))
     price_y = lambda value: chart_bottom - (float(value) - low) / span * (chart_bottom - chart_top)
+
+    def sample_x(sample: dict[str, Any]) -> float | None:
+        stamp = _minute_stamp(sample, "frame_id")
+        if stamp is None or first_time is None:
+            return None
+        offset = (stamp - first_time).total_seconds() / 60
+        if offset < -0.5 or offset > minute_offsets[-1] + 2:
+            return None
+        return chart_left + (offset + 0.5) * x_step
+
     for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
         y = chart_top + fraction * (chart_bottom - chart_top)
         draw.line((chart_left, y, chart_right, y), fill="#27313b", width=1)
         draw.text((chart_right + 5, y - 7), f"{high - fraction * span:.2f}", fill="#8d99a6", font=_font(11))
+    if opening and low <= float(opening["high"]) and high >= float(opening["low"]):
+        draw.rectangle(
+            (chart_left, price_y(min(float(opening["high"]), high)),
+             chart_right, price_y(max(float(opening["low"]), low))),
+            fill="#1a2430",
+        )
+        for label, price in (("OR high", opening["high"]), ("OR low", opening["low"])):
+            y = price_y(float(price))
+            draw.line((chart_left, y, chart_right, y), fill="#4a6d8c", width=1)
+            draw.text((chart_left + 4, y - 12), f"{label} {float(price):.2f}", fill="#7ea0bd", font=_font(10))
     for zone in perception.get("unfilled_three_bar_imbalances", []):
         if not isinstance(zone, dict):
             continue
@@ -1009,21 +1340,75 @@ def _draw_panel(
             fill=color,
         )
     max_volume = max(float(bar.get("v") or 0) for bar in bars) or 1.0
-    frame_x: dict[str, float] = {}
+    footprint_start = max(0, len(bars) - max_footprint_bars)
     for index, bar in enumerate(bars):
         x = chart_left + (minute_offsets[index] + 0.5) * x_step
         if index and minute_offsets[index] - minute_offsets[index - 1] > 1:
             gap_x = x - 0.5 * x_step
             draw.line((gap_x, chart_top, gap_x, chart_bottom), fill="#77838e", width=1)
-        frame_x[str(bar.get("first_observed_frame_id") or "")] = x
         open_y, close_y = price_y(bar["o"]), price_y(bar["c"])
         high_y, low_y = price_y(bar["h"]), price_y(bar["l"])
         color = "#38c5ad" if float(bar["c"]) > float(bar["o"]) else "#e9783f" if float(bar["c"]) < float(bar["o"]) else "#8d99a6"
-        draw.line((x, high_y, x, low_y), fill=color, width=1)
-        half = max(1, min(3, int(x_step * 0.35)))
-        draw.rectangle((x - half, min(open_y, close_y), x + half, max(open_y, close_y) + 1), fill=color)
+        half = max(1, min(8, int(x_step * 0.45)))
+        stamp = _minute_stamp(bar, "native_utc")
+        flow = _flow_for_bar(bar, flow_by_minute)
+        delta = _finite(flow.get("delta_change"))
+        if delta is None:
+            # Recover signed effort from cumulative path when delta_change is 0/null.
+            cum = _finite(flow.get("cumulative_delta"))
+            prev_flow = _flow_for_bar(bars[index - 1], flow_by_minute) if index else {}
+            prev_cum = _finite(prev_flow.get("cumulative_delta"))
+            if cum is not None and prev_cum is not None:
+                delta = cum - prev_cum
+        utc_key = str(bar.get("native_utc") or "")
+        rows = footprint_by_utc.get(utc_key) if index >= footprint_start else None
+        footprint_imbalance = None
+        if rows:
+            fp_half = max(half, 7)
+            draw.line((x, high_y, x, low_y), fill="#5a6670", width=1)
+            body_top, body_bottom = min(open_y, close_y), max(open_y, close_y)
+            draw.rectangle(
+                (x - fp_half, body_top, x + fp_half, max(body_bottom, body_top + 1)),
+                outline=color, width=1,
+            )
+            bid_total = sum(float(row["bid"]) for row in rows)
+            ask_total = sum(float(row["ask"]) for row in rows)
+            footprint_imbalance = ask_total - bid_total
+            # Traditional footprint: bid left of wick, ask right, exact counts.
+            for row in rows:
+                price = float(row["p"])
+                if not low <= price <= high:
+                    continue
+                y = int(price_y(price))
+                bid = int(round(float(row["bid"])))
+                ask = int(round(float(row["ask"])))
+                bid_fill = "#6fa8dc" if bid >= ask else "#aeb6bf"
+                ask_fill = "#e9783f" if ask > bid else "#aeb6bf"
+                bid_text, ask_text = str(bid), str(ask)
+                bx = x - fp_half - 1 - 5 * len(bid_text)
+                ax = x + fp_half + 2
+                draw.rectangle((bx - 1, y - 6, bx + 5 * len(bid_text) + 1, y + 5), fill="#0b0f14")
+                draw.rectangle((ax - 1, y - 6, ax + 5 * len(ask_text) + 1, y + 5), fill="#0b0f14")
+                draw.text((bx, y - 5), bid_text, fill=bid_fill, font=_font(9))
+                draw.text((ax, y - 5), ask_text, fill=ask_fill, font=_font(9))
+        else:
+            draw.line((x, high_y, x, low_y), fill=color, width=1)
+            draw.rectangle((x - max(1, min(3, half)), min(open_y, close_y), x + max(1, min(3, half)), max(open_y, close_y) + 1), fill=color)
+        signed = delta if delta not in (None, 0.0) else footprint_imbalance
+        volume_color = (
+            "#2f8f75" if signed is not None and signed > 0
+            else "#b35a3a" if signed is not None and signed < 0
+            else "#3a5965"
+        )
         volume_height = float(bar.get("v") or 0) / max_volume * (volume_bottom - volume_top)
-        draw.rectangle((x - half, volume_bottom - volume_height, x + half, volume_bottom), fill="#3a5965")
+        draw.rectangle(
+            (x - max(1, min(3, half)), volume_bottom - volume_height, x + max(1, min(3, half)), volume_bottom),
+            fill=volume_color,
+        )
+        aggression = _finite(flow.get("aggression_balance"))
+        if aggression is not None and abs(aggression) >= 0.2:
+            marker = "#7dffa8" if aggression > 0 else "#ff9b7d"
+            draw.ellipse((x - 2, high_y - 7, x + 2, high_y - 3), fill=marker)
     if partial:
         x = chart_left + (minute_offsets[-1] + 1.5) * x_step
         open_y, close_y = price_y(partial["o"]), price_y(partial["c"])
@@ -1031,39 +1416,75 @@ def _draw_panel(
         half = max(1, min(4, int(x_step * 0.4)))
         draw.rectangle((x - half, min(open_y, close_y), x + half, max(open_y, close_y) + 1), outline="#f2f5f7", width=2)
     vwap_bands: dict[int, list[tuple[float, float]]] = {offset: [] for offset in (-2, -1, 0, 1, 2)}
-    delta_points: list[tuple[float, float]] = []
-    valid_deltas = [float(sample["cumulative_delta"]) for sample in samples if _finite(sample.get("cumulative_delta")) is not None]
-    delta_low, delta_high = (min(valid_deltas), max(valid_deltas)) if valid_deltas else (0.0, 0.0)
     for sample in samples:
-        x = frame_x.get(str(sample.get("frame_id") or ""))
+        x = sample_x(sample)
         if x is None:
             continue
         vwap = _finite(sample.get("vwap"))
         sample_price = _finite(sample.get("current_price"))
         deviation = _finite(sample.get("vwap_deviation"))
         if vwap is not None:
-            if low <= vwap <= high:
-                vwap_bands[0].append((x, price_y(vwap)))
+            vwap_bands[0].append((x, price_y(vwap)))
             if sample_price is not None and deviation is not None and abs(deviation) >= 0.05:
                 sigma = abs((sample_price - vwap) / deviation)
                 if math.isfinite(sigma):
                     for offset in (-2, -1, 1, 2):
-                        band = vwap + offset * sigma
-                        if low <= band <= high:
-                            vwap_bands[offset].append((x, price_y(band)))
-        if delta_high > delta_low and (delta := _finite(sample.get("cumulative_delta"))) is not None:
-            y = volume_bottom - (delta - delta_low) / (delta_high - delta_low) * (volume_bottom - volume_top)
-            delta_points.append((x, y))
+                        vwap_bands[offset].append((x, price_y(vwap + offset * sigma)))
+
     def observed_line(points: list[tuple[float, float]], color: str, width: int = 1) -> None:
         # Do not draw invented continuity through unobserved indicator minutes.
         for left_point, right_point in zip(points, points[1:]):
-            if right_point[0] - left_point[0] <= x_step * 1.01:
+            if right_point[0] - left_point[0] <= x_step * 1.51:
                 _line(draw, [left_point, right_point], color, width)
 
     for offset in (-2, -1, 1, 2):
         observed_line(vwap_bands[offset], "#675f38")
     observed_line(vwap_bands[0], "#f2c94c", 2)
-    observed_line(delta_points, "#9b8cff")
+    if vwap_bands[0]:
+        last_x, last_y = vwap_bands[0][-1]
+        draw.text((min(last_x + 4, chart_right - 70), last_y - 12), "VWAP", fill="#f2c94c", font=_font(11))
+    histogram = profile.get("histogram") if isinstance(profile.get("histogram"), dict) else {}
+    if histogram:
+        max_node = max((row.get("total") or 0) for row in histogram.values()) or 1.0
+        profile_left = chart_right + 8
+        profile_right = right - 10
+        for price, row in histogram.items():
+            if not low <= float(price) <= high:
+                continue
+            total = float(row.get("total") or 0)
+            if total <= 0:
+                continue
+            width = total / max_node * (profile_right - profile_left)
+            y = price_y(float(price))
+            bid = float(row.get("bid") or 0)
+            ask = float(row.get("ask") or 0)
+            split = bid / (bid + ask) if (bid + ask) > 0 else 0.5
+            draw.rectangle((profile_left, y - 1, profile_left + width * split, y + 1), fill="#3d6d8c")
+            draw.rectangle(
+                (profile_left + width * split, y - 1, profile_left + width, y + 1), fill="#8c5a3d",
+            )
+        draw.text((profile_left, chart_top), "VP", fill="#8d99a6", font=_font(10))
+    for key, color, label in (
+        ("val", "#6fa8dc", "VAL"), ("poc", "#f2c94c", "POC"), ("vah", "#6fa8dc", "VAH"),
+    ):
+        price = _finite(profile.get(key))
+        if price is not None and low <= price <= high:
+            y = price_y(price)
+            draw.line((chart_left, y, chart_right, y), fill=color, width=1)
+            draw.text((chart_right - 78, y - 11), f"{label} {price:.2f}", fill=color, font=_font(10))
+    for pivot in perception.get("price_sequence", {}).get("confirmed_swings", [])[-6:]:
+        if not isinstance(pivot, dict):
+            continue
+        price = _finite(pivot.get("price"))
+        if price is None or not low <= price <= high:
+            continue
+        age = max(0, int(_finite(pivot.get("age_bars")) or 0))
+        index = max(0, len(bars) - 1 - age)
+        x = chart_left + (minute_offsets[index] + 0.5) * x_step
+        y = price_y(price)
+        kind = str(pivot.get("kind") or "swing")
+        draw.ellipse((x - 3, y - 3, x + 3, y + 3), outline="#c3d0dc", width=1)
+        draw.text((x + 4, y - 10), kind[:3], fill="#c3d0dc", font=_font(9))
     for level in perception.get("nearest_measured_levels", [])[:8]:
         price = _finite(level.get("price")) if isinstance(level, dict) else None
         if price is not None and low <= price <= high:
@@ -1073,31 +1494,27 @@ def _draw_panel(
             color = "#5a7891" if canonical else "#46606e"
             draw.line((chart_left, y, chart_right, y), fill=color, width=1)
             if canonical:
-                draw.text((chart_right - 165, y - 12), str(sources[0])[:24], fill=color, font=_font(10))
+                draw.text((chart_left + 4, y + 1), str(sources[0])[:22], fill=color, font=_font(10))
     for label, price, color in overlays:
         if low <= price <= high:
             y = price_y(price)
             draw.line((chart_left, y, chart_right, y), fill=color, width=2)
             draw.text((chart_left + 4, y - 13), f"{label} {price:.2f}", fill=color, font=_font(11))
-    rsi_points: list[tuple[float, float]] = []
-    for sample in samples:
-        x = frame_x.get(str(sample.get("frame_id") or ""))
-        rsi = _finite(sample.get("rsi"))
-        if x is not None and rsi is not None:
-            rsi_points.append((x, rsi_bottom - max(0.0, min(100.0, rsi)) / 100 * (rsi_bottom - rsi_top)))
-    for threshold in (30, 50, 70):
-        y = rsi_bottom - threshold / 100 * (rsi_bottom - rsi_top)
-        draw.line((chart_left, y, chart_right, y), fill="#27313b", width=1)
-    observed_line(rsi_points, "#66a7ff")
-    draw.text((left + 10, volume_top), "volume / cumulative delta", fill="#77838e", font=_font(10))
-    draw.text((left + 10, rsi_top), "RSI", fill="#77838e", font=_font(10))
+    draw.text((left + 10, volume_top), "vol (delta / footprint imbalance)", fill="#77838e", font=_font(10))
+    if footprint_by_utc:
+        draw.text((left + 250, volume_top), "footprint: bid left | ask right", fill="#77838e", font=_font(10))
     draw.text((chart_left, bottom - 18), str(bars[0].get("native_utc") or "")[:16], fill="#77838e", font=_font(10))
     if len(bars) < minute_offsets[-1] + 1:
         draw.text((chart_left + 210, bottom - 18), "missing minutes shown as gaps", fill="#77838e", font=_font(10))
     draw.text((chart_right - 125, bottom - 18), str(bars[-1].get("native_utc") or "")[:16], fill="#77838e", font=_font(10))
     vwap_status = perception.get("vwap_path", {}).get("status")
     flow_status = perception.get("order_flow_response", {}).get("status")
-    draw.text((right - 300, top + 8), f"VWAP {vwap_status} | OF {flow_status}", fill="#8d99a6", font=_font(12))
+    vp_status = str(profile.get("status") or "unavailable")
+    draw.text(
+        (right - 420, top + 8),
+        f"VWAP {vwap_status} | OF {flow_status} | VP {vp_status}",
+        fill="#8d99a6", font=_font(11),
+    )
 
 
 def render_market_context(
@@ -1110,7 +1527,7 @@ def render_market_context(
         return {"status": "unavailable", "reason": "no_instruments_to_render"}
     positioned = market_map.get("view") == "position_management"
     width = 1400
-    panel_height = 700 if positioned else 320
+    panel_height = 760 if positioned else 380
     height = panel_height * len(roots)
     image = Image.new("RGB", (width, height), "#0b0f14")
     by_root = {item["instrument"]: item for item in market_map.get("instruments", []) if isinstance(item, dict)}
@@ -1314,6 +1731,28 @@ def _trim_to_budget(value: dict[str, Any]) -> None:
         sequence = instrument.get("price_sequence") if isinstance(instrument, dict) else None
         if isinstance(sequence, dict):
             sequence.pop("current_same_direction_close_run", None)
+    if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) <= MAX_SERIALIZED_CHARS:
+        return
+    # Compact OF/VWAP payloads once all three roots carry native flow.
+    for instrument in value.get("instruments", []):
+        if not isinstance(instrument, dict):
+            continue
+        flow = instrument.get("order_flow_response")
+        if isinstance(flow, dict):
+            instrument["order_flow_response"] = {
+                key: flow[key] for key in (
+                    "status", "coverage", "signed_delta_change_sum",
+                    "price_change_points", "latest_aggression_balance", "reason",
+                ) if key in flow
+            }
+        vwap = instrument.get("vwap_path")
+        if isinstance(vwap, dict):
+            instrument["vwap_path"] = {
+                key: vwap[key] for key in (
+                    "status", "coverage", "current_vwap",
+                    "current_price_minus_vwap_points", "reason",
+                ) if key in vwap
+            }
     if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) <= MAX_SERIALIZED_CHARS:
         return
     # All semantics below are also stated in the prompt and concrete fields.

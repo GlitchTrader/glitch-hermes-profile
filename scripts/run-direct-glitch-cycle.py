@@ -56,7 +56,8 @@ ENTRY_FIELD_ALIASES = {
 }
 CORE_MODEL = "gpt-5.6-luna"
 CORE_PROVIDER = "openai-codex"
-DIRECT_PROMPT_REVISION = "direct-v29-delivery-aware-cognition"
+CORE_REASONING = "low"
+DIRECT_PROMPT_REVISION = "direct-v31-rr-baseline"
 COGNITIVE_GATE_VERSION = "glitch.hermes.cognitive_gate.v2"
 COGNITIVE_OVERLAY_VERSION_MARKER = "+overlay-"
 COGNITIVE_BUNDLE_RELATIVE_PATHS = (
@@ -91,7 +92,26 @@ DECISION_FIELDS = {
 ENTRY_RANGE_FIELDS = {"entry_range_low", "entry_range_high"}
 ALLOWED_DECISION_FIELDS = DECISION_FIELDS | ENTRY_FIELDS | ENTRY_RANGE_FIELDS | {
     "protection_updates", "entry_revalidation", "position_revalidation",
+    "entry_range_delivery_adjustment",
 }
+# Geometry-conditioned random-walk baseline for target-first (ignores drift/horizon).
+# Prompt context only — not a trade quota. Do not mix ENTER-superseded and NOTHING
+# populations into one unconditional rate.
+CALIBRATION_PRIORS_V1 = {
+    "schema_version": "glitch.hermes.calibration_priors.v2",
+    "as_of_utc": "2026-10-23T18:50:00Z",
+    "baseline": "p_base ≈ risk_points / (risk_points + reward_points) for first-touch",
+    "note": (
+        "Unconditional NOTHING≈0.45 vs ENTER≈0.23 mixes R:R strata. Within the same "
+        "R:R band, NOTHING and ENTER first-touch rates are similar. Estimate only the "
+        "signed edge over p_base for this bracket; do not anchor to a pooled rate."
+    ),
+}
+# Minimum executable entry-range width: research showed authored widths p50≈0.5pt
+# while supersession outside-by p50≈0.5pt and think-time MNQ drift ≫ that.
+ENTRY_RANGE_MIN_TICKS = 8
+ENTRY_RANGE_MAX_TICKS = 24
+ENTRY_RANGE_MAX_RISK_FRACTION = 0.35
 DECISION_AUDIT_FIELD_ORDER = (
     "bull_case", "bear_case", "flat_case", "aggressive_case", "conservative_case",
     "decisive_evidence", "disconfirming_evidence", "change_condition", "final_choice",
@@ -3582,6 +3602,15 @@ def validate_selection_ev(
             if item not in observations:
                 observations.append(item)
 
+    # Flat NOTHING must still publish a scoreable best-candidate bracket. "stop=not
+    # authored" leaves ~36% of NOTHING episodes unscoreable and hides geometry bias.
+    if (
+        action == "NOTHING"
+        and "numeric_input_unavailable" in math_support["calculation_issues"]
+        and source in {"candidate_comparison", "trigger_review"}
+    ):
+        raise ValueError(f"selection_ev_nothing_geometry_required:{index}:{source}")
+
     entry = _first_unsigned_number(fields.get("entry"))
     target = _first_unsigned_number(fields.get("target"))
     wait_price = _first_unsigned_number(fields.get("wait_price"))
@@ -3932,6 +3961,148 @@ def validate_entry_range(intent: dict[str, Any], reference_price: Any, index: in
         valid = target < low <= high < stop
     if not valid:
         raise ValueError(f"entry_range_geometry_invalid:{index}")
+
+
+def _snap_price_to_tick(price: float, tick: float) -> float:
+    return round(round(price / tick) * tick, 10)
+
+
+def _scenario_candidate(scenario: dict[str, Any], instrument: str) -> dict[str, Any] | None:
+    root = instrument_root(instrument)
+    market = scenario.get("market") if isinstance(scenario.get("market"), dict) else {}
+    for row in market.get("candidates") or []:
+        if isinstance(row, dict) and instrument_root(row.get("instrument")) == root:
+            return row
+    return None
+
+
+def delivery_survivable_entry_range(
+    *,
+    action: str,
+    low: float,
+    high: float,
+    stop: float,
+    target: float,
+    reference: float,
+    tick: float,
+) -> tuple[float, float, dict[str, Any]]:
+    """Expand a quote-narrow entry band to a minimum delivery-survivable width.
+
+    Keeps reference inside the range, stays strictly inside stop/target with one
+    tick clearance, and never invents a wider zone than 35% of stop distance or
+    ENTRY_RANGE_MAX_TICKS. This is execution hygiene for known decision latency,
+    not a license to chase targetward after revalidation.
+    """
+    if tick <= 0 or not all(math.isfinite(v) for v in (low, high, stop, target, reference, tick)):
+        return low, high, {"status": "skipped_invalid_inputs"}
+    width = high - low
+    risk = abs(reference - stop)
+    min_width = max(ENTRY_RANGE_MIN_TICKS * tick, min(
+        ENTRY_RANGE_MAX_RISK_FRACTION * risk if risk > 0 else ENTRY_RANGE_MIN_TICKS * tick,
+        ENTRY_RANGE_MAX_TICKS * tick,
+    ))
+    if action == "ENTER_LONG":
+        floor = stop + tick
+        ceiling = target - tick
+    else:
+        floor = target + tick
+        ceiling = stop - tick
+    room = ceiling - floor
+    if room < tick * 2:
+        return low, high, {"status": "skipped_insufficient_corridor", "corridor": room}
+    min_width = min(min_width, room)
+    if width + 1e-12 >= min_width:
+        return low, high, {
+            "status": "unchanged",
+            "width": width,
+            "min_width": min_width,
+        }
+    half = min_width / 2.0
+    new_low = reference - half
+    new_high = reference + half
+    if new_low < floor:
+        shift = floor - new_low
+        new_low += shift
+        new_high += shift
+    if new_high > ceiling:
+        shift = new_high - ceiling
+        new_low -= shift
+        new_high -= shift
+    new_low = max(floor, _snap_price_to_tick(new_low, tick))
+    new_high = min(ceiling, _snap_price_to_tick(new_high, tick))
+    if new_high <= new_low:
+        new_high = min(ceiling, new_low + tick)
+    if not (new_low <= reference <= new_high):
+        # Preserve decision price membership even if snap drifted.
+        new_low = min(new_low, reference)
+        new_high = max(new_high, reference)
+        new_low = max(floor, _snap_price_to_tick(new_low, tick))
+        new_high = min(ceiling, _snap_price_to_tick(new_high, tick))
+        if new_low > reference:
+            new_low = max(floor, _snap_price_to_tick(reference, tick))
+        if new_high < reference:
+            new_high = min(ceiling, _snap_price_to_tick(reference, tick))
+    if new_high <= new_low or not (new_low <= reference <= new_high):
+        return low, high, {"status": "skipped_could_not_expand", "min_width": min_width}
+    return new_low, new_high, {
+        "status": "expanded",
+        "authored_low": low,
+        "authored_high": high,
+        "adjusted_low": new_low,
+        "adjusted_high": new_high,
+        "min_width": min_width,
+        "tick_size": tick,
+        "reference": reference,
+    }
+
+
+def apply_delivery_survivable_entry_ranges(
+    batch: dict[str, Any],
+    scenario: dict[str, Any],
+) -> None:
+    """Deterministically expand fragile quote-centered entry ranges before revalidation."""
+    for index, intent in enumerate(batch.get("decisions") or []):
+        if not isinstance(intent, dict) or intent.get("action") not in {"ENTER_LONG", "ENTER_SHORT"}:
+            continue
+        if not ENTRY_RANGE_FIELDS.issubset(intent):
+            continue
+        candidate = _scenario_candidate(scenario, str(intent.get("instrument") or ""))
+        if candidate is None:
+            continue
+        economics = resolve_instrument_economics(candidate)
+        try:
+            low = float(intent["entry_range_low"])
+            high = float(intent["entry_range_high"])
+            stop = float(intent["stop_loss"])
+            target = float(intent["take_profit_1"])
+            reference = float(candidate.get("current_price"))
+            tick = float(economics["tick_size"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        new_low, new_high, audit = delivery_survivable_entry_range(
+            action=str(intent.get("action")),
+            low=low,
+            high=high,
+            stop=stop,
+            target=target,
+            reference=reference,
+            tick=tick,
+        )
+        intent["entry_range_delivery_adjustment"] = audit
+        if audit.get("status") != "expanded":
+            continue
+        intent["entry_range_low"] = new_low
+        intent["entry_range_high"] = new_high
+        # Re-check geometry; roll back if expansion broke the corridor.
+        try:
+            validate_entry_range(intent, reference, index)
+        except ValueError:
+            intent["entry_range_low"] = low
+            intent["entry_range_high"] = high
+            intent["entry_range_delivery_adjustment"] = {
+                **audit,
+                "status": "rolled_back_geometry",
+            }
 
 
 def normalize_ledger_separators(evidence: str) -> str:
@@ -5097,7 +5268,7 @@ def invoke_hermes(
         "--source", TRADING_SOURCE,
         "--model", CORE_MODEL,
         "--provider", CORE_PROVIDER,
-        "--reasoning", "low",
+        "--reasoning", CORE_REASONING,
         "--max-turns", "1",
         "--toolsets", "glitch-decision-only",
         "--skills", (
@@ -5213,6 +5384,7 @@ SELECTION_EV_SELF_CONSISTENCY_ERRORS = (
     "selection_ev_entry_not_positive",
     "selection_ev_forecast_range_mismatch",
     "selection_ev_verdict_range_mismatch",
+    "selection_ev_nothing_geometry_required",
 )
 
 
@@ -6495,6 +6667,7 @@ def submit_batch(batch: dict[str, Any], glitch_data: Path, exchange: Path) -> di
         wire_intent.pop("forecast", None)
         wire_intent.pop("entry_revalidation", None)
         wire_intent.pop("position_revalidation", None)
+        wire_intent.pop("entry_range_delivery_adjustment", None)
         wire_intent["created_utc"] = canonical_intent_created_utc(wire_intent.get("created_utc"))
         try:
             result = post_intent(wire_intent, token)
@@ -6817,6 +6990,8 @@ def build_prompt(
         "Do not use fixed dollar, ATR, reward/risk, setup or cooldown rules. Do not retrieve or write memory in this hot path. "
         "This pass has no tools: use the supplied evidence and preloaded skills, return the decision directly; "
         "the runtime canonicalizes payoff arithmetic from your levels and probability without a calculator call. "
+        "Write all natural-language prose in English, including reason and every decision_audit value, even when prior_cognition is in another language. "
+        "Schema keys, ledger markers, and enum values stay unchanged. "
     )
     if jev_evidence is not None:
         common += (
@@ -6951,6 +7126,12 @@ def build_prompt(
             "volatility, location and contrary evidence. Repeated prior prose is not independent confirmation. "
             "Respect account_context.must_flat_utc and seconds_until_must_flat as the actual schedule horizon; do not start "
             "a path that cannot fit the remaining window and an orderly exit. "
+            "Probability baseline (geometry-conditioned, not a trade quota): "
+            f"{CALIBRATION_PRIORS_V1['baseline']}. "
+            f"{CALIBRATION_PRIORS_V1['note']} "
+            "State estimated_target_first_range as p_base plus a signed edge with one causal justification; "
+            "a bare 0.55 with R:R≈1.5 (p_base≈0.40) asserts ~+0.15 edge without evidence. "
+            "NOTHING still requires the best candidate bracket with numeric entry/stop/target and that range. "
             "For ENTER_LONG/ENTER_SHORT include quantity, order_type=MARKET, stop_loss, take_profit_1, entry_range_low, "
             "entry_range_high and forecast. The executable range contains current decision price, is strictly inside the "
             "stop/target, and spans the full zone where this thesis retains value after plausible delivery drift. In the "
@@ -6958,6 +7139,8 @@ def build_prompt(
             "do not invent a narrow quote-centered band when adjacent prices remain valid. Prior cognition's observed "
             "decision timing is one measured past call, not a future bound, market signal, or mandatory range width. "
             "Never widen an issued range to defeat latest-price revalidation or demand it absorb several future packets. "
+            "Runtime may expand an authored quote-band to a minimum delivery-survivable width inside stop/target; "
+            "still author the full positive-EV zone yourself rather than a one-tick quote. "
             "In a fresh review, an expired order range is not a permanent veto: derive a new current zone and economics "
             "if the thesis survives, including at a better price. Do not revive the expired order or call it a failed trade. "
             "forecast is event=STOP_BEFORE_PRIMARY_TARGET, probability and confidence in [0,1], method at most 128 characters. "
@@ -7629,6 +7812,7 @@ def run_once(
             original_scenario,
             allow_entry_revalidation=True,
         )
+        apply_delivery_survivable_entry_ranges(pending_batch, original_scenario)
         apply_entry_revalidation(pending_batch, original_packet, packet, glitch_data)
         apply_position_revalidation(pending_batch, original_packet, packet, glitch_data)
         supersession_reassessment = maybe_request_supersession_reassessment(
@@ -7680,6 +7864,7 @@ def run_once(
     if outbox_path.is_file():
         batch = normalize_batch(read_json(outbox_path), scenario)
         validate_batch(batch, scenario, allow_entry_revalidation=True)
+        apply_delivery_survivable_entry_ranges(batch, scenario)
         current_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, current_packet, glitch_data)
         apply_position_revalidation(batch, packet, current_packet, glitch_data)
@@ -7932,6 +8117,7 @@ def run_once(
             expected_decision_mode=decision_mode,
             active_trade_state=trade_state,
         )
+        apply_delivery_survivable_entry_ranges(batch, scenario)
         latest_packet = read_json(packet_path)
         apply_entry_revalidation(batch, packet, latest_packet, glitch_data)
         apply_position_revalidation(batch, packet, latest_packet, glitch_data)

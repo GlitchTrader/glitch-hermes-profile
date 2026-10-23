@@ -1,0 +1,12 @@
+﻿{
+    "previous_cognitive_bundle_hash":  "686f54d1a4fb",
+    "backup_dir":  "C:\\Users\\arifr\\AppData\\Local\\hermes\\profiles\\glitch\\.prompt-sync-backups\\20261023T133127Z",
+    "files_synced":  [
+                         "SOUL.md",
+                         "skills\\glitch-volume-profile\\SKILL.md"
+                     ],
+    "schema_version":  "glitch.hermes.freeze_restart.v1",
+    "recorded_utc":  "2026-10-23T17:31:27.7968876Z",
+    "note":  "Synced SOUL.md + glitch-volume-profile/SKILL.md from glitch-hermes-profile repo to installed profile. Restarts freeze N for LOCAL/DISTRIBUTION. No hot-path script change.",
+    "reason":  "soul_sync_repo_vacuum_stop_line_for_forward_test"
+}

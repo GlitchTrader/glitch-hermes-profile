@@ -10,7 +10,7 @@ Compare effort with result at each candidate level, for the bullish and bearish 
 
 - heavy volume near a level with little price progress is contested; heavy volume and progress through it is acceptance;
 - repeated probes that close back (`touch_count` with `rejection` outcomes) suggest a defended boundary; `acceptance` outcomes weaken it. A zone is not a line: judge probes against the level's tolerance and current noise, and let a fresh probe change the count's meaning;
-- volume far below the level on the far side, or a vacuum (LVN) beyond it, means price moved there fast and little was traded. If price reaches the far side it can travel, and continuation is more plausible than a reversal there;
+- volume far below the level on the far side, or a vacuum (LVN) beyond it, means price moved there fast and little was traded. "No buyers here" is a probability input, not a veto. If price reaches the far side it can travel, and continuation is more plausible than a reversal there;
 - POC, value area, and HVN are where trade was accepted and act as magnets or reference; price outside value that stays there shows acceptance of new value, while a quick return inside shows rejection.
 
 Stop location: a vacuum beyond the level is supporting evidence that price passing the level is genuinely a different auction. It does not move the stop by itself. Keep the stop beyond the movement the wager allows, use `nearest_vacuum_beyond` and its dollar distance only as a reference, and price the wider or tighter risk in probability and payoff, not by shaving the stop to the vacuum edge.

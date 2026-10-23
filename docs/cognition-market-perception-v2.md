@@ -110,13 +110,16 @@ Render from the same native ledger with Pillow; do not capture NinjaTrader windo
 Flat scan or condition-change review:
 
 - one composite image with aligned MES, MNQ, and M2K panels;
-- approximately six hours of one-minute candles when the persisted ledger is warm, with available retained history during warm-up;
+- up to the retained ~420 one-minute candles (~7h) when the ledger is warm, with available retained history during warm-up;
 - raw candle direction colors only;
-- VWAP median and available +/-1 and +/-2 bands;
-- session and previous-session highs/lows;
+- VWAP median and available +/-1 and +/-2 bands plotted on the candle pane (not status text alone), with price scale expanded to keep them visible;
+- session volume profile histogram (native `volume_at_price` when ready; otherwise approximated from completed 1m OHLCV) with POC/VAH/VAL;
+- Opening Range from the first 30 minutes of the current contiguous segment;
+- confirmed swing markers and session/previous-session highs/lows;
 - a small bounded set of measured support/resistance clusters with touch counts;
-- volume and a compact RSI strip;
-- order-flow delta only where native coverage exists;
+- volume colored by per-minute delta sign (aligned to completed-bar observation time) and cumulative-delta path;
+- numeric bid|ask footprint on recent native `bars_1m` volume-at-price rows (`b`/`a`), replacing solid candle bodies when those rows exist;
+- no RSI strip (vertical space reserved for price action / footprint);
 - the partial current candle visually distinct from completed candles.
 
 Position-management review:

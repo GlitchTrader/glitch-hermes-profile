@@ -2059,6 +2059,7 @@ def test_scheduled_decision_is_tool_free_without_changing_model_skills_or_image(
     assert "tools=[],includes=[]" in wrapper
     assert "'--toolsets', 'glitch-decision-only'" in wrapper
     assert "'--model', 'gpt-5.6-luna'" in wrapper
+    assert "'--provider', 'openai-codex'" in wrapper
     assert "'--reasoning', 'low'" in wrapper
     assert "'--max-turns', '1'" in wrapper
     assert "'--image'" in wrapper and repr(str(chart)) in wrapper
@@ -3369,6 +3370,7 @@ def test_flat_prompt_treats_fresh_extreme_as_probabilistic_not_preaccepted() -> 
         "Same instrument and direction alone are not a failed thesis", "PnL labels are not market evidence",
         "post-exit evidence materially changed",
         "This pass has no tools", "runtime canonicalizes payoff arithmetic",
+        "Write all natural-language prose in English",
         "name the retest/pullback that could occur while the thesis remains valid",
         "A touch-triggered stop inside that valid retest is not thesis invalidation",
         "stops and targets shift by fill minus decision reference",

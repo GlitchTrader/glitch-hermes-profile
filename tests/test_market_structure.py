@@ -50,9 +50,9 @@ def instrument(root: str, index: int, *, partial_offset: float = 0.0) -> dict:
     tick = ECONOMICS[root]["tick_size"]
     partial_open = close + partial_offset
     partial_close = partial_open + tick
-    vwap = BASE[root] + SCALE[root] * index * 0.08 if root != "M2K" else None
-    delta = (index % 11 - 5) * 13 if root != "M2K" else None
-    deviation = (partial_close - vwap) / max(SCALE[root] * 8, tick) if vwap is not None else None
+    vwap = BASE[root] + SCALE[root] * index * 0.08
+    delta = (index % 11 - 5) * 13
+    deviation = (partial_close - vwap) / max(SCALE[root] * 8, tick)
     native = {
         "utc_time": iso_minute(index),
         "closed_utc": iso_minute(index + 1),
@@ -88,24 +88,24 @@ def instrument(root: str, index: int, *, partial_offset: float = 0.0) -> dict:
                 "atr": SCALE[root] * 3,
                 "adx": 22 + index % 8,
                 "rsi": 45 + index % 20,
-                "order_flow_cumulative_delta": delta * index if delta is not None else None,
+                "order_flow_cumulative_delta": delta * index,
                 "order_flow_delta_change": delta,
                 "order_flow_vwap": vwap,
                 "order_flow_vwap_deviation": deviation,
-                "order_flow_aggression_balance": 0.15 if delta is not None else None,
+                "order_flow_aggression_balance": 0.15 if root != "M2K" else -0.25,
             },
             "derived_analytics": {
                 "directional_score": math.sin(index / 8),
                 "tradeability_score": 0.5,
-                "order_flow_reliability": 0.7 if delta is not None else None,
+                "order_flow_reliability": 0.7,
             },
             "descriptive_state": {
                 "native_observations": {"last_completed_bar": native},
                 "descriptive_state": {
-                    "flow": {"classification_coverage": 1.0 if delta is not None else None},
+                    "flow": {"classification_coverage": 1.0},
                     "quality": {
                         "partial_1m": True,
-                        "order_flow_status": "available" if delta is not None else "unavailable",
+                        "order_flow_status": "available",
                     },
                 },
             },
@@ -395,9 +395,10 @@ def test_market_map_is_bounded_neutral_and_missing_flow_stays_unknown(tmp_path: 
     for item in by_root.values():
         for requested, window in item["price_sequence"]["windows"].items():
             assert window.get("bars", int(requested)) == min(int(requested), item["evidence_quality"]["contiguous_completed_bar_count"])
-    assert by_root["M2K"]["vwap_path"]["status"] == "unavailable"
-    assert by_root["M2K"]["order_flow_response"]["status"] == "unavailable"
-    assert "vwap" in by_root["M2K"]["evidence_quality"]["missing"]
+    assert by_root["M2K"]["vwap_path"]["status"] == "available"
+    assert by_root["M2K"]["order_flow_response"]["status"] == "available"
+    assert "vwap" not in by_root["M2K"]["evidence_quality"]["missing"]
+    assert "order_flow" not in by_root["M2K"]["evidence_quality"]["missing"]
     assert by_root["MES"]["evidence_quality"]["status"] == "ready"
     assert value["auction_reference_ladder_contract"]["row_format"] == [
         "price", "signed_distance_points", "sources",
@@ -519,3 +520,88 @@ def test_image_retention_is_bounded(tmp_path: Path) -> None:
     ms.build_market_perception(packet(74), exchange)
 
     assert len(list(image_dir.glob("*.png"))) <= ms.MAX_IMAGE_FILES
+
+
+def test_opening_range_uses_first_minutes_of_current_contiguous_segment() -> None:
+    bars = []
+    for index in range(40):
+        open_price, high, low, close = completed_values("MNQ", index)
+        bars.append({
+            "id": f"b{index}", "native_utc": iso_minute(index),
+            "o": open_price, "h": high, "l": low, "c": close, "v": 10,
+        })
+    opening = ms._opening_range(bars, 30)
+    assert opening is not None
+    assert opening["bars"] == 30
+    assert opening["high"] == round(max(float(bar["h"]) for bar in bars[:30]), 8)
+    assert opening["low"] == round(min(float(bar["l"]) for bar in bars[:30]), 8)
+
+
+def test_volume_profile_prefers_native_rows_and_falls_back_to_1m_distribution() -> None:
+    slot = {"economics": {"tick_size": 0.25}, "volume_profile": {
+        "status": "ready",
+        "session_rows": [
+            {"p": 100.0, "b": 10, "a": 5},
+            {"p": 100.25, "b": 40, "a": 60},
+            {"p": 100.5, "b": 8, "a": 7},
+        ],
+        "full_map": {"poc": 100.25, "vah": 100.5, "val": 100.0},
+        "bars_1m": [{"utc_time": "2026-09-01T00:01:00Z", "rows": [{"p": 100.25, "b": 2, "a": 9}]}],
+    }}
+    native = ms._volume_profile_overlay(slot, [])
+    assert native["status"] == "native"
+    assert native["poc"] == 100.25
+    assert native["histogram"][100.25]["total"] == 100
+    assert native["footprint_bars"]
+    indexed = ms._footprint_by_bar_utc(native)
+    assert indexed["2026-09-01T00:01:00Z"][0]["ask"] == 9
+
+    bars = []
+    for index in range(40):
+        open_price, high, low, close = completed_values("MNQ", index)
+        bars.append({
+            "id": f"b{index}", "native_utc": iso_minute(index),
+            "o": open_price, "h": high, "l": low, "c": close, "v": 50 + index,
+        })
+    approx = ms._volume_profile_overlay({"economics": {"tick_size": 0.25}}, bars)
+    assert approx["status"] == "approximated_from_1m_ohlcv"
+    assert approx["poc"] is not None
+    assert approx["vah"] >= approx["val"]
+
+
+def test_chart_plots_vwap_volume_profile_and_opening_range(tmp_path: Path) -> None:
+    state = ms._empty_state()
+    for index in range(90):
+        payload = frame(index)
+        for instrument in payload["market_snapshot"]["instruments"]:
+            if instrument["instrument"] != "MNQ":
+                continue
+            instrument["volume_profile"] = {
+                "status": "ready",
+                "session_rows": [
+                    {"p": BASE["MNQ"], "bid": 10, "ask": 12},
+                    {"p": BASE["MNQ"] + 4, "bid": 50, "ask": 55},
+                    {"p": BASE["MNQ"] + 8, "bid": 9, "ask": 8},
+                ],
+                "full_map": {
+                    "poc": BASE["MNQ"] + 4,
+                    "vah": BASE["MNQ"] + 8,
+                    "val": BASE["MNQ"],
+                },
+                "bars_1m": [{
+                    "rows": [
+                        {"p": BASE["MNQ"] + 4, "bid": 3, "ask": 11},
+                        {"p": BASE["MNQ"] + 4.25, "bid": 8, "ask": 2},
+                    ],
+                }],
+            }
+        ms.ingest_frame(state, payload)
+    view = ms.instrument_perception("MNQ", state["instruments"]["MNQ"])
+    market_map = {
+        "instrument_order": ["MNQ"], "view": "position_management", "instruments": [view],
+    }
+    image = tmp_path / "enriched.png"
+    result = ms.render_market_context(state, market_map, image)
+    assert result["status"] == "attached"
+    assert image.is_file() and image.stat().st_size > 5_000
+    assert state["instruments"]["MNQ"]["volume_profile"]["status"] == "ready"
