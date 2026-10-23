@@ -17,6 +17,7 @@ distribution_owned:
   - skills/glitch-runtime
   - skills/glitch-setup-state
   - skills/glitch-trade-mnq
+  - skills/glitch-volume-profile
   - plugins
   - scripts
   - docs/jev-shadow-research.md
